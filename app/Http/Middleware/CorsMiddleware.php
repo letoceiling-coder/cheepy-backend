@@ -10,10 +10,19 @@ class CorsMiddleware
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $allowedOrigins = array_filter(explode(',', env('FRONTEND_URL', 'http://cheepy.loc')));
+        $allowedOrigins = config('cors.allowed_origins', ['https://siteaacess.store', 'http://cheepy.loc']);
+        $allowedOrigins = array_values(array_unique(array_map('trim', $allowedOrigins)));
 
         $origin = $request->header('Origin');
-        $allow = in_array($origin, $allowedOrigins) ? $origin : ($allowedOrigins[0] ?? '*');
+        $originTrimmed = $origin ? rtrim($origin, '/') : '';
+        $allow = $allowedOrigins[0] ?? '*';
+        foreach ($allowedOrigins as $o) {
+            $ot = rtrim($o, '/');
+            if ($origin === $o || ($originTrimmed && $originTrimmed === $ot)) {
+                $allow = $origin;
+                break;
+            }
+        }
 
         if ($request->isMethod('OPTIONS')) {
             return response('', 204)
