@@ -5,116 +5,112 @@ namespace App\Services\SadovodParser\Parsers;
 use App\Services\SadovodParser\HttpClient;
 use Symfony\Component\DomCrawler\Crawler;
 
+/**
+ * Extract categories from donor menu #menu-catalog.
+ * Structure: .menu-item > a.top-category (parent) + .sub-menu-wrap a.sub-category (children).
+ *
+ * @return array{categories: array<int, array{name: string, slug: string, url: string, parent_slug: ?string}>}
+ */
 class MenuParser
 {
     private HttpClient $http;
+    private string $baseUrl;
     private array $excludeLinks;
     private array $excludeText;
 
     public function __construct(HttpClient $http, array $config = [])
     {
         $this->http = $http;
+        $this->baseUrl = rtrim($config['base_url'] ?? config('sadovod.base_url', 'https://sadovodbaza.ru'), '/');
         $this->excludeLinks = $config['exclude_menu_links'] ?? ['/link/3'];
         $this->excludeText = $config['exclude_menu_text'] ?? ['Женская одежда ТГ'];
     }
 
     /**
-     * Parse main page: extract block #menu-main and build category tree (excluding TG link).
+     * Load donor homepage, find #menu-catalog, extract categories.
      *
-     * @return array{categories: array, menu_main_html: string|null}
+     * @return array{categories: array<int, array{name: string, slug: string, url: string, parent_slug: ?string}>}
      */
     public function parse(string $html = null): array
     {
         $crawler = $html ? (new Crawler())->addHtmlContent($html, 'UTF-8') : $this->http->getCrawler('/');
 
-        $menuMainHtml = null;
+        $categories = $this->extractFromMenuCatalog($crawler);
+
+        return ['categories' => $categories];
+    }
+
+    /**
+     * Extract categories from #menu-catalog.
+     * Algorithm:
+     * - iterate .menu-item
+     * - extract top: .menu-item > a.top-category (name, slug, url)
+     * - extract subs: .sub-menu-wrap a.sub-category (parent_slug = top slug)
+     * - return flat list with parent_slug, no duplicates
+     */
+    private function extractFromMenuCatalog(Crawler $crawler): array
+    {
+        $flat = [];
+        $seen = [];
+
         $menuCrawler = null;
         try {
-            if ($crawler->filter('#menu-main')->count() > 0) {
-                $menuMainHtml = $crawler->filter('#menu-main')->html();
-                $menuCrawler = $crawler->filter('#menu-main');
+            if ($crawler->filter('#menu-catalog')->count() > 0) {
+                $menuCrawler = $crawler->filter('#menu-catalog');
             }
         } catch (\Throwable $e) {
         }
 
-        $categories = $this->extractCategoriesFromPage($crawler, $menuCrawler);
-
-        return [
-            'menu_main_html' => $menuMainHtml,
-            'categories' => $categories,
-        ];
-    }
-
-    /**
-     * Extract all catalog categories. If #menu-main exists, build tree (parent + children).
-     * Exclude "Женская одежда ТГ" and /link/3.
-     * @param Crawler|null $menuCrawler Crawler of #menu-main
-     */
-    private function extractCategoriesFromPage(Crawler $crawler, ?Crawler $menuCrawler = null): array
-    {
-        $seen = [];
-        $flat = [];
-
-        if ($menuCrawler && $menuCrawler->count() > 0) {
-            $menuCrawler->filter('a[href*="/catalog/"]')->each(function (Crawler $node) use (&$flat, &$seen) {
-                $this->addCategoryFromLink($node, $flat, $seen);
-            });
+        if (!$menuCrawler || $menuCrawler->count() === 0) {
+            return $this->extractFromMenuMainFallback($crawler);
         }
 
-        $crawler->filter('a[href*="/catalog/"]')->each(function (Crawler $node) use (&$flat, &$seen) {
-            $this->addCategoryFromLink($node, $flat, $seen);
-        });
-
-        $flat = array_values(array_filter($flat, function ($cat) {
-            $href = $cat['url'] ?? '';
-            $title = $cat['title'] ?? '';
-            if (in_array($href, $this->excludeLinks, true)) {
-                return false;
-            }
-            if (in_array($title, $this->excludeText, true)) {
-                return false;
-            }
-            if (str_contains($href, '/link/')) {
-                return false;
-            }
-            return true;
-        }));
-
-        if ($menuCrawler && $menuCrawler->count() > 0) {
-            $tree = $this->buildTreeFromMenuMain($menuCrawler);
-            if (!empty($tree)) {
-                return $this->mergeTreeWithFlat($tree, $flat);
-            }
-        }
-
-        usort($flat, fn ($a, $b) => strcmp($a['title'] ?? '', $b['title'] ?? ''));
-        return $this->buildCategoryTree($flat);
-    }
-
-    /**
-     * Build category tree from #menu-main: .menu-item > .top-category (parent) + .sub-menu .sub-category (children).
-     */
-    private function buildTreeFromMenuMain(Crawler $menuCrawler): array
-    {
-        $tree = [];
         try {
-            $menuCrawler->filter('.menu-item')->each(function (Crawler $item) use (&$tree) {
-                $parentLink = $item->filter('.top-category[href*="/catalog/"]')->getNode(0);
-                if (!$parentLink) {
+            $menuCrawler->filter('.menu-item')->each(function (Crawler $item) use (&$flat, &$seen) {
+                // Top category: .menu-item > a.top-category or a.top-category
+                $topLink = $item->filter('a.top-category[href*="/catalog/"]')->getNode(0);
+                if (!$topLink) {
+                    $topLink = $item->filter('.menu-item > a.top-category')->getNode(0);
+                }
+                if (!$topLink) {
+                    $topLink = $item->filter('> a[href*="/catalog/"]')->getNode(0);
+                }
+                if (!$topLink) {
                     return;
                 }
-                $href = $parentLink->getAttribute('href');
+
+                $href = $topLink->getAttribute('href');
                 if (!$href || str_contains($href, '/link/')) {
                     return;
                 }
                 $path = parse_url($href, PHP_URL_PATH) ?: $href;
-                $slug = basename(rtrim($path, '/'));
-                $title = trim($parentLink->textContent ?? '');
-                if (in_array($title, $this->excludeText, true)) {
+                if (!str_contains($path, '/catalog/')) {
                     return;
                 }
-                $children = [];
-                $item->filter('.sub-menu .sub-category, .sub-menu-wrap .sub-category')->each(function (Crawler $sub) use (&$children) {
+
+                $slug = basename(rtrim($path, '/'));
+                $name = trim($topLink->textContent ?? '');
+                if (in_array($name, $this->excludeText, true) || in_array($path, $this->excludeLinks, true)) {
+                    return;
+                }
+                if (!$slug || !$name) {
+                    return;
+                }
+
+                $url = str_starts_with($path, 'http') ? $path : $this->baseUrl . $path;
+                $key = $path;
+                if (empty($seen[$key])) {
+                    $seen[$key] = true;
+                    $flat[] = [
+                        'name' => $name,
+                        'slug' => $slug,
+                        'url' => $url,
+                        'parent_slug' => null,
+                    ];
+                }
+
+                // Subcategories: .sub-menu-wrap a.sub-category
+                $item->filter('.sub-menu-wrap a.sub-category')->each(function (Crawler $sub) use (&$flat, &$seen, $slug) {
                     $h = $sub->attr('href');
                     if (!$h || str_contains($h, '/link/')) {
                         return;
@@ -123,85 +119,93 @@ class MenuParser
                     if (!str_contains($p, '/catalog/')) {
                         return;
                     }
-                    $children[] = [
-                        'title' => trim($sub->text()),
-                        'url' => $p,
-                        'slug' => basename(rtrim($p, '/')),
-                    ];
+                    $subSlug = basename(rtrim($p, '/'));
+                    $subName = trim($sub->text());
+                    if (!$subSlug || !$subName) {
+                        return;
+                    }
+                    $subUrl = str_starts_with($p, 'http') ? $p : $this->baseUrl . $p;
+                    $subKey = $p;
+                    if (empty($seen[$subKey])) {
+                        $seen[$subKey] = true;
+                        $flat[] = [
+                            'name' => $subName,
+                            'slug' => $subSlug,
+                            'url' => $subUrl,
+                            'parent_slug' => $slug,
+                        ];
+                    }
                 });
-                $tree[] = [
-                    'title' => $title,
-                    'url' => $path,
-                    'slug' => $slug,
-                    'children' => $children,
-                ];
             });
         } catch (\Throwable $e) {
         }
-        return $tree;
-    }
 
-    private function mergeTreeWithFlat(array $tree, array $flat): array
-    {
-        $inTree = [];
-        foreach ($tree as $node) {
-            $inTree[$node['slug']] = true;
-            foreach ($node['children'] ?? [] as $ch) {
-                $inTree[$ch['slug'] ?? ''] = true;
-            }
+        if (empty($flat)) {
+            return $this->extractFromMenuMainFallback($crawler);
         }
-        foreach ($flat as $c) {
-            $slug = $c['slug'] ?? '';
-            if ($slug && empty($inTree[$slug])) {
-                $tree[] = ['title' => $c['title'], 'url' => $c['url'], 'slug' => $slug, 'children' => []];
-            }
-        }
-        usort($tree, fn ($a, $b) => strcmp($a['title'] ?? '', $b['title'] ?? ''));
-        return $tree;
-    }
-
-    private function addCategoryFromLink(Crawler $node, array &$categories, array &$seen): void
-    {
-        $href = $node->attr('href');
-        if (!$href || str_contains($href, '/link/')) {
-            return;
-        }
-        $path = parse_url($href, PHP_URL_PATH) ?: $href;
-        if (!str_contains($path, '/catalog/')) {
-            return;
-        }
-        $key = $path;
-        if (isset($seen[$key])) {
-            return;
-        }
-        $title = trim($node->text());
-        if ($title === '') {
-            return;
-        }
-        $seen[$key] = true;
-        $categories[] = [
-            'title' => $title,
-            'url' => $path,
-            'slug' => basename(rtrim($path, '/')),
-        ];
+        return array_values($flat);
     }
 
     /**
-     * Build a simple tree: top-level categories only (no nested subcategories on main page).
-     * Subcategories are discovered on catalog pages.
+     * Fallback if #menu-catalog not found: use #menu-main with same selectors.
      */
-    private function buildCategoryTree(array $flat): array
+    private function extractFromMenuMainFallback(Crawler $crawler): array
     {
-        $bySlug = [];
-        foreach ($flat as $cat) {
-            $slug = $cat['slug'] ?? basename($cat['url']);
-            $bySlug[$slug] = [
-                'title' => $cat['title'],
-                'url' => $cat['url'],
-                'slug' => $slug,
-                'children' => [],
-            ];
+        $flat = [];
+        $seen = [];
+        $menuCrawler = null;
+        try {
+            if ($crawler->filter('#menu-main')->count() > 0) {
+                $menuCrawler = $crawler->filter('#menu-main');
+            }
+        } catch (\Throwable $e) {
+            return [];
         }
-        return array_values($bySlug);
+        if (!$menuCrawler) {
+            return [];
+        }
+
+        try {
+            $menuCrawler->filter('.menu-item')->each(function (Crawler $item) use (&$flat, &$seen) {
+                $topLink = $item->filter('a.top-category[href*="/catalog/"]')->getNode(0);
+                if (!$topLink) {
+                    return;
+                }
+                $href = $topLink->getAttribute('href');
+                if (!$href || str_contains($href, '/link/')) {
+                    return;
+                }
+                $path = parse_url($href, PHP_URL_PATH) ?: $href;
+                $slug = basename(rtrim($path, '/'));
+                $name = trim($topLink->textContent ?? '');
+                if (in_array($name, $this->excludeText, true)) {
+                    return;
+                }
+                $url = str_starts_with($path, 'http') ? $path : $this->baseUrl . $path;
+                if (empty($seen[$path])) {
+                    $seen[$path] = true;
+                    $flat[] = ['name' => $name, 'slug' => $slug, 'url' => $url, 'parent_slug' => null];
+                }
+                $item->filter('.sub-menu-wrap a.sub-category, .sub-menu .sub-category')->each(function (Crawler $sub) use (&$flat, &$seen, $slug) {
+                    $h = $sub->attr('href');
+                    if (!$h || str_contains($h, '/link/')) {
+                        return;
+                    }
+                    $p = parse_url($h, PHP_URL_PATH) ?: $h;
+                    if (!str_contains($p, '/catalog/')) {
+                        return;
+                    }
+                    $subSlug = basename(rtrim($p, '/'));
+                    $subName = trim($sub->text());
+                    $subUrl = str_starts_with($p, 'http') ? $p : $this->baseUrl . $p;
+                    if (empty($seen[$p])) {
+                        $seen[$p] = true;
+                        $flat[] = ['name' => $subName, 'slug' => $subSlug, 'url' => $subUrl, 'parent_slug' => $slug];
+                    }
+                });
+            });
+        } catch (\Throwable $e) {
+        }
+        return array_values($flat);
     }
 }

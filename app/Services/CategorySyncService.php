@@ -8,10 +8,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Sync categories using MenuParser (same source as parser runMenuOnly).
- * Does NOT parse donor HTML directly — uses MenuParser which is the canonical category source.
- *
- * Fields synced: name, slug, parent_id, url, sort_order
+ * Sync categories using MenuParser (extracts from donor #menu-catalog).
+ * Fields synced: name, slug, parent_id, url (source_url), sort_order.
  * Does NOT delete categories that have products.
  */
 class CategorySyncService
@@ -26,21 +24,30 @@ class CategorySyncService
         $updated = 0;
 
         $result = $this->menuParser->parse();
-        $sourceCategories = $result['categories'] ?? [];
-        if (empty($sourceCategories)) {
+        $items = $result['categories'] ?? [];
+        if (empty($items)) {
             Log::warning('CategorySync: No categories from MenuParser');
             return ['created' => 0, 'updated' => 0];
         }
 
-        $items = $this->flattenTree($sourceCategories);
+        // Remove duplicates by slug (keep first)
+        $items = $this->deduplicateBySlug($items);
+
+        // Sort: parents first (parent_slug null), then children (by parent_slug)
+        $items = $this->sortForParentOrder($items);
+
         $slugToId = [];
         $order = 0;
 
         foreach ($items as $item) {
-            $slug = $item['slug'];
+            $slug = $item['slug'] ?? null;
             $parentSlug = $item['parent_slug'] ?? null;
-            $name = $item['name'];
+            $name = $item['name'] ?? '';
             $url = $item['url'] ?? null;
+
+            if (!$slug) {
+                continue;
+            }
 
             $parentId = null;
             if ($parentSlug && isset($slugToId[$parentSlug])) {
@@ -57,6 +64,7 @@ class CategorySyncService
                     'parent_id' => $parentId,
                     'external_slug' => $slug,
                     'url' => $url,
+                    'sort_order' => $order++,
                 ]);
                 $updated++;
                 $slugToId[$slug] = $existing->id;
@@ -83,32 +91,56 @@ class CategorySyncService
     }
 
     /**
-     * Flatten MenuParser tree to [name, slug, url, parent_slug].
+     * Remove duplicates by slug, keeping first occurrence.
      */
-    protected function flattenTree(array $tree, ?string $parentSlug = null): array
+    protected function deduplicateBySlug(array $items): array
     {
+        $seen = [];
         $result = [];
-        foreach ($tree as $node) {
-            $slug = $node['slug'] ?? basename(rtrim($node['url'] ?? '', '/'));
-            if (!$slug) continue;
-
-            $baseUrl = rtrim(config('sadovod.base_url', 'https://sadovodbaza.ru'), '/');
-            $path = $node['url'] ?? '';
-            $url = str_starts_with($path, 'http') ? $path : $baseUrl . $path;
-
-            $result[] = [
-                'name' => $node['title'] ?? ucfirst(str_replace(['-', '_'], ' ', $slug)),
-                'slug' => $slug,
-                'url' => $url,
-                'parent_slug' => $parentSlug,
-            ];
-
-            if (!empty($node['children'])) {
-                $childItems = $this->flattenTree($node['children'], $slug);
-                $result = array_merge($result, $childItems);
+        foreach ($items as $item) {
+            $slug = $item['slug'] ?? null;
+            if (!$slug || isset($seen[$slug])) {
+                continue;
             }
+            $seen[$slug] = true;
+            $result[] = $item;
         }
         return $result;
+    }
+
+    /**
+     * Sort so parents (parent_slug null) come before their children.
+     */
+    protected function sortForParentOrder(array $items): array
+    {
+        $bySlug = [];
+        foreach ($items as $item) {
+            $slug = $item['slug'] ?? '';
+            if ($slug) {
+                $bySlug[$slug] = $item;
+            }
+        }
+
+        $sorted = [];
+        $seen = [];
+
+        $addWithChildren = function (?string $parentSlug) use (&$addWithChildren, &$sorted, &$seen, $bySlug) {
+            foreach ($bySlug as $slug => $item) {
+                $itemParent = $item['parent_slug'] ?? null;
+                if ($itemParent !== $parentSlug) {
+                    continue;
+                }
+                if (isset($seen[$slug])) {
+                    continue;
+                }
+                $seen[$slug] = true;
+                $sorted[] = $item;
+                $addWithChildren($slug);
+            }
+        };
+
+        $addWithChildren(null);
+        return $sorted;
     }
 
     protected function rebuildProductsCount(): void

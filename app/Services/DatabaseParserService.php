@@ -91,35 +91,64 @@ class DatabaseParserService
     private function runMenuOnly(): void
     {
         $this->updateAction('Загрузка меню категорий...');
-        // parse() без аргументов — сам делает GET /
         $result = $this->menuParser->parse(null);
         $categories = $result['categories'] ?? [];
-        $this->saveCategories($categories);
+        $this->saveCategoriesFlat($categories);
         $this->log('info', 'Меню загружено', ['count' => count($categories)]);
     }
 
-    private function saveCategories(array $categories, ?int $parentId = null, int $depth = 0): void
+    /**
+     * Save categories from flat list [{ name, slug, url, parent_slug }].
+     */
+    private function saveCategoriesFlat(array $items): void
     {
-        foreach ($categories as $index => $cat) {
-            $slug = $this->extractSlug($cat['url'] ?? '');
+        $seen = [];
+        $deduped = [];
+        foreach ($items as $item) {
+            $slug = $item['slug'] ?? $this->extractSlug($item['url'] ?? '');
+            if (!$slug || isset($seen[$slug])) continue;
+            $seen[$slug] = true;
+            $deduped[] = $item;
+        }
+        $bySlug = [];
+        foreach ($deduped as $item) {
+            $slug = $item['slug'] ?? $this->extractSlug($item['url'] ?? '');
+            if ($slug) $bySlug[$slug] = $item;
+        }
+        $ordered = [];
+        $done = [];
+        $addWithChildren = function (?string $parentSlug) use (&$addWithChildren, &$ordered, &$done, $bySlug) {
+            foreach ($bySlug as $slug => $item) {
+                if (isset($done[$slug])) continue;
+                if (($item['parent_slug'] ?? null) !== $parentSlug) continue;
+                $done[$slug] = true;
+                $ordered[] = $item;
+                $addWithChildren($slug);
+            }
+        };
+        $addWithChildren(null);
+        $slugToId = [];
+        foreach ($ordered as $index => $cat) {
+            $slug = $cat['slug'] ?? $this->extractSlug($cat['url'] ?? '');
             if (!$slug) continue;
-
+            $parentId = null;
+            $parentSlug = $cat['parent_slug'] ?? null;
+            if ($parentSlug && isset($slugToId[$parentSlug])) {
+                $parentId = $slugToId[$parentSlug];
+            }
+            $url = $cat['url'] ?? null;
             $category = Category::updateOrCreate(
                 ['external_slug' => $slug],
                 [
-                    'name' => $cat['title'] ?? $slug,
+                    'name' => $cat['name'] ?? $cat['title'] ?? $slug,
                     'slug' => $slug,
-                    'url' => $cat['url'] ?? null,
+                    'url' => $url,
                     'parent_id' => $parentId,
-                    'sort_order' => $depth * 100 + $index,
+                    'sort_order' => $index,
                     'enabled' => true,
                 ]
             );
-
-            // Рекурсивно сохранить дочерние
-            if (!empty($cat['children'])) {
-                $this->saveCategories($cat['children'], $category->id, $depth + 1);
-            }
+            $slugToId[$slug] = $category->id;
         }
     }
 
