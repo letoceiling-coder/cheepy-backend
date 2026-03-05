@@ -151,7 +151,7 @@ class ParserController extends Controller
      * GET /api/v1/parser/progress  (SSE stream)
      * Поток обновлений статуса парсера
      */
-    public function progress(Request $request): Response
+    public function progress(Request $request): \Symfony\Component\HttpFoundation\Response
     {
         $jobId = $request->input('job_id');
 
