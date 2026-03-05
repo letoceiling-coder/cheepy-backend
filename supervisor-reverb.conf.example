@@ -1,0 +1,12 @@
+; Add to /etc/supervisor/conf.d/reverb.conf
+; Then: supervisorctl reread && supervisorctl update
+
+[program:reverb]
+process_name=%(program_name)s
+command=php /var/www/online-parser.siteaacess.store/artisan reverb:start
+autostart=true
+autorestart=true
+user=www-data
+redirect_stderr=true
+stdout_logfile=/var/www/online-parser.siteaacess.store/storage/logs/reverb.log
+stopwaitsecs=5

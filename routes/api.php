@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redis;
 use App\Http\Controllers\Api\BrandController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\DashboardController;
@@ -14,6 +16,93 @@ use App\Http\Controllers\Api\SellerController;
 use App\Http\Controllers\Api\SettingController;
 use App\Http\Middleware\JwtMiddleware;
 use Illuminate\Support\Facades\Route;
+
+// =====================================================================
+// HEALTH — public, no auth (monitoring)
+// =====================================================================
+Route::prefix('v1')->group(function () {
+    Route::get('/up', function () {
+        try {
+            DB::connection()->getPdo();
+            if (config('queue.default') === 'redis') {
+                Redis::ping();
+            }
+            return response()->json(['status' => 'ok']);
+        } catch (\Throwable $e) {
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 503);
+        }
+    });
+    Route::get('ws-status', function () {
+        $redis = 'failed';
+        try {
+            Redis::connection()->ping();
+            $redis = 'connected';
+        } catch (\Throwable $e) {
+            $redis = 'failed';
+        }
+
+        $reverb = 'stopped';
+        try {
+            $port = (int) (config('reverb.servers.reverb.port') ?? env('REVERB_SERVER_PORT', 8080));
+            $fp = @fsockopen('127.0.0.1', $port, $errno, $errstr, 2);
+            if ($fp) {
+                fclose($fp);
+                $reverb = 'running';
+            } elseif (function_exists('shell_exec')) {
+                $ps = trim((string) shell_exec('ps aux | grep reverb | grep -v grep'));
+                $reverb = $ps !== '' ? 'running' : 'stopped';
+            }
+        } catch (\Throwable $e) {
+            $reverb = 'stopped';
+        }
+
+        $queueWorkers = 0;
+        try {
+            if (function_exists('shell_exec')) {
+                $out = @shell_exec('ps aux 2>/dev/null | grep -E "artisan queue:work" | grep -v grep | wc -l');
+                $queueWorkers = (int) trim((string) ($out ?? '0'));
+            }
+        } catch (\Throwable $e) {
+            $queueWorkers = 0;
+        }
+
+        return response()->json([
+            'reverb' => $reverb,
+            'queue_workers' => $queueWorkers,
+            'redis' => $redis,
+        ]);
+    });
+    Route::get('/health', function () {
+        $status = 'ok';
+        $db = false;
+        $redis = false;
+        $parserLastRun = null;
+        try {
+            DB::connection()->getPdo();
+            DB::connection()->getDatabaseName();
+            $db = true;
+        } catch (\Throwable $e) {
+            $status = 'degraded';
+        }
+        try {
+            Redis::ping();
+            $redis = true;
+        } catch (\Throwable $e) {
+            $status = 'degraded';
+        }
+        $lastJob = \App\Models\ParserJob::where('status', 'completed')->latest('finished_at')->first();
+        if ($lastJob) {
+            $parserLastRun = $lastJob->finished_at?->toIso8601String();
+        }
+        return response()->json([
+            'status' => $status,
+            'database' => $db ? 'connected' : 'disconnected',
+            'redis' => $redis ? 'connected' : 'disconnected',
+            'parser_last_run' => $parserLastRun,
+            'timestamp' => now()->toIso8601String(),
+        ]);
+    });
+});
 
 // =====================================================================
 // PUBLIC API — без авторизации (для пользовательских страниц Cheepy)
@@ -49,6 +138,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
     // Parser
     Route::prefix('parser')->group(function () {
         Route::get('status', [ParserController::class, 'status']);
+        Route::get('stats', [ParserController::class, 'stats']);
         Route::get('progress', [ParserController::class, 'progress']);
         Route::get('jobs', [ParserController::class, 'jobs']);
         Route::get('jobs/{id}', [ParserController::class, 'jobDetail']);

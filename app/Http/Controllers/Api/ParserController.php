@@ -7,6 +7,7 @@ use App\Models\ParserJob;
 use App\Models\ParserLog;
 use App\Models\Product;
 use App\Models\Category;
+use App\Jobs\RunParserJob;
 use App\Services\DatabaseParserService;
 use App\Services\PhotoDownloadService;
 use Illuminate\Http\JsonResponse;
@@ -31,13 +32,15 @@ class ParserController extends Controller
         }
 
         $options = [
-            'categories'           => $request->input('categories', []),        // [] = все
+            'categories'           => $request->input('categories', []),
             'linked_only'          => $request->boolean('linked_only', false),
             'products_per_category'=> (int) $request->input('products_per_category', 0),
             'max_pages'            => (int) $request->input('max_pages', 0),
             'no_details'           => $request->boolean('no_details', false),
             'save_photos'          => $request->boolean('save_photos', false),
             'save_to_db'           => $request->boolean('save_to_db', true),
+            'category_slug'        => $request->input('category_slug'),
+            'seller_slug'          => $request->input('seller_slug'),
         ];
 
         $type = $request->input('type', 'full');
@@ -48,38 +51,7 @@ class ParserController extends Controller
             'status'  => 'pending',
         ]);
 
-        // Запуск в фоновом процессе (Windows-совместимо)
-        $php = PHP_BINARY;
-        $artisan = base_path('artisan');
-        $logFile = storage_path("logs/parser_job_{$job->id}.log");
-
-        if (PHP_OS_FAMILY === 'Windows') {
-            // WScript.Shell через COM для надёжного фонового запуска на Windows
-            $cmd = "\"{$php}\" \"{$artisan}\" parser:run {$job->id}";
-            $wsh = null;
-            try {
-                $wsh = new \COM('WScript.Shell');
-                $wsh->Run("cmd /C {$cmd} > \"{$logFile}\" 2>&1", 0, false);
-            } catch (\Throwable $e) {
-                // Fallback: CreateProcess через proc_open
-                $process = proc_open(
-                    $cmd,
-                    [0 => ['pipe', 'r'], 1 => ['file', $logFile, 'a'], 2 => ['file', $logFile, 'a']],
-                    $pipes,
-                    base_path()
-                );
-                if (is_resource($process)) {
-                    $pid = proc_get_status($process)['pid'] ?? null;
-                    if ($pid) $job->update(['pid' => $pid]);
-                    proc_close($process);
-                }
-            }
-        } else {
-            $cmd = "\"{$php}\" \"{$artisan}\" parser:run {$job->id}";
-            exec("{$cmd} > \"{$logFile}\" 2>&1 &");
-        }
-
-        $job->update(['log_file' => $logFile]);
+        RunParserJob::dispatch($job->id);
 
         return response()->json([
             'message' => 'Парсинг запущен',
@@ -119,6 +91,33 @@ class ParserController extends Controller
             'is_running' => $running !== null,
             'current_job' => $running ? $this->formatJob($running) : null,
             'last_completed' => $lastCompleted ? $this->formatJob($lastCompleted) : null,
+        ]);
+    }
+
+    /**
+     * GET /api/v1/parser/stats
+     * Aggregated stats for dashboard
+     */
+    public function stats(Request $request): JsonResponse
+    {
+        $running = ParserJob::whereIn('status', ['running', 'pending'])->first();
+        $lastCompleted = ParserJob::where('status', 'completed')->latest('finished_at')->first();
+        $queueSize = 0;
+        try {
+            $queueSize = \Illuminate\Support\Facades\Queue::connection('redis')->size('default');
+        } catch (\Throwable $e) {
+            // ignore
+        }
+        $productsToday = \App\Models\Product::whereDate('parsed_at', today())->count();
+        $errorsToday = \App\Models\Product::where('status', 'error')->whereDate('updated_at', today())->count();
+
+        return response()->json([
+            'products_total' => \App\Models\Product::count(),
+            'products_today' => $productsToday,
+            'parser_running' => $running !== null,
+            'queue_size' => $queueSize,
+            'errors_today' => $errorsToday,
+            'last_parser_run' => $lastCompleted?->finished_at?->toIso8601String(),
         ]);
     }
 

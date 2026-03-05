@@ -120,6 +120,9 @@ class CategoryController extends Controller
             'icon' => $c->icon,
             'enabled' => $c->enabled,
             'linked_to_parser' => $c->linked_to_parser,
+            'parser_products_limit' => $c->parser_products_limit,
+            'parser_max_pages' => $c->parser_max_pages,
+            'parser_depth_limit' => $c->parser_depth_limit,
             'products_count' => $c->products_count,
             'last_parsed_at' => $c->last_parsed_at?->toIso8601String(),
         ];

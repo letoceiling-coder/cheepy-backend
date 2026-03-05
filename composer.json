@@ -10,6 +10,7 @@
         "firebase/php-jwt": "^7.0",
         "guzzlehttp/guzzle": "^7.10",
         "laravel/framework": "^12.0",
+        "laravel/reverb": "^1.8",
         "laravel/tinker": "^2.10.1",
         "symfony/css-selector": "^7.4",
         "symfony/dom-crawler": "^7.4"

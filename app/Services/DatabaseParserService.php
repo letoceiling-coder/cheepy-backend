@@ -2,6 +2,11 @@
 
 namespace App\Services;
 
+use App\Events\ParserError;
+use App\Events\ParserFinished;
+use App\Events\ParserProgressUpdated;
+use App\Events\ParserStarted;
+use App\Events\ProductParsed;
 use App\Models\Category;
 use App\Models\ParserJob;
 use App\Models\ParserLog;
@@ -48,6 +53,8 @@ class DatabaseParserService
     public function run(): void
     {
         $this->updateJob(['status' => 'running', 'started_at' => now()]);
+        $this->job->refresh();
+        event(new ParserStarted($this->job));
 
         try {
             match ($this->job->type) {
@@ -58,6 +65,8 @@ class DatabaseParserService
             };
 
             $this->updateJob(['status' => 'completed', 'finished_at' => now()]);
+            $this->job->refresh();
+            event(new ParserFinished($this->job));
             $this->log('info', 'Парсинг завершён успешно', [
                 'products' => $this->job->saved_products,
                 'errors' => $this->job->errors_count,
@@ -68,6 +77,9 @@ class DatabaseParserService
                 'finished_at' => now(),
                 'error_message' => $e->getMessage(),
             ]);
+            $this->job->refresh();
+            event(new ParserError($this->job, $e->getMessage(), ['trace' => $e->getTraceAsString()]));
+            event(new ParserFinished($this->job));
             $this->log('error', 'Парсинг завершился ошибкой: ' . $e->getMessage());
         }
     }
@@ -189,7 +201,13 @@ class DatabaseParserService
                     if ($productLimit > 0 && $savedCount >= $productLimit) break 2;
 
                     $saved = $this->saveProductFromListing($pData, $category, $saveDetails, $savePhotos);
-                    if ($saved) $savedCount++;
+                    if ($saved) {
+                        $savedCount++;
+                        $this->job->refresh();
+                        if ($savedCount % 10 === 0) {
+                            event(new ParserProgressUpdated($this->job));
+                        }
+                    }
                 }
 
                 $this->job->increment('parsed_categories');
@@ -203,6 +221,8 @@ class DatabaseParserService
             } catch (\Throwable $e) {
                 $this->log('error', "Ошибка парсинга страницы {$page} категории {$slug}: " . $e->getMessage());
                 $this->job->increment('errors_count');
+                $this->job->refresh();
+                event(new ParserError($this->job, "Ошибка парсинга страницы {$page} категории {$slug}: " . $e->getMessage()));
                 break;
             }
         }
@@ -257,10 +277,18 @@ class DatabaseParserService
 
             $this->job->increment('saved_products');
             $this->job->increment('parsed_products');
+            $this->job->refresh();
+            event(new ProductParsed($this->job, [
+                'id' => $product->id,
+                'external_id' => $product->external_id,
+                'title' => $product->title ?? $pData['title'] ?? '',
+            ]));
             return true;
         } catch (\Throwable $e) {
             $this->log('error', "Ошибка сохранения товара: " . $e->getMessage(), ['data' => $pData['id'] ?? '']);
             $this->job->increment('errors_count');
+            $this->job->refresh();
+            event(new ParserError($this->job, "Ошибка сохранения товара: " . $e->getMessage(), ['product_id' => $pData['id'] ?? null]));
             return false;
         }
     }
