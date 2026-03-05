@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Support\Facades\Hash;
 
 class AdminUser extends Model
@@ -20,14 +21,16 @@ class AdminUser extends Model
         'last_login_at' => 'datetime',
     ];
 
+    public function roles(): BelongsToMany
+    {
+        return $this->belongsToMany(Role::class, 'role_user', 'user_id', 'role_id');
+    }
+
     public function verifyPassword(string $password): bool
     {
         return Hash::check($password, $this->password);
     }
 
-    /**
-     * Проверить разрешение: сначала role-default, потом override в permissions
-     */
     public function can(string $permission): bool
     {
         $defaults = static::roleDefaults($this->role);
