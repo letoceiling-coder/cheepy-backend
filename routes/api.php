@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CategorySyncController;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use App\Http\Controllers\Api\BrandController;
@@ -74,6 +75,93 @@ Route::prefix('v1')->group(function () {
             'queue_workers' => $queueWorkers,
             'redis' => $redis,
         ]);
+    });
+    Route::get('system/status', function () {
+        $redis = 'failed';
+        try {
+            Redis::connection()->ping();
+            $redis = 'connected';
+        } catch (\Throwable $e) {
+            $redis = 'failed';
+        }
+
+        $reverb = 'stopped';
+        try {
+            $port = (int) (config('reverb.servers.reverb.port') ?? env('REVERB_SERVER_PORT', 8080));
+            $fp = @fsockopen('127.0.0.1', $port, $errno, $errstr, 2);
+            if ($fp) {
+                fclose($fp);
+                $reverb = 'running';
+            } elseif (function_exists('shell_exec')) {
+                $ps = trim((string) shell_exec('ps aux | grep reverb | grep -v grep'));
+                $reverb = $ps !== '' ? 'running' : 'stopped';
+            }
+        } catch (\Throwable $e) {
+            $reverb = 'stopped';
+        }
+
+        $queueWorkers = 0;
+        try {
+            if (function_exists('shell_exec')) {
+                $out = @shell_exec('ps aux 2>/dev/null | grep -E "artisan queue:work" | grep -v grep | wc -l');
+                $queueWorkers = (int) trim((string) ($out ?? '0'));
+            }
+        } catch (\Throwable $e) {
+            $queueWorkers = 0;
+        }
+
+        $queueSize = 0;
+        try {
+            $queueSize = (int) \Illuminate\Support\Facades\Queue::connection(config('queue.default'))->size('default');
+        } catch (\Throwable $e) {
+            $queueSize = 0;
+        }
+
+        $parserRunning = \App\Models\ParserJob::whereIn('status', ['running', 'pending'])->exists();
+        $productsTotal = \App\Models\Product::count();
+        $productsToday = \App\Models\Product::whereDate('parsed_at', today())->count();
+        $errorsToday = \App\Models\Product::where('status', 'error')->whereDate('updated_at', today())->count();
+        $lastJob = \App\Models\ParserJob::where('status', 'completed')->latest('finished_at')->first();
+        $lastParserRun = $lastJob?->finished_at?->toIso8601String();
+
+        $cpuLoad = '—';
+        if (function_exists('sys_getloadavg')) {
+            $la = @sys_getloadavg();
+            $cpuLoad = $la ? implode(' ', array_map(fn ($v) => round($v, 2), $la)) : '—';
+        }
+
+        $memoryUsage = '—';
+        if (is_readable('/proc/meminfo')) {
+            $mem = @file_get_contents('/proc/meminfo');
+            if ($mem && preg_match('/MemTotal:\s*(\d+)/', $mem, $mt) && preg_match('/MemAvailable:\s*(\d+)/', $mem, $ma)) {
+                $total = (int) $mt[1];
+                $avail = (int) $ma[1];
+                $used = $total - $avail;
+                $memoryUsage = round($used / 1024) . 'M / ' . round($total / 1024) . 'M';
+            }
+        }
+
+        $parserMetrics = [];
+        try {
+            $parserMetrics = \App\Services\ParserMetricsService::getMetrics();
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
+        return response()->json(array_merge([
+            'parser_running' => $parserRunning,
+            'queue_workers' => $queueWorkers,
+            'queue_size' => $queueSize,
+            'products_total' => $productsTotal,
+            'products_today' => $productsToday,
+            'errors_today' => $errorsToday,
+            'last_parser_run' => $lastParserRun,
+            'redis_status' => $redis,
+            'websocket' => $reverb,
+            'cpu_load' => $cpuLoad,
+            'memory_usage' => $memoryUsage,
+            'timestamp' => now()->toIso8601String(),
+        ], $parserMetrics));
     });
     Route::get('/health', function () {
         $status = 'ok';
@@ -225,6 +313,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('start', [ParserController::class, 'start']);
         Route::post('stop', [ParserController::class, 'stop']);
         Route::post('photos/download', [ParserController::class, 'downloadPhotos']);
+        Route::post('categories/sync', CategorySyncController::class);
     });
 
     // Products
