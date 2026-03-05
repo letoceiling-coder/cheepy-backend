@@ -16,7 +16,7 @@ class AuthController extends Controller
 
     public function __construct()
     {
-        $this->secret = env('JWT_SECRET', 'change_me');
+        $this->secret = config('jwt.secret') ?: 'fallback-' . config('app.key');
     }
 
     public function login(Request $request): JsonResponse
@@ -86,7 +86,7 @@ class AuthController extends Controller
     public static function verifyToken(string $token): ?array
     {
         try {
-            $secret = env('JWT_SECRET', 'change_me');
+            $secret = config('jwt.secret') ?: config('app.key');
             $decoded = JWT::decode($token, new Key($secret, 'HS256'));
             return (array) $decoded;
         } catch (\Throwable $e) {
