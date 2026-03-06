@@ -14,6 +14,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
 
 class ParseCategoryJob implements ShouldQueue
 {
@@ -93,6 +94,16 @@ class ParseCategoryJob implements ShouldQueue
 
                 if ($page === 1 && isset($result['total_pages']) && $result['total_pages']) {
                     $job->update(['total_pages' => $result['total_pages']]);
+                }
+
+                // If parser queue is backed up, pause before dispatching more (prevents queue explosion).
+                try {
+                    $parserQueueSize = Queue::connection('redis')->size('parser');
+                    if ($parserQueueSize > 1000) {
+                        sleep(2);
+                    }
+                } catch (\Throwable $e) {
+                    // ignore Redis/queue errors
                 }
 
                 // Batch dispatch: max 50 per chunk with a 200ms pause between chunks.
