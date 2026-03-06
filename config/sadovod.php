@@ -7,9 +7,9 @@ return [
     'base_url' => env('SADAVOD_DONOR_URL', 'https://sadovodbaza.ru'),
 
     /*
-     * Задержка между HTTP-запросами в миллисекундах
+     * Задержка между HTTP-запросами в миллисекундах (persistent connections + rate limit)
      */
-    'request_delay_ms' => (int) env('SADAVOD_REQUEST_DELAY_MS', 500),
+    'request_delay_ms' => (int) env('SADAVOD_REQUEST_DELAY_MS', 200),
 
     /*
      * User-Agent для запросов

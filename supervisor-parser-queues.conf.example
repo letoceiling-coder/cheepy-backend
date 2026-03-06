@@ -1,0 +1,29 @@
+; Parser queue workers (parallel pipeline)
+; Add to /etc/supervisor/conf.d/parser-queues.conf
+; Then: supervisorctl reread && supervisorctl update && supervisorctl start parser-worker:*
+;
+; parser-workers = 4 (process category and product jobs)
+; photo-workers = 2 (process photo download jobs)
+; Replace /var/www/online-parser.siteaacess.store with your app path.
+
+[program:parser-worker]
+process_name=%(program_name)s_%(process_num)02d
+command=php /var/www/online-parser.siteaacess.store/artisan queue:work redis --queue=parser --tries=2 --timeout=1800 --sleep=3
+numprocs=4
+autostart=true
+autorestart=true
+user=www-data
+redirect_stderr=true
+stdout_logfile=/var/www/online-parser.siteaacess.store/storage/logs/parser-worker.log
+stopwaitsecs=60
+
+[program:photo-worker]
+process_name=%(program_name)s_%(process_num)02d
+command=php /var/www/online-parser.siteaacess.store/artisan queue:work redis --queue=photos --tries=2 --timeout=600 --sleep=3
+numprocs=2
+autostart=true
+autorestart=true
+user=www-data
+redirect_stderr=true
+stdout_logfile=/var/www/online-parser.siteaacess.store/storage/logs/photo-worker.log
+stopwaitsecs=30

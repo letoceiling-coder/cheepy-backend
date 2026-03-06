@@ -15,6 +15,27 @@ class CatalogParser
     }
 
     /**
+     * Get a single page of products from a category (for queue pipeline).
+     *
+     * @param string $catalogPath e.g. /catalog/odejda
+     * @param int $pageNumber 1-based page number
+     * @return array{products: array, has_more: bool, total_pages: int|null}
+     */
+    public function parseCategoryPage(string $catalogPath, int $pageNumber = 1): array
+    {
+        $path = $catalogPath . (str_contains($catalogPath, '?') ? '&' : '?') . 'page=' . $pageNumber;
+        $crawler = $this->http->getCrawler($path);
+        $products = $this->extractProductsFromListing($crawler);
+        $hasMore = $this->hasNextPage($crawler);
+
+        return [
+            'products' => array_values($products),
+            'has_more' => $hasMore,
+            'total_pages' => null,
+        ];
+    }
+
+    /**
      * Get product URLs from a category (with optional limit and max pages).
      *
      * @param int $productsLimit 0 = no limit. Stop after collecting this many products.

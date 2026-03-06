@@ -105,8 +105,13 @@ class ParserController extends Controller
         $running = ParserJob::whereIn('status', ['running', 'pending'])->first();
         $lastCompleted = ParserJob::where('status', 'completed')->latest('finished_at')->first();
         $queueSize = 0;
+        $queueParser = 0;
+        $queuePhotos = 0;
         try {
-            $queueSize = \Illuminate\Support\Facades\Queue::connection('redis')->size('default');
+            $conn = \Illuminate\Support\Facades\Queue::connection('redis');
+            $queueParser = $conn->size('parser');
+            $queuePhotos = $conn->size('photos');
+            $queueSize = $queueParser + $queuePhotos;
         } catch (\Throwable $e) {
             // ignore
         }
@@ -118,6 +123,8 @@ class ParserController extends Controller
             'products_today' => $productsToday,
             'parser_running' => $running !== null,
             'queue_size' => $queueSize,
+            'queue_parser_size' => $queueParser,
+            'queue_photos_size' => $queuePhotos,
             'errors_today' => $errorsToday,
             'last_parser_run' => $lastCompleted?->finished_at?->toIso8601String(),
         ]);

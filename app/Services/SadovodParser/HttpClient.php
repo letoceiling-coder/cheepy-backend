@@ -26,13 +26,16 @@ class HttpClient
     public function __construct(array $config = [])
     {
         $this->baseUrl = $config['base_url'] ?? config('sadovod.base_url', 'https://sadovodbaza.ru');
-        $this->delayMinMs = config('parser_rate.delay_min_ms', 500);
-        $this->delayMaxMs = config('parser_rate.delay_max_ms', 2000);
-        $this->maxRpm = config('parser_rate.max_requests_per_minute', 60);
+        $this->delayMinMs = $config['delay_min_ms'] ?? config('parser_rate.delay_min_ms', 200);
+        $this->delayMaxMs = $config['delay_max_ms'] ?? config('parser_rate.delay_max_ms', 500);
+        $this->maxRpm = config('parser_rate.max_requests_per_minute', 300);
+        $maxRps = config('parser_rate.max_requests_per_second');
         $this->retryCount = config('parser_rate.retry_count', 3);
         $this->retryBackoff = config('parser_rate.retry_backoff_seconds', [2, 5, 10]);
         $this->blockCodes = config('parser_rate.block_codes', [403, 429]);
-        $this->minRequestInterval = 60.0 / max(1, $this->maxRpm);
+        $this->minRequestInterval = $maxRps > 0
+            ? (1.0 / $maxRps)
+            : (60.0 / max(1, $this->maxRpm));
 
         $agents = config('parser_user_agents.agents', []);
         $this->userAgents = !empty($agents)

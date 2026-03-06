@@ -19,6 +19,8 @@ use App\Services\SadovodParser\HttpClient;
 use App\Services\SadovodParser\Parsers\CatalogParser;
 use App\Services\SadovodParser\Parsers\MenuParser;
 use App\Services\SadovodParser\Parsers\ProductParser;
+use App\Jobs\DownloadPhotoJob;
+use App\Jobs\ParseCategoryJob;
 use App\Services\SadovodParser\Parsers\SellerParser;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -64,16 +66,23 @@ class DatabaseParserService
                 'menu_only' => $this->runMenuOnly(),
                 'category'  => $this->runSingleCategory($this->options['category_slug'] ?? ''),
                 'seller'    => $this->runSingleSeller($this->options['seller_slug'] ?? ''),
-                default     => $this->runFull(),
+                default     => $this->runFullPipeline(),
             };
 
-            $this->updateJob(['status' => 'completed', 'finished_at' => now()]);
-            $this->job->refresh();
-            event(new ParserFinished($this->job));
-            $this->log('info', 'Парсинг завершён успешно', [
-                'products' => $this->job->saved_products,
-                'errors' => $this->job->errors_count,
-            ]);
+            // For pipeline (full), completion is set by the last ParseCategoryJob
+            if ($this->job->type !== 'full' || $this->job->total_categories <= 0) {
+                $this->updateJob(['status' => 'completed', 'finished_at' => now()]);
+                $this->job->refresh();
+                event(new ParserFinished($this->job));
+                $this->log('info', 'Парсинг завершён успешно', [
+                    'products' => $this->job->saved_products,
+                    'errors' => $this->job->errors_count,
+                ]);
+            } else {
+                $this->log('info', 'Парсинг запущен (очередь категорий)', [
+                    'total_categories' => $this->job->total_categories,
+                ]);
+            }
         } catch (\Throwable $e) {
             $this->updateJob([
                 'status' => 'failed',
@@ -156,15 +165,60 @@ class DatabaseParserService
     }
 
     // -------------------------------------------------------------------------
-    // FULL PARSE
+    // FULL PARSE (queue pipeline: dispatch category jobs)
     // -------------------------------------------------------------------------
 
-    private function runFull(): void
+    /**
+     * Pipeline mode: sync menu, then dispatch one ParseCategoryJob per category.
+     * Completion is set by the last ParseCategoryJob when parsed_categories >= total_categories.
+     */
+    private function runFullPipeline(): void
     {
-        // 1. Загружаем/обновляем категории
         $this->runMenuOnly();
 
-        // 2. Определяем категории для парсинга (frontend sends category IDs: [1,2,3])
+        $categoryFilter = $this->options['categories'] ?? [];
+        $query = Category::where('enabled', true);
+
+        if (!empty($categoryFilter)) {
+            $ids = array_map('intval', array_filter($categoryFilter, 'is_numeric'));
+            if (!empty($ids)) {
+                $query->whereIn('id', $ids);
+            } else {
+                $query->whereIn('external_slug', $categoryFilter);
+            }
+        } elseif (!empty($this->options['linked_only'])) {
+            $query->where('linked_to_parser', true);
+        }
+
+        $categories = $query->orderBy('sort_order')->get();
+        $total = $categories->count();
+        $this->updateJob(['total_categories' => $total]);
+
+        if ($total === 0) {
+            $this->updateJob(['status' => 'completed', 'finished_at' => now()]);
+            $this->job->refresh();
+            event(new ParserFinished($this->job));
+            $this->log('info', 'Нет категорий для парсинга');
+            return;
+        }
+
+        foreach ($categories as $category) {
+            if ($this->isCancelled()) break;
+            ParseCategoryJob::dispatch($this->job->id, $category->id);
+        }
+
+        $this->log('info', 'Поставлено в очередь категорий: ' . $total, [
+            'total_categories' => $total,
+        ]);
+    }
+
+    /**
+     * Sequential full parse (legacy, used for single-category or when not using pipeline).
+     */
+    private function runFull(): void
+    {
+        $this->runMenuOnly();
+
         $categoryFilter = $this->options['categories'] ?? [];
         $query = Category::where('enabled', true);
 
@@ -182,7 +236,6 @@ class DatabaseParserService
         $categories = $query->orderBy('sort_order')->get();
         $this->updateJob(['total_categories' => $categories->count()]);
 
-        // 3. Парсим каждую категорию с пагинацией
         foreach ($categories as $category) {
             if ($this->isCancelled()) break;
             $this->runSingleCategory($category->external_slug, $category);
@@ -276,7 +329,11 @@ class DatabaseParserService
     // PRODUCT
     // -------------------------------------------------------------------------
 
-    private function saveProductFromListing(array $pData, ?Category $category, bool $saveDetails, bool $savePhotos): bool
+    /**
+     * Save product from listing data. When $dispatchPhotosToQueue is true (queue pipeline),
+     * photo records are created and DownloadPhotoJob is dispatched instead of downloading inline.
+     */
+    public function saveProductFromListing(array $pData, ?Category $category, bool $saveDetails, bool $savePhotos, bool $dispatchPhotosToQueue = false): bool
     {
         try {
             $externalId = (string) ($pData['id'] ?? '');
@@ -289,7 +346,10 @@ class DatabaseParserService
                     $pData = array_merge($pData, $detailData);
                     usleep((int) (config('sadovod.request_delay_ms', 500) * 1000));
                 } catch (\Throwable $e) {
-                    $this->log('warn', "Не удалось получить детали товара {$externalId}: " . $e->getMessage());
+                    $this->log('warn', "Не удалось получить детали товара {$externalId}: " . $e->getMessage(), [
+                        'product_external_id' => $externalId,
+                        'job_id' => $this->job->id,
+                    ]);
                 }
             }
 
@@ -312,13 +372,17 @@ class DatabaseParserService
                 Log::warning('AttributeExtractionService failed, used legacy', ['error' => $e->getMessage()]);
             }
 
-            // Фото
+            // Фото: inline download или постановка в очередь
             if ($savePhotos && !empty($pData['photos'])) {
-                $result = $this->photoService->downloadProductPhotos($product);
-                $this->job->increment('photos_downloaded', $result['downloaded']);
-                $this->job->increment('photos_failed', $result['failed']);
+                if ($dispatchPhotosToQueue) {
+                    $this->createPhotoRecordsOnly($product, $pData['photos'] ?? []);
+                    DownloadPhotoJob::dispatch($product->id, $this->job->id);
+                } else {
+                    $result = $this->photoService->downloadProductPhotos($product);
+                    $this->job->increment('photos_downloaded', $result['downloaded']);
+                    $this->job->increment('photos_failed', $result['failed']);
+                }
             } else {
-                // Создать записи без скачивания
                 $this->createPhotoRecordsOnly($product, $pData['photos'] ?? []);
             }
 
@@ -332,7 +396,11 @@ class DatabaseParserService
             ]));
             return true;
         } catch (\Throwable $e) {
-            $this->log('error', "Ошибка сохранения товара: " . $e->getMessage(), ['data' => $pData['id'] ?? '']);
+            $this->log('error', "Ошибка сохранения товара: " . $e->getMessage(), [
+                'data' => $pData['id'] ?? '',
+                'product_external_id' => $pData['id'] ?? null,
+                'job_id' => $this->job->id,
+            ]);
             $this->job->increment('errors_count');
             $this->job->refresh();
             event(new ParserError($this->job, "Ошибка сохранения товара: " . $e->getMessage(), ['product_id' => $pData['id'] ?? null]));

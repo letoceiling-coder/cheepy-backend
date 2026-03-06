@@ -24,7 +24,7 @@ class RunParserJob implements ShouldQueue
     public function __construct(
         public int $parserJobId
     ) {
-        $this->onQueue('default');
+        $this->onQueue('parser');
     }
 
     public function handle(): void
