@@ -44,9 +44,12 @@ class HttpClient
             'base_uri' => $this->baseUrl,
             'timeout' => 30,
             'verify' => $verify,
+            'allow_redirects' => true,
             'headers' => [
                 'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language' => 'ru-RU,ru;q=0.9,en;q=0.8',
+                'Connection' => 'keep-alive',
+                'Upgrade-Insecure-Requests' => '1',
             ],
         ]);
     }
@@ -75,15 +78,45 @@ class HttpClient
         }
     }
 
+    /**
+     * Only treat as block for HTTP 200 if HTML clearly is a block/captcha page,
+     * not the real site. Valid site contains "sadovodbaza" or menu container.
+     * Do NOT treat HTTP 200 as block based on generic words like "cloudflare" or "block"
+     * that can appear in normal site HTML.
+     */
     private function detectBlock(string $html, int $statusCode): bool
     {
         if (in_array($statusCode, $this->blockCodes, true)) {
             return true;
         }
-        $captchaPatterns = ['captcha', 'капча', 'recaptcha', 'cloudflare', 'access denied', 'доступ запрещён', 'blocked'];
+        if ($statusCode !== 200) {
+            return false;
+        }
+
         $lower = mb_strtolower($html);
-        foreach ($captchaPatterns as $p) {
+
+        // Valid site markers: if present, this is the real page — do not block
+        $validMarkers = ['sadovodbaza', 'menu-catalog', 'menu-main', 'id="w1"', 'navbar-brand'];
+        foreach ($validMarkers as $m) {
+            if (str_contains($lower, $m)) {
+                return false;
+            }
+        }
+
+        // Clear block/captcha page markers only (no generic "block" or "cloudflare" alone)
+        $blockMarkers = [
+            'cf-browser-verification',
+            'challenge-running',
+            'g-recaptcha',
+            'recaptcha/api.js',
+            'access denied',
+            'доступ запрещён',
+            'checking your browser',
+            'just a moment',
+        ];
+        foreach ($blockMarkers as $p) {
             if (str_contains($lower, $p)) {
+                Log::info('HttpClient block detected (marker)', ['marker' => $p, 'preview' => substr($html, 0, 500)]);
                 return true;
             }
         }
@@ -115,12 +148,15 @@ class HttpClient
 
                 if ($this->detectBlock($body, $statusCode)) {
                     ParserMetricsService::incrementBlocked();
-                    Log::warning('Parser: block detected', ['path' => $path, 'status' => $statusCode]);
+                    Log::warning('Parser: block detected', ['path' => $path, 'status' => $statusCode, 'preview' => substr($body, 0, 500)]);
                     $delayMs = min($this->delayMaxMs * 2, 10000);
                     usleep($delayMs * 1000);
                     throw new \RuntimeException("Block detected: HTTP {$statusCode}");
                 }
 
+                if ($path === '/' || $path === '') {
+                    Log::debug('HttpClient response preview', ['path' => $path, 'preview' => substr($body, 0, 500)]);
+                }
                 $this->lastRequestAt = microtime(true);
                 ParserMetricsService::incrementRequests();
                 return $body;
