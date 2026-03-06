@@ -55,4 +55,9 @@ return [
      * Max category pages per category (safety limit; pagination stops when page returns 0 products).
      */
     'max_category_pages' => (int) env('SADAVOD_MAX_CATEGORY_PAGES', 200),
+
+    /*
+     * Max parser queue size before throttling (ParseCategoryJob waits until queue drops below this).
+     */
+    'max_parser_queue_size' => (int) env('SADAVOD_MAX_PARSER_QUEUE_SIZE', 500),
 ];

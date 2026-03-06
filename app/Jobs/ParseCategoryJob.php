@@ -132,16 +132,6 @@ class ParseCategoryJob implements ShouldQueue
                     $job->update(['total_pages' => $result['total_pages']]);
                 }
 
-                // If parser queue is backed up, pause before dispatching more (prevents queue explosion).
-                try {
-                    $parserQueueSize = Queue::connection('redis')->size('parser');
-                    if ($parserQueueSize > 1000) {
-                        sleep(2);
-                    }
-                } catch (\Throwable $e) {
-                    // ignore Redis/queue errors
-                }
-
                 // Batch dispatch: max 50 per chunk with a 200ms pause between chunks.
                 // Prevents queue explosion when a category has thousands of products.
                 $batchSize = (int) config('sadovod.dispatch_batch_size', 50);
@@ -154,6 +144,8 @@ class ParseCategoryJob implements ShouldQueue
                     if ($productLimit > 0 && $savedCount >= $productLimit) {
                         break 2;
                     }
+
+                    $this->waitForQueueCapacity();
 
                     foreach ($chunk as $pData) {
                         if ($productLimit > 0 && $savedCount >= $productLimit) {
@@ -246,5 +238,22 @@ class ParseCategoryJob implements ShouldQueue
     {
         $job->refresh();
         return in_array($job->status, ['cancelled', 'stopped'], true);
+    }
+
+    private function waitForQueueCapacity(): void
+    {
+        $maxQueueSize = (int) config('sadovod.max_parser_queue_size', 500);
+        while (true) {
+            try {
+                $queueSize = Queue::connection('redis')->size('parser');
+                if ($queueSize < $maxQueueSize) {
+                    break;
+                }
+                Log::info('Queue throttling active', ['queue_size' => $queueSize]);
+                sleep(2);
+            } catch (\Throwable $e) {
+                break;
+            }
+        }
     }
 }
