@@ -13,6 +13,7 @@ use App\Services\PhotoDownloadService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ParserController extends Controller
 {
@@ -160,7 +161,7 @@ class ParserController extends Controller
      * GET /api/v1/parser/progress  (SSE stream)
      * Поток обновлений статуса парсера
      */
-    public function progress(Request $request): Response
+    public function progress(Request $request): Response|StreamedResponse
     {
         $jobId = $request->input('job_id');
 
