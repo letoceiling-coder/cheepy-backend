@@ -3,7 +3,7 @@
 # Run on server: bash scripts/parser-reset-production.sh
 # Or: ssh root@85.117.235.93 'cd /var/www/online-parser.siteaacess.store && bash scripts/parser-reset-production.sh'
 
-set -e
+# Do not use set -e: supervisorctl status returns 3 when processes are STOPPED (expected during reset)
 PROJECT_DIR="${PROJECT_DIR:-/var/www/online-parser.siteaacess.store}"
 cd "$PROJECT_DIR"
 
@@ -15,7 +15,7 @@ echo ""
 echo "=== Step 3: Stop queue workers ==="
 supervisorctl stop 'parser-worker:*' 2>/dev/null || true
 supervisorctl stop 'parser-worker-photos:*' 2>/dev/null || true
-supervisorctl status
+supervisorctl status || true
 
 echo ""
 echo "=== Step 4: Clear Redis (DB 0) ==="
@@ -48,7 +48,7 @@ echo "=== Step 7: Start workers ==="
 supervisorctl start 'parser-worker:*' 2>/dev/null || true
 supervisorctl start 'parser-worker-photos:*' 2>/dev/null || true
 sleep 2
-supervisorctl status
+supervisorctl status || true
 
 echo ""
 echo "=== Step 8: Verify clean state ==="
@@ -78,7 +78,7 @@ tail -n 30 storage/logs/laravel.log 2>/dev/null || true
 echo ""
 echo "=== Step 11: Final diagnostics ==="
 echo "1) supervisorctl status:"
-supervisorctl status
+supervisorctl status || true
 echo "2) Redis queue size (parser / photos):"
 redis-cli -n 0 LLEN queues:parser 2>/dev/null || echo "0"
 redis-cli -n 0 LLEN queues:photos 2>/dev/null || echo "0"
