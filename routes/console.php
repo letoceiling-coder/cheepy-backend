@@ -1,6 +1,7 @@
 <?php
 
 use App\Console\Commands\RunParserJobCommand;
+use App\Console\Commands\RebuildAttributes;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 
