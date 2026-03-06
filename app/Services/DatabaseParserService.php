@@ -14,6 +14,7 @@ use App\Models\Product;
 use App\Models\ProductAttribute;
 use App\Models\ProductPhoto;
 use App\Models\Seller;
+use App\Services\AttributeExtractionService;
 use App\Services\SadovodParser\HttpClient;
 use App\Services\SadovodParser\Parsers\CatalogParser;
 use App\Services\SadovodParser\Parsers\MenuParser;
@@ -302,8 +303,14 @@ class DatabaseParserService
                 $seller->increment('products_count');
             }
 
-            // Нормализованные атрибуты
-            $this->saveProductAttributes($product, $pData['characteristics'] ?? [], $category);
+            // Нормализованные атрибуты — через AttributeExtractionService (rules from DB)
+            try {
+                app(AttributeExtractionService::class)->extractAndSave($product);
+            } catch (\Throwable $e) {
+                // Fallback to legacy extraction if service fails
+                $this->saveProductAttributes($product, $pData['characteristics'] ?? [], $category);
+                Log::warning('AttributeExtractionService failed, used legacy', ['error' => $e->getMessage()]);
+            }
 
             // Фото
             if ($savePhotos && !empty($pData['photos'])) {

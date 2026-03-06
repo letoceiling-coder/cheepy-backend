@@ -251,17 +251,18 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('categories/sync', CategorySyncController::class);
     });
 
-    // Attribute Rules
+    // Attribute Rules & Synonyms
     Route::prefix('attribute-rules')->group(function () {
-        Route::get('/', [\App\Http\Controllers\Api\AttributeRuleController::class, 'index']);
-        Route::post('/', [\App\Http\Controllers\Api\AttributeRuleController::class, 'store']);
-        Route::patch('{id}', [\App\Http\Controllers\Api\AttributeRuleController::class, 'update']);
-        Route::delete('{id}', [\App\Http\Controllers\Api\AttributeRuleController::class, 'destroy']);
-        Route::get('synonyms', [\App\Http\Controllers\Api\AttributeRuleController::class, 'synonyms']);
-        Route::post('synonyms', [\App\Http\Controllers\Api\AttributeRuleController::class, 'storeSynonym']);
-        Route::delete('synonyms/{id}', [\App\Http\Controllers\Api\AttributeRuleController::class, 'destroySynonym']);
-        Route::post('test', [\App\Http\Controllers\Api\AttributeRuleController::class, 'test']);
-        Route::post('rebuild', [\App\Http\Controllers\Api\AttributeRuleController::class, 'rebuild']);
+        Route::get('audit',       [\App\Http\Controllers\Api\AttributeRuleController::class, 'audit']);
+        Route::get('synonyms',    [\App\Http\Controllers\Api\AttributeRuleController::class, 'synonymsIndex']);
+        Route::post('synonyms',   [\App\Http\Controllers\Api\AttributeRuleController::class, 'synonymsStore']);
+        Route::delete('synonyms/{id}', [\App\Http\Controllers\Api\AttributeRuleController::class, 'synonymsDestroy']);
+        Route::post('test',       [\App\Http\Controllers\Api\AttributeRuleController::class, 'test']);
+        Route::post('rebuild',    [\App\Http\Controllers\Api\AttributeRuleController::class, 'rebuild']);
+        Route::get('/',           [\App\Http\Controllers\Api\AttributeRuleController::class, 'index']);
+        Route::post('/',          [\App\Http\Controllers\Api\AttributeRuleController::class, 'store']);
+        Route::patch('{id}',      [\App\Http\Controllers\Api\AttributeRuleController::class, 'update']);
+        Route::delete('{id}',     [\App\Http\Controllers\Api\AttributeRuleController::class, 'destroy']);
     });
 
     // Products

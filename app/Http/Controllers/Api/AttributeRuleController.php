@@ -5,15 +5,12 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\AttributeRule;
 use App\Models\AttributeSynonym;
-use App\Models\Product;
 use App\Services\AttributeExtractionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class AttributeRuleController extends Controller
 {
-    public function __construct(private AttributeExtractionService $service) {}
-
     // ─────────────────────────────────────────────────────────────────
     // RULES
     // ─────────────────────────────────────────────────────────────────
@@ -22,77 +19,126 @@ class AttributeRuleController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = AttributeRule::query();
+
         if ($key = $request->input('attribute_key')) {
             $query->where('attribute_key', $key);
         }
+        if ($request->input('enabled') !== null) {
+            $query->where('enabled', $request->boolean('enabled'));
+        }
+
         $rules = $query->orderBy('attribute_key')->orderBy('priority')->get();
 
         return response()->json(['data' => $rules]);
     }
 
     /** POST /api/v1/attribute-rules */
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, AttributeExtractionService $service): JsonResponse
     {
         $data = $request->validate([
             'attribute_key' => 'required|string|max:60',
             'display_name'  => 'required|string|max:120',
             'rule_type'     => 'required|in:regex,keyword',
             'pattern'       => 'required|string|max:500',
-            'apply_synonyms'=> 'boolean',
-            'attr_type'     => 'required|in:text,size,color,number',
-            'priority'      => 'integer|min:1|max:999',
-            'enabled'       => 'boolean',
+            'attr_type'     => 'nullable|in:text,size,color,number',
+            'priority'      => 'nullable|integer|min:1|max:1000',
+            'apply_synonyms'=> 'nullable|boolean',
+            'enabled'       => 'nullable|boolean',
         ]);
 
         if ($data['rule_type'] === 'regex') {
-            $this->validateRegex($data['pattern']);
+            if (@preg_match('/' . $data['pattern'] . '/iu', '') === false) {
+                return response()->json(['error' => 'Невалидный regex-паттерн'], 422);
+            }
         }
 
-        $rule = AttributeRule::create($data);
-        $this->service->clearCache();
+        $rule = AttributeRule::create([
+            'attribute_key'  => $data['attribute_key'],
+            'display_name'   => $data['display_name'],
+            'rule_type'      => $data['rule_type'],
+            'pattern'        => $data['pattern'],
+            'attr_type'      => $data['attr_type'] ?? 'text',
+            'priority'       => $data['priority'] ?? 100,
+            'apply_synonyms' => $data['apply_synonyms'] ?? true,
+            'enabled'        => $data['enabled'] ?? true,
+        ]);
+
+        $service->clearCache();
 
         return response()->json($rule, 201);
     }
 
     /** PATCH /api/v1/attribute-rules/{id} */
-    public function update(Request $request, int $id): JsonResponse
+    public function update(Request $request, int $id, AttributeExtractionService $service): JsonResponse
     {
         $rule = AttributeRule::findOrFail($id);
+
         $data = $request->validate([
             'attribute_key' => 'sometimes|string|max:60',
             'display_name'  => 'sometimes|string|max:120',
             'rule_type'     => 'sometimes|in:regex,keyword',
             'pattern'       => 'sometimes|string|max:500',
-            'apply_synonyms'=> 'sometimes|boolean',
             'attr_type'     => 'sometimes|in:text,size,color,number',
-            'priority'      => 'sometimes|integer|min:1|max:999',
+            'priority'      => 'sometimes|integer|min:1|max:1000',
+            'apply_synonyms'=> 'sometimes|boolean',
             'enabled'       => 'sometimes|boolean',
         ]);
 
         if (isset($data['pattern']) && ($data['rule_type'] ?? $rule->rule_type) === 'regex') {
-            $this->validateRegex($data['pattern']);
+            if (@preg_match('/' . $data['pattern'] . '/iu', '') === false) {
+                return response()->json(['error' => 'Невалидный regex-паттерн'], 422);
+            }
         }
 
         $rule->update($data);
-        $this->service->clearCache();
+        $service->clearCache();
 
         return response()->json($rule->fresh());
     }
 
     /** DELETE /api/v1/attribute-rules/{id} */
-    public function destroy(int $id): JsonResponse
+    public function destroy(int $id, AttributeExtractionService $service): JsonResponse
     {
         AttributeRule::findOrFail($id)->delete();
-        $this->service->clearCache();
-        return response()->json(['message' => 'Правило удалено']);
+        $service->clearCache();
+        return response()->json(['message' => 'Удалено']);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // TEST
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * POST /api/v1/attribute-rules/test
+     * Run extraction on provided text and return extracted attributes.
+     */
+    public function test(Request $request, AttributeExtractionService $service): JsonResponse
+    {
+        $request->validate(['text' => 'required|string|max:5000']);
+        $result = $service->extractFromText($request->input('text'));
+        return response()->json(['extracted' => $result, 'data' => $result]);
+    }
+
+    /**
+     * POST /api/v1/attribute-rules/rebuild
+     * Trigger full rebuild for all products (runs synchronously — use for small DBs).
+     */
+    public function rebuild(AttributeExtractionService $service): JsonResponse
+    {
+        $result = $service->rebuildAll();
+        return response()->json([
+            'message'   => 'Атрибуты пересобраны',
+            'processed' => $result['processed'],
+            'saved'     => $result['saved'],
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────
     // SYNONYMS
     // ─────────────────────────────────────────────────────────────────
 
-    /** GET /api/v1/attribute-rules/synonyms */
-    public function synonyms(Request $request): JsonResponse
+    /** GET /api/v1/attribute-synonyms */
+    public function synonymsIndex(Request $request): JsonResponse
     {
         $query = AttributeSynonym::query();
         if ($key = $request->input('attribute_key')) {
@@ -101,84 +147,72 @@ class AttributeRuleController extends Controller
         return response()->json(['data' => $query->orderBy('attribute_key')->orderBy('word')->get()]);
     }
 
-    /** POST /api/v1/attribute-rules/synonyms */
-    public function storeSynonym(Request $request): JsonResponse
+    /** POST /api/v1/attribute-synonyms */
+    public function synonymsStore(Request $request, AttributeExtractionService $service): JsonResponse
     {
         $data = $request->validate([
-            'attribute_key'   => 'nullable|string|max:60',
-            'word'            => 'required|string|max:200',
-            'normalized_value'=> 'required|string|max:200',
+            'attribute_key'    => 'nullable|string|max:60',
+            'word'             => 'required|string|max:200',
+            'normalized_value' => 'required|string|max:200',
         ]);
-        $synonym = AttributeSynonym::create($data);
-        $this->service->clearCache();
-        return response()->json($synonym, 201);
+
+        $s = AttributeSynonym::updateOrCreate(
+            ['attribute_key' => $data['attribute_key'] ?? null, 'word' => mb_strtolower(trim($data['word']))],
+            ['normalized_value' => $data['normalized_value']]
+        );
+
+        $service->clearCache();
+        return response()->json($s, 201);
     }
 
-    /** DELETE /api/v1/attribute-rules/synonyms/{id} */
-    public function destroySynonym(int $id): JsonResponse
+    /** DELETE /api/v1/attribute-synonyms/{id} */
+    public function synonymsDestroy(int $id, AttributeExtractionService $service): JsonResponse
     {
         AttributeSynonym::findOrFail($id)->delete();
-        $this->service->clearCache();
-        return response()->json(['message' => 'Синоним удалён']);
+        $service->clearCache();
+        return response()->json(['message' => 'Удалено']);
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // TEST / REBUILD
+    // AUDIT
     // ─────────────────────────────────────────────────────────────────
 
     /**
-     * POST /api/v1/attribute-rules/test
-     * Test extraction against arbitrary text without saving.
+     * GET /api/v1/attribute-rules/audit
+     * Returns a summary of attribute coverage in the DB for each key.
      */
-    public function test(Request $request): JsonResponse
+    public function audit(): JsonResponse
     {
-        $data = $request->validate(['text' => 'required|string|max:5000']);
-        $extracted = $this->service->extractFromText($data['text']);
-        return response()->json(['extracted' => $extracted]);
-    }
+        $stats = \App\Models\ProductAttribute::query()
+            ->selectRaw('attr_name, attr_type, COUNT(*) as count, COUNT(DISTINCT attr_value) as unique_values')
+            ->groupBy('attr_name', 'attr_type')
+            ->orderByDesc('count')
+            ->get();
 
-    /**
-     * POST /api/v1/attribute-rules/rebuild
-     * Rebuild product_attributes for all products (async-friendly: runs inline, could be queued).
-     * Returns job stats.
-     */
-    public function rebuild(Request $request): JsonResponse
-    {
-        $productId = $request->input('product_id');
+        $topValues = \App\Models\ProductAttribute::query()
+            ->selectRaw('attr_name, attr_value, COUNT(*) as cnt')
+            ->groupBy('attr_name', 'attr_value')
+            ->orderByDesc('cnt')
+            ->limit(200)
+            ->get()
+            ->groupBy('attr_name');
 
-        if ($productId) {
-            $product = Product::findOrFail((int) $productId);
-            $attrs   = $this->service->extractAndSave($product);
-            return response()->json([
-                'product_id' => $product->id,
-                'saved'      => count($attrs),
-                'attributes' => $attrs,
-            ]);
-        }
+        $result = $stats->map(function ($row) use ($topValues) {
+            return [
+                'attr_name'     => $row->attr_name,
+                'attr_type'     => $row->attr_type,
+                'count'         => $row->count,
+                'unique_values' => $row->unique_values,
+                'top_values'    => ($topValues[$row->attr_name] ?? collect())
+                    ->take(10)
+                    ->map(fn($v) => ['value' => $v->attr_value, 'count' => $v->cnt]),
+            ];
+        });
 
-        // Full rebuild — queue it if large dataset
-        $total = Product::count();
-        if ($total > 500) {
-            dispatch(function () {
-                app(AttributeExtractionService::class)->rebuildAll();
-            })->afterResponse();
-
-            return response()->json(['message' => 'Пересборка запущена в фоне', 'total' => $total]);
-        }
-
-        $result = $this->service->rebuildAll();
-        return response()->json(array_merge($result, ['message' => 'Пересборка завершена']));
-    }
-
-    // ─────────────────────────────────────────────────────────────────
-    // PRIVATE
-    // ─────────────────────────────────────────────────────────────────
-
-    private function validateRegex(string $pattern): void
-    {
-        $result = @preg_match('/' . $pattern . '/iu', '');
-        if ($result === false) {
-            abort(422, 'Некорректный regex: ' . (preg_last_error_msg() ?? 'unknown'));
-        }
+        return response()->json([
+            'total_products'   => \App\Models\Product::count(),
+            'products_with_attributes' => \App\Models\ProductAttribute::distinct('product_id')->count(),
+            'attributes'       => $result,
+        ]);
     }
 }
