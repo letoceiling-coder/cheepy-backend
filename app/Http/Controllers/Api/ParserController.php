@@ -7,7 +7,9 @@ use App\Models\ParserJob;
 use App\Models\ParserLog;
 use App\Models\Product;
 use App\Models\Category;
+use App\Jobs\ParserDaemonJob;
 use App\Jobs\RunParserJob;
+use App\Models\Setting;
 use App\Services\DatabaseParserService;
 use App\Services\PhotoDownloadService;
 use Illuminate\Http\JsonResponse;
@@ -83,6 +85,42 @@ class ParserController extends Controller
     }
 
     /**
+     * POST /api/v1/parser/start-daemon
+     * Start continuous parser: runs full parse, then repeats 60 sec after each run completes.
+     */
+    public function startDaemon(Request $request): JsonResponse
+    {
+        Setting::updateOrCreate(
+            ['key' => 'parser_daemon_enabled'],
+            ['value' => '1', 'group' => 'parser', 'type' => 'bool']
+        );
+
+        ParserDaemonJob::dispatch();
+
+        return response()->json([
+            'message' => 'Непрерывный парсер запущен. Следующий прогон — через 60 сек после завершения текущего.',
+            'daemon_enabled' => true,
+        ], 201);
+    }
+
+    /**
+     * POST /api/v1/parser/stop-daemon
+     * Stop continuous parser (disables auto-restart).
+     */
+    public function stopDaemon(Request $request): JsonResponse
+    {
+        Setting::updateOrCreate(
+            ['key' => 'parser_daemon_enabled'],
+            ['value' => '0', 'group' => 'parser', 'type' => 'bool']
+        );
+
+        return response()->json([
+            'message' => 'Непрерывный парсер отключён. Текущий прогон будет завершён.',
+            'daemon_enabled' => false,
+        ]);
+    }
+
+    /**
      * GET /api/v1/parser/status
      */
     public function status(): JsonResponse
@@ -102,6 +140,7 @@ class ParserController extends Controller
 
         return response()->json([
             'is_running'          => $running !== null,
+            'daemon_enabled'      => (bool) Setting::get('parser_daemon_enabled', false),
             'current_job'         => $running ? $this->formatJob($running) : null,
             'last_completed'      => $lastCompleted ? $this->formatJob($lastCompleted) : null,
             'queue_parser_size'   => $queueParser,

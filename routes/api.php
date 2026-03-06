@@ -246,7 +246,9 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::get('jobs', [ParserController::class, 'jobs']);
         Route::get('jobs/{id}', [ParserController::class, 'jobDetail']);
         Route::post('start', [ParserController::class, 'start']);
+        Route::post('start-daemon', [ParserController::class, 'startDaemon']);
         Route::post('stop', [ParserController::class, 'stop']);
+        Route::post('stop-daemon', [ParserController::class, 'stopDaemon']);
         Route::post('photos/download', [ParserController::class, 'downloadPhotos']);
         Route::post('categories/sync', CategorySyncController::class);
     });
