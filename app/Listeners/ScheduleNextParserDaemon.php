@@ -10,6 +10,9 @@ use Illuminate\Support\Facades\Log;
 
 class ScheduleNextParserDaemon implements ShouldQueue
 {
+    /** @var string Use parser queue so workers process it (workers listen on parser, not default). */
+    public $queue = 'parser';
+
     public function handle(ParserFinished $event): void
     {
         if (!Setting::get('parser_daemon_enabled', false)) {

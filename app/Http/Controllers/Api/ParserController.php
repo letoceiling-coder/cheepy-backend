@@ -85,6 +85,59 @@ class ParserController extends Controller
     }
 
     /**
+     * POST /api/v1/parser/restart
+     * Stop parser and restart queue workers.
+     */
+    public function restart(Request $request): JsonResponse
+    {
+        $updated = ParserJob::whereIn('status', ['running', 'pending'])
+            ->update(['status' => 'stopped', 'finished_at' => now()]);
+
+        try {
+            \Illuminate\Support\Facades\Artisan::call('queue:restart');
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Queue restart failed: ' . $e->getMessage()], 500);
+        }
+
+        return response()->json([
+            'message' => 'Парсер остановлен, воркеры перезапускаются',
+            'jobs_stopped' => $updated,
+        ]);
+    }
+
+    /**
+     * POST /api/v1/parser/queue-clear
+     * Clear parser queue jobs.
+     */
+    public function queueClear(Request $request): JsonResponse
+    {
+        $queue = $request->input('queue', 'parser');
+        try {
+            \Illuminate\Support\Facades\Artisan::call('queue:clear', [
+                'connection' => config('queue.default'),
+                '--queue' => $queue,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Queue clear failed: ' . $e->getMessage()], 500);
+        }
+        return response()->json(['message' => "Очередь {$queue} очищена"]);
+    }
+
+    /**
+     * POST /api/v1/parser/queue-restart
+     * Restart queue workers.
+     */
+    public function queueRestart(Request $request): JsonResponse
+    {
+        try {
+            \Illuminate\Support\Facades\Artisan::call('queue:restart');
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Queue restart failed: ' . $e->getMessage()], 500);
+        }
+        return response()->json(['message' => 'Воркеры перезапускаются']);
+    }
+
+    /**
      * POST /api/v1/parser/start-daemon
      * Start continuous parser: runs full parse, then repeats 60 sec after each run completes.
      */
