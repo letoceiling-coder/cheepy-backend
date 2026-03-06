@@ -29,7 +29,7 @@ return new class extends Migration
             $table->id();
             $table->string('attribute_key', 60);
             $table->string('value', 300);
-            $table->unsignedSmallInt('sort_order')->default(100);
+            $table->smallInteger('sort_order')->unsigned()->default(100);
             $table->timestamps();
             $table->unique(['attribute_key', 'value']);
             $table->index(['attribute_key', 'sort_order']);
@@ -41,35 +41,47 @@ return new class extends Migration
         });
 
         // ── 4. indexes on product_attributes ──────────────────────────────
-        Schema::table('product_attributes', function (Blueprint $table) {
-            if (!$this->indexExists('product_attributes', 'idx_pa_attr_name')) {
+        try {
+            Schema::table('product_attributes', function (Blueprint $table) {
                 $table->index('attr_name', 'idx_pa_attr_name');
-            }
-            if (!$this->indexExists('product_attributes', 'idx_pa_attr_value')) {
+            });
+        } catch (\Throwable) {}
+
+        try {
+            Schema::table('product_attributes', function (Blueprint $table) {
                 $table->index('attr_value', 'idx_pa_attr_value');
-            }
-            if (!$this->indexExists('product_attributes', 'idx_pa_name_value')) {
+            });
+        } catch (\Throwable) {}
+
+        try {
+            Schema::table('product_attributes', function (Blueprint $table) {
                 $table->index(['attr_name', 'attr_value'], 'idx_pa_name_value');
-            }
-        });
+            });
+        } catch (\Throwable) {}
     }
 
     public function down(): void
     {
+        try {
+            Schema::table('product_attributes', function (Blueprint $table) {
+                $table->dropIndex('idx_pa_attr_name');
+            });
+        } catch (\Throwable) {}
+        try {
+            Schema::table('product_attributes', function (Blueprint $table) {
+                $table->dropIndex('idx_pa_attr_value');
+            });
+        } catch (\Throwable) {}
+        try {
+            Schema::table('product_attributes', function (Blueprint $table) {
+                $table->dropIndex('idx_pa_name_value');
+            });
+        } catch (\Throwable) {}
         Schema::table('product_attributes', function (Blueprint $table) {
             $table->dropColumn('confidence');
-            try { $table->dropIndex('idx_pa_attr_name'); } catch (\Throwable) {}
-            try { $table->dropIndex('idx_pa_attr_value'); } catch (\Throwable) {}
-            try { $table->dropIndex('idx_pa_name_value'); } catch (\Throwable) {}
         });
         Schema::dropIfExists('attribute_dictionary');
         Schema::dropIfExists('attribute_value_normalization');
     }
 
-    private function indexExists(string $table, string $index): bool
-    {
-        $sm = Schema::getConnection()->getDoctrineSchemaManager();
-        $indexes = $sm->listTableIndexes($table);
-        return array_key_exists($index, $indexes);
-    }
 };
