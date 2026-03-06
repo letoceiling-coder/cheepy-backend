@@ -60,12 +60,7 @@ php artisan tinker --execute="echo 'products=' . \DB::table('products')->count()
 
 echo ""
 echo "=== Step 9: Start first clean parser run ==="
-# Start via Artisan (no JWT required when run on server)
-php artisan tinker --execute="
-\$job = \App\Models\ParserJob::create(['type' => 'full', 'options' => [], 'status' => 'pending']);
-\App\Jobs\RunParserJob::dispatch(\$job->id);
-echo 'Parser job created and dispatched: id=' . \$job->id;
-" || true
+php scripts/start-parser-job.php || true
 
 echo ""
 echo "=== Step 10: Brief wait and queue check ==="

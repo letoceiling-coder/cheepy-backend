@@ -144,16 +144,18 @@ supervisorctl status
 
 **Redis queue size (must be 0):**
 
+If your app uses a Redis prefix (e.g. `sadavodparser-database-`), use the prefixed key names:
+
+```bash
+redis-cli -n 0 LLEN sadavodparser-database-queues:parser
+redis-cli -n 0 LLEN sadavodparser-database-queues:photos
+```
+
+Without prefix (default Laravel):
+
 ```bash
 redis-cli LLEN queues:parser
 redis-cli LLEN queues:photos
-```
-
-If your app uses a Redis prefix (e.g. `sadavodparser-database-`), use the prefixed key names, e.g.:
-
-```bash
-redis-cli LLEN sadavodparser-database-queues:parser
-redis-cli LLEN sadavodparser-database-queues:photos
 ```
 
 **Database:**
