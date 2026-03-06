@@ -90,10 +90,23 @@ class ParserController extends Controller
         $running = ParserJob::whereIn('status', ['running', 'pending'])->latest()->first();
         $lastCompleted = ParserJob::where('status', 'completed')->latest()->first();
 
+        $queueParser = 0;
+        $queuePhotos = 0;
+        try {
+            $conn = \Illuminate\Support\Facades\Queue::connection('redis');
+            $queueParser = $conn->size('parser');
+            $queuePhotos = $conn->size('photos');
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
         return response()->json([
-            'is_running' => $running !== null,
-            'current_job' => $running ? $this->formatJob($running) : null,
-            'last_completed' => $lastCompleted ? $this->formatJob($lastCompleted) : null,
+            'is_running'          => $running !== null,
+            'current_job'         => $running ? $this->formatJob($running) : null,
+            'last_completed'      => $lastCompleted ? $this->formatJob($lastCompleted) : null,
+            'queue_parser_size'   => $queueParser,
+            'queue_photos_size'   => $queuePhotos,
+            'queue_total_size'    => $queueParser + $queuePhotos,
         ]);
     }
 

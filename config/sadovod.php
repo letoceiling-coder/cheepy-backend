@@ -44,4 +44,10 @@ return [
      * Максимальное количество фото на продукт (0=все)
      */
     'max_photos_per_product' => (int) env('SADAVOD_MAX_PHOTOS', 0),
+
+    /*
+     * Products dispatched per batch in ParseCategoryJob before a 200ms pause.
+     * Prevents queue explosion on large categories (e.g. 6000+ products).
+     */
+    'dispatch_batch_size' => (int) env('SADAVOD_DISPATCH_BATCH_SIZE', 50),
 ];

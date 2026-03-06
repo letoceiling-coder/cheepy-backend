@@ -95,7 +95,12 @@ class ParseCategoryJob implements ShouldQueue
                     $job->update(['total_pages' => $result['total_pages']]);
                 }
 
-                foreach ($products as $pData) {
+                // Batch dispatch: max 50 per chunk with a 200ms pause between chunks.
+                // Prevents queue explosion when a category has thousands of products.
+                $batchSize = (int) config('sadovod.dispatch_batch_size', 50);
+                $chunks = array_chunk($products, $batchSize);
+
+                foreach ($chunks as $chunk) {
                     if ($this->isCancelled($job)) {
                         break 2;
                     }
@@ -103,16 +108,24 @@ class ParseCategoryJob implements ShouldQueue
                         break 2;
                     }
 
-                    ParseProductJob::dispatch(
-                        $this->parserJobId,
-                        $pData,
-                        $this->categoryId,
-                        [
-                            'save_details' => $saveDetails,
-                            'save_photos' => $savePhotos,
-                        ]
-                    );
-                    $savedCount++;
+                    foreach ($chunk as $pData) {
+                        if ($productLimit > 0 && $savedCount >= $productLimit) {
+                            break 3;
+                        }
+                        ParseProductJob::dispatch(
+                            $this->parserJobId,
+                            $pData,
+                            $this->categoryId,
+                            [
+                                'save_details' => $saveDetails,
+                                'save_photos' => $savePhotos,
+                            ]
+                        );
+                        $savedCount++;
+                    }
+
+                    // Pause between batches to let workers drain the queue
+                    usleep(200_000); // 200ms
                 }
 
                 if (!$hasMore || ($maxPages > 0 && $page >= $maxPages)) {
