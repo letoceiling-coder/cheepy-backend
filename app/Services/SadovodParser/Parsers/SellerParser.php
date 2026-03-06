@@ -5,6 +5,11 @@ namespace App\Services\SadovodParser\Parsers;
 use App\Services\SadovodParser\HttpClient;
 use Symfony\Component\DomCrawler\Crawler;
 
+/**
+ * Parse seller page /s/{slug}.
+ * Selectors: .shop-view h1, .shop-avatar, .shop-info__description,
+ * .shop-contact__phone, .shop-contact__whatsapp, .pavilion.
+ */
 class SellerParser
 {
     private HttpClient $http;
@@ -15,13 +20,13 @@ class SellerParser
     }
 
     /**
-     * Parse seller page: name, pavilion, description, contacts, product URLs.
+     * Parse seller page: name, pavilion, description, contacts, avatar, product URLs.
      *
-     * @return array{name: string, slug: string, url: string, pavilion: string, description: string, contacts: array, products: array}
+     * @return array{name: string, slug: string, url: string, pavilion: string, description: string, avatar: string, contacts: array, products: array}
      */
     public function parse(string $path): array
     {
-        $crawler = $this->http->getCrawler($path);
+        $crawler = $this->http->getCrawler($path, ['timeout' => 10, 'retries' => 3]);
         $baseUrl = $this->http->getBaseUrl();
 
         $slug = '';
@@ -32,15 +37,19 @@ class SellerParser
         $name = $this->extractName($crawler);
         $pavilion = $this->extractPavilion($crawler);
         $description = $this->extractDescription($crawler);
+        $avatar = $this->extractAvatar($crawler, $baseUrl);
         $contacts = $this->extractContacts($crawler);
         $products = $this->extractProductLinks($crawler, $baseUrl);
+
+        $url = str_starts_with($path, 'http') ? $path : rtrim($baseUrl, '/') . '/' . ltrim($path, '/');
 
         return [
             'name' => $name,
             'slug' => $slug,
-            'url' => str_starts_with($path, 'http') ? $path : rtrim($baseUrl, '/') . '/' . ltrim($path, '/'),
+            'url' => $url,
             'pavilion' => $pavilion,
             'description' => $description,
+            'avatar' => $avatar,
             'contacts' => $contacts,
             'products' => $products,
         ];
@@ -49,50 +58,90 @@ class SellerParser
     private function extractName(Crawler $crawler): string
     {
         try {
-            $h1 = $crawler->filter('main h1, h1')->first();
+            $h1 = $crawler->filter('.shop-view h1')->first();
             return trim($h1->text());
         } catch (\Throwable $e) {
-            return '';
+            try {
+                $h1 = $crawler->filter('main h1, h1')->first();
+                return trim($h1->text());
+            } catch (\Throwable $e2) {
+                return '';
+            }
         }
     }
 
     private function extractPavilion(Crawler $crawler): string
     {
         try {
-            $node = $crawler->filter('a[href*="shop/map"], [class*="pavilion"]')->first();
+            $node = $crawler->filter('.pavilion')->first();
+            return trim($node->text());
+        } catch (\Throwable $e) {
+            try {
+                $node = $crawler->filter('[class*="pavilion"]')->first();
+                return trim($node->text());
+            } catch (\Throwable $e2) {
+                return '';
+            }
+        }
+    }
+
+    private function extractDescription(Crawler $crawler): string
+    {
+        try {
+            $node = $crawler->filter('.shop-info__description')->first();
             return trim($node->text());
         } catch (\Throwable $e) {
             return '';
         }
     }
 
-    private function extractDescription(Crawler $crawler): string
+    private function extractAvatar(Crawler $crawler, string $baseUrl): string
     {
-        $parts = [];
         try {
-            $crawler->filter('main p, main [class*="description"]')->each(function (Crawler $node) use (&$parts) {
-                $t = trim($node->text());
-                if (strlen($t) > 15 && !str_contains($t, 'Свяжитесь') && !str_contains($t, 'Заказать')) {
-                    $parts[] = $t;
+            $nodes = $crawler->filter('.shop-avatar img');
+            if ($nodes->count() > 0) {
+                $src = $nodes->first()->attr('src');
+                if ($src) {
+                    return str_starts_with($src, 'http') ? $src : rtrim($baseUrl, '/') . '/' . ltrim($src, '/');
                 }
-            });
+            }
         } catch (\Throwable $e) {
         }
-        return implode("\n", $parts);
+        return '';
     }
 
     private function extractContacts(Crawler $crawler): array
     {
         $contacts = ['phone' => '', 'whatsapp' => ''];
         try {
-            $main = $crawler->filter('main')->text();
-            if (preg_match('/\+7\s*\([\d\s\)\-]+/u', $main, $m)) {
-                $contacts['phone'] = trim($m[0]);
+            $phoneNodes = $crawler->filter('.shop-contact__phone');
+            if ($phoneNodes->count() > 0) {
+                $contacts['phone'] = trim($phoneNodes->first()->text());
             }
-            $crawler->filter('main a[href*="wa.me"], main a[href*="whatsapp"]')->each(function (Crawler $node) use (&$contacts) {
-                $contacts['whatsapp'] = $node->attr('href') ?? '';
-            });
         } catch (\Throwable $e) {
+        }
+        try {
+            $waNodes = $crawler->filter('.shop-contact__whatsapp');
+            if ($waNodes->count() > 0) {
+                $href = $waNodes->first()->attr('href');
+                if ($href) {
+                    $contacts['whatsapp'] = $href;
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+        if (empty($contacts['phone']) || empty($contacts['whatsapp'])) {
+            $crawler->filter('main a[href*="wa.me"], main a[href*="whatsapp"]')->each(function (Crawler $node) use (&$contacts) {
+                if (empty($contacts['whatsapp'])) {
+                    $contacts['whatsapp'] = $node->attr('href') ?? '';
+                }
+            });
+            if (empty($contacts['phone'])) {
+                $main = $crawler->filter('main')->text();
+                if (preg_match('/\+7\s*\([\d\s\)\-]+/u', $main, $m)) {
+                    $contacts['phone'] = trim($m[0]);
+                }
+            }
         }
         return $contacts;
     }

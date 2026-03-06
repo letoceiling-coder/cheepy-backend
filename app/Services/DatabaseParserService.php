@@ -19,6 +19,8 @@ use App\Services\SadovodParser\Parsers\CatalogParser;
 use App\Services\SadovodParser\Parsers\MenuParser;
 use App\Services\SadovodParser\Parsers\ProductParser;
 use App\Services\SadovodParser\Parsers\SellerParser;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class DatabaseParserService
@@ -285,11 +287,15 @@ class DatabaseParserService
                 }
             }
 
-            // Продавец
-            $seller = $this->upsertSeller($pData['seller'] ?? []);
+            // Продавец: по slug с продукта — переиспользуем или парсим страницу /s/{slug}
+            $seller = $this->getOrCreateSellerForProduct($pData['seller'] ?? []);
 
             // Сохраняем продукт
             $product = Product::upsertFromParser($pData, $category?->id, $seller?->id);
+
+            if ($seller) {
+                $seller->increment('products_count');
+            }
 
             // Нормализованные атрибуты
             $this->saveProductAttributes($product, $pData['characteristics'] ?? [], $category);
@@ -376,6 +382,55 @@ class DatabaseParserService
     // SELLER
     // -------------------------------------------------------------------------
 
+    /**
+     * Resolve seller for a product: reuse by slug, or parse /s/{slug} and atomic upsert.
+     * Uses Redis cache (seller:{slug}, 1h), lock to prevent race, 10s timeout, 3 retries.
+     */
+    private function getOrCreateSellerForProduct(array $sellerFromProduct): ?Seller
+    {
+        $slug = $sellerFromProduct['seller_slug'] ?? $sellerFromProduct['slug'] ?? null;
+        if (!$slug || !is_string($slug) || mb_strlen($slug) < 3) {
+            return null;
+        }
+
+        return Cache::lock("seller:parse:{$slug}", 30)->get(function () use ($slug, $sellerFromProduct): ?Seller {
+            $existing = Seller::where('slug', $slug)->first();
+            if ($existing) {
+                Log::info('Seller reused', ['slug' => $slug, 'parser_job_id' => $this->job->id]);
+                $this->log('info', "Seller reused: {$slug}");
+                return $existing;
+            }
+
+            $cacheKey = "seller:{$slug}";
+            $data = Cache::get($cacheKey);
+
+            if (!$data) {
+                try {
+                    $this->updateAction("Продавец: {$slug}");
+                    usleep((int) (config('sadovod.request_delay_ms', 500) * 1000));
+                    $data = $this->sellerParser->parse('/s/' . $slug);
+                    Cache::put($cacheKey, $data, 3600);
+                } catch (\Throwable $e) {
+                    Log::warning('Seller parse failed', ['slug' => $slug, 'error' => $e->getMessage(), 'parser_job_id' => $this->job->id]);
+                    $this->log('error', "Seller parse failed: {$slug} - " . $e->getMessage());
+                    $this->job->increment('errors_count');
+                    return null;
+                }
+            }
+
+            if (empty($data['name']) && !empty($sellerFromProduct['seller_name'])) {
+                $data['name'] = $sellerFromProduct['seller_name'];
+            }
+
+            $seller = $this->upsertSeller($data);
+            if ($seller) {
+                Log::info('Seller created', ['slug' => $slug, 'parser_job_id' => $this->job->id]);
+                $this->log('info', "Seller created: {$slug}");
+            }
+            return $seller;
+        });
+    }
+
     private function runSingleSeller(string $slug): void
     {
         $this->updateAction("Продавец: {$slug}");
@@ -389,12 +444,22 @@ class DatabaseParserService
         }
     }
 
+    /**
+     * UPSERT seller by slug. Expects data from seller page (/s/{slug}), not from product page.
+     */
     private function upsertSeller(array $sellerData): ?Seller
     {
-        if (empty($sellerData) || empty($sellerData['name'])) return null;
-
-        $slug = $sellerData['slug'] ?? Str::slug($sellerData['name']);
-        if (!$slug) return null;
+        $slug = $sellerData['slug'] ?? null;
+        if (!$slug) {
+            $slug = !empty($sellerData['name']) ? Str::slug($sellerData['name']) : null;
+        }
+        if (!$slug) {
+            return null;
+        }
+        $name = $sellerData['name'] ?? '';
+        if (!$name) {
+            return null;
+        }
 
         // Извлекаем павильон "13-53", "9-36", "9 линия 39" из pavilion строки
         $pavilion = $sellerData['pavilion'] ?? '';
@@ -428,11 +493,17 @@ class DatabaseParserService
         }
         $cleanPavilion = mb_substr($cleanPavilion, 0, 999);
 
+        $avatarUrl = $sellerData['avatar'] ?? null;
+        if ($avatarUrl && !str_starts_with($avatarUrl, 'http')) {
+            $avatarUrl = rtrim(config('sadovod.base_url', 'https://sadovodbaza.ru'), '/') . '/' . ltrim($avatarUrl, '/');
+        }
+
         return Seller::updateOrCreate(
             ['slug' => $slug],
             [
                 'name' => mb_substr($sellerData['name'], 0, 499),
                 'source_url' => $sellerData['url'] ?? null,
+                'avatar_url' => $avatarUrl ? mb_substr($avatarUrl, 0, 499) : null,
                 'pavilion' => $cleanPavilion ?: null,
                 'pavilion_line' => $pavilionLine,
                 'pavilion_number' => $pavilionNumber,

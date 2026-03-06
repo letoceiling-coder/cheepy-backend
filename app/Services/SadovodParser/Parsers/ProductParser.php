@@ -183,36 +183,41 @@ class ProductParser
     }
 
     /**
-     * Extract seller block: name, url, phone, whatsapp from product page.
+     * Extract seller block from product page only.
+     * Selectors: a[href^="/s/"], .pavilion2, .shop-avatar.
+     * Do NOT extract description/phone/whatsapp from product page — those come from seller page only.
      */
     private function extractSellerBlock(Crawler $crawler): array
     {
         $seller = [
-            'name' => '',
-            'url' => '',
-            'slug' => '',
-            'phone' => '',
-            'whatsapp' => '',
+            'seller_name' => '',
+            'seller_url' => '',
+            'seller_slug' => '',
             'pavilion' => '',
+            'avatar' => '',
         ];
         try {
-            $crawler->filter('main a[href*="/s/"]')->each(function (Crawler $node) use (&$seller) {
-                $href = $node->attr('href');
-                if ($href && preg_match('#/s/([a-z0-9\-]+)#', $href, $m)) {
-                    $seller['url'] = $href;
-                    $seller['slug'] = $m[1];
-                    $seller['name'] = trim($node->text());
+            $linkNodes = $crawler->filter('a[href^="/s/"]');
+            if ($linkNodes->count() > 0) {
+                $link = $linkNodes->first();
+                $href = $link->attr('href');
+                if ($href) {
+                    $path = parse_url($href, PHP_URL_PATH) ?: $href;
+                    $seller['seller_slug'] = basename(rtrim($path, '/'));
+                    $seller['seller_url'] = $path;
+                    $seller['seller_name'] = trim($link->text());
                 }
-            });
-            $mainText = $crawler->filter('main')->text();
-            if (preg_match('/\+7\s*\([\d\s\)\-]+/u', $mainText, $m)) {
-                $seller['phone'] = trim($m[0]);
             }
-            $crawler->filter('main a[href*="wa.me"], main a[href*="whatsapp"]')->each(function (Crawler $node) use (&$seller) {
-                $seller['whatsapp'] = $node->attr('href') ?? '';
-            });
-            if (preg_match('/Корпус\s+[^\n]+/u', $mainText, $m)) {
-                $seller['pavilion'] = trim($m[0]);
+            $pavNodes = $crawler->filter('.pavilion2');
+            if ($pavNodes->count() > 0) {
+                $seller['pavilion'] = trim($pavNodes->first()->text());
+            }
+            $avatarNodes = $crawler->filter('.shop-avatar img');
+            if ($avatarNodes->count() > 0) {
+                $src = $avatarNodes->first()->attr('src');
+                if ($src) {
+                    $seller['avatar'] = $src;
+                }
             }
         } catch (\Throwable $e) {
         }
