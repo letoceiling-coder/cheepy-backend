@@ -95,7 +95,7 @@ class AuditAttributes extends Command
             if ($attrKey) {
                 $dictValues = AttributeDictionary::where('attribute_key', $attrKey)
                     ->pluck('value')
-                    ->map('mb_strtolower')
+                    ->map(fn($v) => mb_strtolower($v))
                     ->toArray();
 
                 if (!empty($dictValues)) {
