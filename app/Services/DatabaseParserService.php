@@ -163,12 +163,17 @@ class DatabaseParserService
         // 1. Загружаем/обновляем категории
         $this->runMenuOnly();
 
-        // 2. Определяем категории для парсинга
+        // 2. Определяем категории для парсинга (frontend sends category IDs: [1,2,3])
         $categoryFilter = $this->options['categories'] ?? [];
         $query = Category::where('enabled', true);
 
         if (!empty($categoryFilter)) {
-            $query->whereIn('external_slug', $categoryFilter);
+            $ids = array_map('intval', array_filter($categoryFilter, 'is_numeric'));
+            if (!empty($ids)) {
+                $query->whereIn('id', $ids);
+            } else {
+                $query->whereIn('external_slug', $categoryFilter);
+            }
         } elseif (!empty($this->options['linked_only'])) {
             $query->where('linked_to_parser', true);
         }
@@ -419,7 +424,7 @@ class DatabaseParserService
             }
 
             if (empty($data['name']) && !empty($sellerFromProduct['seller_name'])) {
-                $data['name'] = $sellerFromProduct['seller_name'];
+                $data['name'] = $this->normalizeSellerName($sellerFromProduct['seller_name']);
             }
 
             $seller = $this->upsertSeller($data);
@@ -456,7 +461,7 @@ class DatabaseParserService
         if (!$slug) {
             return null;
         }
-        $name = $sellerData['name'] ?? '';
+        $name = $this->normalizeSellerName($sellerData['name'] ?? '');
         if (!$name) {
             return null;
         }
@@ -501,7 +506,7 @@ class DatabaseParserService
         return Seller::updateOrCreate(
             ['slug' => $slug],
             [
-                'name' => mb_substr($sellerData['name'], 0, 499),
+                'name' => mb_substr($name, 0, 499),
                 'source_url' => $sellerData['url'] ?? null,
                 'avatar_url' => $avatarUrl ? mb_substr($avatarUrl, 0, 499) : null,
                 'pavilion' => $cleanPavilion ?: null,
@@ -534,7 +539,15 @@ class DatabaseParserService
     private function isCancelled(): bool
     {
         $this->job->refresh();
-        return $this->job->status === 'cancelled';
+        return in_array($this->job->status, ['cancelled', 'stopped'], true);
+    }
+
+    private function normalizeSellerName(string $name): string
+    {
+        $name = trim($name);
+        $name = preg_replace('/^[,"\']+/u', '', $name);
+        $name = preg_replace('/[,"\']+$/u', '', $name);
+        return trim($name);
     }
 
     private function log(string $level, string $message, array $context = []): void

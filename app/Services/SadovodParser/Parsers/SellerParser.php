@@ -59,15 +59,23 @@ class SellerParser
     {
         try {
             $h1 = $crawler->filter('.shop-view h1')->first();
-            return trim($h1->text());
+            return $this->normalizeSellerName(trim($h1->text()));
         } catch (\Throwable $e) {
             try {
                 $h1 = $crawler->filter('main h1, h1')->first();
-                return trim($h1->text());
+                return $this->normalizeSellerName(trim($h1->text()));
             } catch (\Throwable $e2) {
                 return '';
             }
         }
+    }
+
+    private function normalizeSellerName(string $name): string
+    {
+        $name = trim($name);
+        $name = preg_replace('/^[,"\']+/u', '', $name);
+        $name = preg_replace('/[,"\']+$/u', '', $name);
+        return trim($name);
     }
 
     private function extractPavilion(Crawler $crawler): string

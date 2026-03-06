@@ -62,21 +62,23 @@ class ParserController extends Controller
 
     /**
      * POST /api/v1/parser/stop
+     * Mark all running/pending jobs as stopped so workers stop processing.
      */
     public function stop(Request $request): JsonResponse
     {
-        $job = ParserJob::where('status', 'running')
-            ->orWhere('status', 'pending')
-            ->latest()
-            ->first();
+        $updated = ParserJob::whereIn('status', ['running', 'pending'])
+            ->update(['status' => 'stopped', 'finished_at' => now()]);
 
-        if (!$job) {
-            return response()->json(['error' => 'Нет активных заданий'], 404);
+        try {
+            \Illuminate\Support\Facades\Redis::del('parser_running');
+        } catch (\Throwable $e) {
+            // ignore if Redis not available
         }
 
-        $job->update(['status' => 'cancelled', 'finished_at' => now()]);
-
-        return response()->json(['message' => 'Задание отменено', 'job_id' => $job->id]);
+        return response()->json([
+            'message' => $updated > 0 ? 'Парсер остановлен' : 'Нет активных заданий',
+            'jobs_stopped' => $updated,
+        ]);
     }
 
     /**
@@ -151,7 +153,7 @@ class ParserController extends Controller
      * GET /api/v1/parser/progress  (SSE stream)
      * Поток обновлений статуса парсера
      */
-    public function progress(Request $request): \Symfony\Component\HttpFoundation\Response
+    public function progress(Request $request): Response
     {
         $jobId = $request->input('job_id');
 

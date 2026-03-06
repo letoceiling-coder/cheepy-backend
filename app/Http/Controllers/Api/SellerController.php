@@ -57,20 +57,35 @@ class SellerController extends Controller
     }
 
     /**
-     * GET /api/v1/sellers/{slug}/products
+     * GET /api/v1/sellers/{seller}/products — {seller} can be id or slug
      */
-    public function products(Request $request, string $slug): JsonResponse
+    public function products(Request $request, string $seller): JsonResponse
     {
-        $seller = Seller::where('slug', $slug)->firstOrFail();
+        $sellerModel = Seller::where('slug', $seller)
+            ->orWhere('id', is_numeric($seller) ? (int) $seller : 0)
+            ->firstOrFail();
 
-        $products = Product::where('seller_id', $seller->id)
-            ->where('status', 'active')
-            ->select(['id', 'external_id', 'title', 'price', 'photos', 'photos_count', 'category_id'])
+        $query = $sellerModel->products()
             ->with('category:id,name,slug')
-            ->paginate($request->input('per_page', 20));
+            ->select(['id', 'external_id', 'title', 'price', 'price_raw', 'photos', 'photos_count', 'category_id', 'status', 'parsed_at']);
+
+        if ($request->input('status') && $request->input('status') !== 'all') {
+            $query->where('status', $request->input('status'));
+        } else {
+            $query->where('status', 'active');
+        }
+        if ($request->input('category_id')) {
+            $query->where('category_id', (int) $request->input('category_id'));
+        }
+        if ($search = $request->input('search')) {
+            $query->where('title', 'like', '%' . $search . '%');
+        }
+
+        $products = $query->orderBy('parsed_at', 'desc')
+            ->paginate((int) $request->input('per_page', 20));
 
         return response()->json([
-            'seller' => $this->formatSeller($seller),
+            'seller' => $this->formatSeller($sellerModel),
             'data' => $products->items(),
             'meta' => [
                 'total' => $products->total(),
