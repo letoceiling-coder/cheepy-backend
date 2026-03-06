@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Models\AttributeDictionary;
 use App\Models\AttributeRule;
 use App\Models\AttributeSynonym;
+use App\Models\AttributeValueNormalization;
 use App\Models\Product;
 use App\Models\ProductAttribute;
 use Illuminate\Support\Collection;
@@ -12,33 +14,53 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Extracts structured attributes from raw product text.
+ * Production-grade attribute extraction service.
  *
- * Pipeline per product:
- *   1. Normalize text (unicode, trim, collapse whitespace)
- *   2. Apply rules from `attribute_rules` table in priority order
- *      a. regex rules  → preg_match, capture group 1
- *      b. keyword rules → simple str_contains on lowercase text
- *   3. Apply synonyms from `attribute_synonyms`
- *   4. Write results to `product_attributes`
+ * Pipeline for each product:
+ *   1. normalize(text)              — strip HTML/CSS artefacts, collapse whitespace
+ *   2. applyRules()                 — regex + keyword from attribute_rules table
+ *   3. applySynonyms()              — word→canonical from attribute_synonyms
+ *   4. applyCanonical()             — exact/fuzzy from attribute_value_normalization
+ *   5. validateDictionary()         — keep only values in attribute_dictionary (optional)
+ *   6. assignConfidence()           — 0.9 regex / 0.8 synonym / 0.7 keyword
+ *   7. persist()                    — upsert product_attributes
+ *
+ * Redis caches (per-process TTL 1h):
+ *   attr_rules_all         — all enabled rules ordered by attribute_key + priority
+ *   attr_synonyms_all      — all synonyms
+ *   attr_canonical_all     — all canonical normalization rows
+ *   attr_dictionary_all    — all dictionary entries
+ *   attr_parse:{hash}      — parsed result for identical description hashes
+ *   filters:category:{id}  — facet counts per category (invalidated on rebuild)
  */
 class AttributeExtractionService
 {
-    /** How long to cache rules & synonyms (seconds). Invalidated after any rule change. */
-    private const CACHE_TTL = 3600;
+    private const CACHE_TTL       = 3600;
+    private const PARSE_CACHE_TTL = 86400; // 24h for identical description hashes
+
+    // confidence scores per match type
+    public const CONF_REGEX   = 0.90;
+    public const CONF_SYNONYM = 0.80;
+    public const CONF_KEYWORD = 0.70;
+    public const CONF_DICT    = 0.95; // value confirmed in dictionary
 
     // ─────────────────────────────────────────────────────────────────
     // PUBLIC API
     // ─────────────────────────────────────────────────────────────────
 
     /**
-     * Extract attributes for a single product and persist them.
-     * Returns the list of saved attribute arrays.
+     * Extract and persist attributes for a single product.
+     * Returns list of saved attribute rows.
      */
     public function extractAndSave(Product $product): array
     {
         $text = $this->buildText($product);
-        $extracted = $this->extractFromText($text);
+        $hash = md5($text);
+        $cacheKey = "attr_parse:{$hash}";
+
+        $extracted = Cache::remember($cacheKey, self::PARSE_CACHE_TTL, function () use ($text) {
+            return $this->extractFromText($text);
+        });
 
         $this->persist($product, $extracted);
 
@@ -46,58 +68,73 @@ class AttributeExtractionService
     }
 
     /**
-     * Extract attributes from arbitrary text without persisting anything.
-     * Useful for admin "test rule" endpoint.
+     * Extract attributes from arbitrary text (no DB save).
+     * Used for admin "test rule" endpoint.
      */
     public function extractFromText(string $text): array
     {
-        $rules    = $this->getRules();
-        $synonyms = $this->getSynonyms();
+        $rules      = $this->getRules();
+        $synonyms   = $this->getSynonyms();
+        $canonical  = $this->getCanonical();
+        $dictionary = $this->getDictionary();
         $normalized = $this->normalize($text);
 
-        $results = [];
+        $results    = [];
+        $seenKeys   = [];  // track which attribute_keys already have high-confidence matches
 
         foreach ($rules as $rule) {
-            $value = null;
+            // Skip this rule if a high-confidence match already found for this key
+            if (isset($seenKeys[$rule->attribute_key]) && $seenKeys[$rule->attribute_key] >= self::CONF_REGEX) {
+                continue;
+            }
+
+            $matchType = null;
+            $value     = null;
 
             if ($rule->rule_type === 'regex') {
                 $value = $this->applyRegex($rule->pattern, $normalized);
+                $matchType = 'regex';
             } elseif ($rule->rule_type === 'keyword') {
                 $value = $this->applyKeyword($rule->pattern, $normalized);
+                $matchType = 'keyword';
             }
 
-            if ($value === null || $value === '') {
-                continue;
-            }
+            if ($value === null || $value === '') continue;
 
+            // Apply synonyms
             if ($rule->apply_synonyms) {
-                $value = $this->applySynonyms($value, $rule->attribute_key, $synonyms);
+                [$value, $matchType] = $this->applySynonyms($value, $rule->attribute_key, $synonyms, $matchType);
             }
+
+            // Apply canonical normalization (exact → normalized_value)
+            [$value, $conf] = $this->applyCanonical($value, $rule->attribute_key, $canonical, $matchType);
 
             $value = $this->cleanValue($value);
+            if ($value === '') continue;
 
-            if ($value === '') {
-                continue;
-            }
-
-            // For multi-value attributes (size, color) split by common separators
+            // Split multi-value attributes
             $values = $this->splitMultiValue($rule->attribute_key, $value);
 
             foreach ($values as $v) {
                 $v = trim($v);
                 if ($v === '') continue;
 
+                // Validate + boost confidence if value is in dictionary
+                $dictConf = $this->validateDictionary($v, $rule->attribute_key, $dictionary);
+                $finalConf = $dictConf > 0 ? self::CONF_DICT : $conf;
+
                 $results[] = [
                     'attribute_key' => $rule->attribute_key,
                     'attr_name'     => $rule->display_name,
                     'attr_value'    => $v,
                     'attr_type'     => $rule->attr_type,
+                    'confidence'    => round($finalConf, 2),
+                    'match_type'    => $matchType,
                 ];
             }
 
-            // If a high-priority match was found, skip lower-priority rules for same key
-            if ($rule->priority <= 25 && count($values) > 0) {
-                $rules = $rules->reject(fn($r) => $r->attribute_key === $rule->attribute_key && $r->priority > $rule->priority);
+            if (count($values) > 0) {
+                $seenKeys[$rule->attribute_key] = $conf;
             }
         }
 
@@ -105,39 +142,62 @@ class AttributeExtractionService
     }
 
     /**
-     * Rebuild attributes for ALL products (called from artisan command).
-     * Returns [processed, saved] counts.
+     * Rebuild attributes for all/filtered products.
+     * Returns ['processed' => int, 'saved' => int]
      */
-    public function rebuildAll(callable $progress = null): array
+    public function rebuildAll(callable $progress = null, ?int $categoryId = null, int $chunkSize = 200): array
     {
         $processed = 0;
         $saved     = 0;
 
-        Product::select(['id', 'title', 'description', 'category_id'])
-            ->orderBy('id')
-            ->chunk(200, function (Collection $products) use (&$processed, &$saved, $progress) {
-                foreach ($products as $product) {
-                    $attrs = $this->extractAndSave($product);
-                    $processed++;
-                    $saved += count($attrs);
-                    if ($progress) $progress($processed);
-                }
-            });
+        $query = Product::select(['id', 'title', 'description', 'category_id'])->orderBy('id');
+        if ($categoryId) {
+            $query->where('category_id', $categoryId);
+        }
+
+        $query->chunk($chunkSize, function (Collection $products) use (&$processed, &$saved, $progress) {
+            foreach ($products as $product) {
+                $attrs = $this->extractAndSave($product);
+                $processed++;
+                $saved += count($attrs);
+                if ($progress) $progress($processed);
+            }
+        });
+
+        // Invalidate all category filter caches
+        $this->invalidateFilterCaches();
 
         return ['processed' => $processed, 'saved' => $saved];
     }
 
     /**
-     * Clear rules + synonyms cache (call after any rule/synonym change).
+     * Clear all service caches (call after any rule/synonym/canonical/dictionary change).
      */
     public function clearCache(): void
     {
         Cache::forget('attr_rules_all');
         Cache::forget('attr_synonyms_all');
+        Cache::forget('attr_canonical_all');
+        Cache::forget('attr_dictionary_all');
+    }
+
+    public function invalidateFilterCaches(): void
+    {
+        // Pattern-delete: filters:category:*
+        try {
+            $redis = Cache::getStore()->getRedis();
+            $prefix = config('cache.prefix') . ':filters:category:*';
+            $keys = $redis->keys($prefix);
+            if (!empty($keys)) {
+                $redis->del($keys);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('AttributeExtractionService: failed to invalidate filter caches', ['error' => $e->getMessage()]);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // PRIVATE HELPERS
+    // PRIVATE — PIPELINE STEPS
     // ─────────────────────────────────────────────────────────────────
 
     private function buildText(Product $product): string
@@ -150,16 +210,15 @@ class AttributeExtractionService
 
     private function normalize(string $text): string
     {
-        // Remove HTML entities and tags if any sneak in
         $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        // Collapse repeating dots, dashes used as visual separators (e.g. ". . . . .")
-        $text = preg_replace('/(\.\s*){3,}/', ' ', $text);
-        $text = preg_replace('/(\-\s*){3,}/', ' ', $text);
+        // Remove CSS artefacts (parser sometimes grabs page styles)
+        $text = preg_replace('/\{[^}]{1,500}\}/s', ' ', $text) ?? $text;
+        // Collapse visual separators
+        $text = preg_replace('/(\.\s*){3,}/u', ' ', $text) ?? $text;
+        $text = preg_replace('/(\-\s*){3,}/u', ' ', $text) ?? $text;
         // Normalize line endings
         $text = str_replace(["\r\n", "\r"], "\n", $text);
-        // Trim each line
-        $lines = array_map('trim', explode("\n", $text));
-        return implode("\n", $lines);
+        return implode("\n", array_map('trim', explode("\n", $text)));
     }
 
     private function applyRegex(string $pattern, string $text): ?string
@@ -169,7 +228,9 @@ class AttributeExtractionService
                 return trim($m[1]);
             }
         } catch (\Throwable $e) {
-            Log::warning('AttributeExtractionService: invalid regex', ['pattern' => $pattern, 'error' => $e->getMessage()]);
+            Log::warning('AttributeExtractionService: invalid regex', [
+                'pattern' => $pattern, 'error' => $e->getMessage(),
+            ]);
         }
         return null;
     }
@@ -182,57 +243,100 @@ class AttributeExtractionService
         return null;
     }
 
-    private function applySynonyms(string $value, string $attrKey, Collection $synonyms): string
+    /**
+     * Apply synonym table. Returns [$value, $matchType].
+     */
+    private function applySynonyms(string $value, string $attrKey, Collection $synonyms, string $matchType): array
     {
         $lower = mb_strtolower(trim($value));
-        // exact match first
+
+        // Exact match
         $match = $synonyms->first(fn($s) =>
             ($s->attribute_key === null || $s->attribute_key === $attrKey)
             && mb_strtolower($s->word) === $lower
         );
-        if ($match) return $match->normalized_value;
+        if ($match) {
+            return [$match->normalized_value, 'synonym'];
+        }
 
-        // word-by-word replacement within the value
+        // Word-by-word replacement inside the value
+        $changed = false;
         foreach ($synonyms->where('attribute_key', $attrKey) as $synonym) {
-            $value = preg_replace(
-                '/(?<![а-яёa-z])' . preg_quote(mb_strtolower($synonym->word), '/') . '(?![а-яёa-z])/iu',
+            $new = preg_replace(
+                '/(?<![а-яёa-z0-9])' . preg_quote(mb_strtolower($synonym->word), '/') . '(?![а-яёa-z0-9])/iu',
                 $synonym->normalized_value,
                 $value
             ) ?? $value;
+            if ($new !== $value) {
+                $value = $new;
+                $changed = true;
+            }
         }
 
-        return $value;
+        return [$value, $changed ? 'synonym' : $matchType];
+    }
+
+    /**
+     * Apply canonical normalization. Returns [$value, $confidence].
+     */
+    private function applyCanonical(string $value, string $attrKey, Collection $canonical, string $matchType): array
+    {
+        $lower = mb_strtolower(trim($value));
+        $conf  = $matchType === 'regex' ? self::CONF_REGEX :
+                ($matchType === 'synonym' ? self::CONF_SYNONYM : self::CONF_KEYWORD);
+
+        // Exact match
+        $match = $canonical->first(fn($c) =>
+            $c->attribute_key === $attrKey && mb_strtolower($c->raw_value) === $lower
+        );
+        if ($match) {
+            return [$match->normalized_value, $conf + 0.05];
+        }
+
+        // Partial match (raw_value contained in value)
+        foreach ($canonical->where('attribute_key', $attrKey) as $c) {
+            if (str_contains($lower, mb_strtolower($c->raw_value))) {
+                return [$c->normalized_value, $conf];
+            }
+        }
+
+        return [$value, $conf];
+    }
+
+    /**
+     * Check if value is in dictionary. Returns 1.0 if found, 0 otherwise.
+     */
+    private function validateDictionary(string $value, string $attrKey, Collection $dictionary): float
+    {
+        $lower = mb_strtolower(trim($value));
+        $found = $dictionary->contains(fn($d) =>
+            $d->attribute_key === $attrKey && mb_strtolower($d->value) === $lower
+        );
+        return $found ? 1.0 : 0.0;
     }
 
     private function cleanValue(string $value): string
     {
-        // Remove CSS leak (happens when parser grabs page CSS into text)
-        if (str_contains($value, '{') || str_contains($value, 'font-size')) {
+        // Drop if CSS leaked into value
+        if (str_contains($value, '{') || str_contains($value, 'font-size') || str_contains($value, 'color:')) {
             return '';
         }
-        $value = preg_replace('/\s+/', ' ', trim($value));
+        $value = preg_replace('/\s+/', ' ', trim($value)) ?? '';
         return mb_substr($value, 0, 490);
     }
 
-    /**
-     * For multi-value attribute types, split by separator.
-     */
     private function splitMultiValue(string $attrKey, string $value): array
     {
-        if (in_array($attrKey, ['color'], true)) {
-            // "черный, белый, бежевый" → ["черный", "белый", "бежевый"]
-            $parts = preg_split('/[,;\/]+/', $value);
+        if ($attrKey === 'color') {
+            $parts = preg_split('/[,;\/]+/', $value) ?: [$value];
             return array_filter(array_map('trim', $parts));
         }
         if ($attrKey === 'size') {
-            // Try to split letter sizes: "S M L XL" / "S,M,L,XL" / "S-M-L"
-            // But keep numeric ranges like "42-48" as-is
-            $parts = preg_split('/[\s,]+/', $value);
+            $parts = preg_split('/[\s,]+/', $value) ?: [$value];
             $cleaned = array_filter(array_map('trim', $parts), fn($p) => $p !== '');
-            // If all parts look like sizes, return them; else return as one value
-            $sizePattern = '/^(XS|S|M|L|XL|XXL|2XL|3XL|4XL|5XL|[3-6]\d)$/i';
-            $allAreSizes = count($cleaned) > 0 && count(array_filter($cleaned, fn($p) => !preg_match($sizePattern, $p))) === 0;
-            return $allAreSizes ? $cleaned : [$value];
+            $sizeRx  = '/^(XS|S|M|L|XL|XXL|[2-5]XL|[3-6]\d)$/i';
+            $allSizes = count($cleaned) > 0 && count(array_filter($cleaned, fn($p) => !preg_match($sizeRx, $p))) === 0;
+            return $allSizes ? $cleaned : [$value];
         }
         return [$value];
     }
@@ -241,7 +345,6 @@ class AttributeExtractionService
     {
         if (empty($extracted)) return;
 
-        // Delete old extracted attributes (keep manually entered ones)
         ProductAttribute::where('product_id', $product->id)->delete();
 
         $rows = [];
@@ -253,6 +356,7 @@ class AttributeExtractionService
                 'attr_name'   => mb_substr($attr['attr_name'], 0, 199),
                 'attr_value'  => mb_substr($attr['attr_value'], 0, 499),
                 'attr_type'   => $attr['attr_type'],
+                'confidence'  => $attr['confidence'] ?? 1.0,
                 'created_at'  => $now,
                 'updated_at'  => $now,
             ];
@@ -260,6 +364,10 @@ class AttributeExtractionService
 
         DB::table('product_attributes')->insert($rows);
     }
+
+    // ─────────────────────────────────────────────────────────────────
+    // CACHE LOADERS
+    // ─────────────────────────────────────────────────────────────────
 
     private function getRules(): Collection
     {
@@ -273,8 +381,16 @@ class AttributeExtractionService
 
     private function getSynonyms(): Collection
     {
-        return Cache::remember('attr_synonyms_all', self::CACHE_TTL, function () {
-            return AttributeSynonym::all();
-        });
+        return Cache::remember('attr_synonyms_all', self::CACHE_TTL, fn() => AttributeSynonym::all());
+    }
+
+    private function getCanonical(): Collection
+    {
+        return Cache::remember('attr_canonical_all', self::CACHE_TTL, fn() => AttributeValueNormalization::all());
+    }
+
+    private function getDictionary(): Collection
+    {
+        return Cache::remember('attr_dictionary_all', self::CACHE_TTL, fn() => AttributeDictionary::all());
     }
 }

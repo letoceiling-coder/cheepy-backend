@@ -253,16 +253,38 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
 
     // Attribute Rules & Synonyms
     Route::prefix('attribute-rules')->group(function () {
-        Route::get('audit',       [\App\Http\Controllers\Api\AttributeRuleController::class, 'audit']);
-        Route::get('synonyms',    [\App\Http\Controllers\Api\AttributeRuleController::class, 'synonymsIndex']);
-        Route::post('synonyms',   [\App\Http\Controllers\Api\AttributeRuleController::class, 'synonymsStore']);
+        Route::get('audit',            [\App\Http\Controllers\Api\AttributeRuleController::class, 'audit']);
+        Route::get('synonyms',         [\App\Http\Controllers\Api\AttributeRuleController::class, 'synonymsIndex']);
+        Route::post('synonyms',        [\App\Http\Controllers\Api\AttributeRuleController::class, 'synonymsStore']);
         Route::delete('synonyms/{id}', [\App\Http\Controllers\Api\AttributeRuleController::class, 'synonymsDestroy']);
-        Route::post('test',       [\App\Http\Controllers\Api\AttributeRuleController::class, 'test']);
-        Route::post('rebuild',    [\App\Http\Controllers\Api\AttributeRuleController::class, 'rebuild']);
-        Route::get('/',           [\App\Http\Controllers\Api\AttributeRuleController::class, 'index']);
-        Route::post('/',          [\App\Http\Controllers\Api\AttributeRuleController::class, 'store']);
-        Route::patch('{id}',      [\App\Http\Controllers\Api\AttributeRuleController::class, 'update']);
-        Route::delete('{id}',     [\App\Http\Controllers\Api\AttributeRuleController::class, 'destroy']);
+        Route::post('test',            [\App\Http\Controllers\Api\AttributeRuleController::class, 'test']);
+        Route::post('rebuild',         [\App\Http\Controllers\Api\AttributeRuleController::class, 'rebuild']);
+        Route::get('/',                [\App\Http\Controllers\Api\AttributeRuleController::class, 'index']);
+        Route::post('/',               [\App\Http\Controllers\Api\AttributeRuleController::class, 'store']);
+        Route::patch('{id}',           [\App\Http\Controllers\Api\AttributeRuleController::class, 'update']);
+        Route::delete('{id}',          [\App\Http\Controllers\Api\AttributeRuleController::class, 'destroy']);
+    });
+
+    // Attribute Dictionary
+    Route::prefix('attribute-dictionary')->group(function () {
+        Route::get('/',        [\App\Http\Controllers\Api\AttributeRuleController::class, 'dictionaryIndex']);
+        Route::post('/',       [\App\Http\Controllers\Api\AttributeRuleController::class, 'dictionaryStore']);
+        Route::patch('{id}',   [\App\Http\Controllers\Api\AttributeRuleController::class, 'dictionaryUpdate']);
+        Route::delete('{id}',  [\App\Http\Controllers\Api\AttributeRuleController::class, 'dictionaryDestroy']);
+    });
+
+    // Attribute Canonical Normalization
+    Route::prefix('attribute-canonical')->group(function () {
+        Route::get('/',        [\App\Http\Controllers\Api\AttributeRuleController::class, 'canonicalIndex']);
+        Route::post('/',       [\App\Http\Controllers\Api\AttributeRuleController::class, 'canonicalStore']);
+        Route::patch('{id}',   [\App\Http\Controllers\Api\AttributeRuleController::class, 'canonicalUpdate']);
+        Route::delete('{id}',  [\App\Http\Controllers\Api\AttributeRuleController::class, 'canonicalDestroy']);
+    });
+
+    // Attribute Facets (catalog filter data)
+    Route::prefix('attribute-facets')->group(function () {
+        Route::get('/',        [\App\Http\Controllers\Api\AttributeRuleController::class, 'facets']);
+        Route::post('rebuild', [\App\Http\Controllers\Api\AttributeRuleController::class, 'facetsRebuild']);
     });
 
     // Products

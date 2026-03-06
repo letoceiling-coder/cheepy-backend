@@ -3,11 +3,15 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AttributeDictionary;
 use App\Models\AttributeRule;
 use App\Models\AttributeSynonym;
+use App\Models\AttributeValueNormalization;
 use App\Services\AttributeExtractionService;
+use App\Services\AttributeFacetService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class AttributeRuleController extends Controller
 {
@@ -184,35 +188,176 @@ class AttributeRuleController extends Controller
     public function audit(): JsonResponse
     {
         $stats = \App\Models\ProductAttribute::query()
-            ->selectRaw('attr_name, attr_type, COUNT(*) as count, COUNT(DISTINCT attr_value) as unique_values')
+            ->selectRaw('attr_name, attr_type, COUNT(*) as count, COUNT(DISTINCT attr_value) as unique_values, AVG(confidence) as avg_confidence')
             ->groupBy('attr_name', 'attr_type')
             ->orderByDesc('count')
             ->get();
 
         $topValues = \App\Models\ProductAttribute::query()
-            ->selectRaw('attr_name, attr_value, COUNT(*) as cnt')
+            ->selectRaw('attr_name, attr_value, COUNT(*) as cnt, AVG(confidence) as avg_conf')
             ->groupBy('attr_name', 'attr_value')
             ->orderByDesc('cnt')
-            ->limit(200)
+            ->limit(300)
             ->get()
             ->groupBy('attr_name');
 
         $result = $stats->map(function ($row) use ($topValues) {
             return [
-                'attr_name'     => $row->attr_name,
-                'attr_type'     => $row->attr_type,
-                'count'         => $row->count,
-                'unique_values' => $row->unique_values,
-                'top_values'    => ($topValues[$row->attr_name] ?? collect())
+                'attr_name'      => $row->attr_name,
+                'attr_type'      => $row->attr_type,
+                'count'          => $row->count,
+                'unique_values'  => $row->unique_values,
+                'avg_confidence' => round((float) $row->avg_confidence, 2),
+                'top_values'     => ($topValues[$row->attr_name] ?? collect())
                     ->take(10)
-                    ->map(fn($v) => ['value' => $v->attr_value, 'count' => $v->cnt]),
+                    ->map(fn($v) => [
+                        'value'      => $v->attr_value,
+                        'count'      => $v->cnt,
+                        'avg_conf'   => round((float) $v->avg_conf, 2),
+                    ]),
             ];
         });
 
         return response()->json([
-            'total_products'   => \App\Models\Product::count(),
+            'total_products'           => \App\Models\Product::count(),
             'products_with_attributes' => \App\Models\ProductAttribute::distinct('product_id')->count(),
-            'attributes'       => $result,
+            'total_attribute_rows'     => \App\Models\ProductAttribute::count(),
+            'attributes'               => $result,
         ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // DICTIONARY
+    // ─────────────────────────────────────────────────────────────────
+
+    /** GET /api/v1/attribute-dictionary */
+    public function dictionaryIndex(Request $request): JsonResponse
+    {
+        $query = AttributeDictionary::query();
+        if ($key = $request->input('attribute_key')) {
+            $query->where('attribute_key', $key);
+        }
+        return response()->json(['data' => $query->orderBy('attribute_key')->orderBy('sort_order')->get()]);
+    }
+
+    /** POST /api/v1/attribute-dictionary */
+    public function dictionaryStore(Request $request, AttributeExtractionService $service): JsonResponse
+    {
+        $data = $request->validate([
+            'attribute_key' => 'required|string|max:60',
+            'value'         => 'required|string|max:300',
+            'sort_order'    => 'nullable|integer|min:0|max:9999',
+        ]);
+
+        $entry = AttributeDictionary::updateOrCreate(
+            ['attribute_key' => $data['attribute_key'], 'value' => $data['value']],
+            ['sort_order' => $data['sort_order'] ?? 100]
+        );
+        $service->clearCache();
+        return response()->json($entry, 201);
+    }
+
+    /** PATCH /api/v1/attribute-dictionary/{id} */
+    public function dictionaryUpdate(Request $request, int $id, AttributeExtractionService $service): JsonResponse
+    {
+        $entry = AttributeDictionary::findOrFail($id);
+        $data  = $request->validate([
+            'value'      => 'sometimes|string|max:300',
+            'sort_order' => 'sometimes|integer|min:0|max:9999',
+        ]);
+        $entry->update($data);
+        $service->clearCache();
+        return response()->json($entry->fresh());
+    }
+
+    /** DELETE /api/v1/attribute-dictionary/{id} */
+    public function dictionaryDestroy(int $id, AttributeExtractionService $service): JsonResponse
+    {
+        AttributeDictionary::findOrFail($id)->delete();
+        $service->clearCache();
+        return response()->json(['message' => 'Удалено']);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // CANONICAL (attribute_value_normalization)
+    // ─────────────────────────────────────────────────────────────────
+
+    /** GET /api/v1/attribute-canonical */
+    public function canonicalIndex(Request $request): JsonResponse
+    {
+        $query = AttributeValueNormalization::query();
+        if ($key = $request->input('attribute_key')) {
+            $query->where('attribute_key', $key);
+        }
+        if ($search = $request->input('search')) {
+            $query->where(fn($q) =>
+                $q->where('raw_value', 'LIKE', "%{$search}%")
+                  ->orWhere('normalized_value', 'LIKE', "%{$search}%")
+            );
+        }
+        return response()->json(['data' => $query->orderBy('attribute_key')->orderBy('raw_value')->paginate(100)]);
+    }
+
+    /** POST /api/v1/attribute-canonical */
+    public function canonicalStore(Request $request, AttributeExtractionService $service): JsonResponse
+    {
+        $data = $request->validate([
+            'attribute_key'    => 'required|string|max:60',
+            'raw_value'        => 'required|string|max:300',
+            'normalized_value' => 'required|string|max:300',
+        ]);
+        $data['raw_value'] = mb_strtolower(trim($data['raw_value']));
+
+        $entry = AttributeValueNormalization::updateOrCreate(
+            ['attribute_key' => $data['attribute_key'], 'raw_value' => $data['raw_value']],
+            ['normalized_value' => $data['normalized_value']]
+        );
+        $service->clearCache();
+        return response()->json($entry, 201);
+    }
+
+    /** PATCH /api/v1/attribute-canonical/{id} */
+    public function canonicalUpdate(Request $request, int $id, AttributeExtractionService $service): JsonResponse
+    {
+        $entry = AttributeValueNormalization::findOrFail($id);
+        $data  = $request->validate(['normalized_value' => 'required|string|max:300']);
+        $entry->update($data);
+        $service->clearCache();
+        return response()->json($entry->fresh());
+    }
+
+    /** DELETE /api/v1/attribute-canonical/{id} */
+    public function canonicalDestroy(int $id, AttributeExtractionService $service): JsonResponse
+    {
+        AttributeValueNormalization::findOrFail($id)->delete();
+        $service->clearCache();
+        return response()->json(['message' => 'Удалено']);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FACETS
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * GET /api/v1/attribute-facets?category_id=X
+     * Returns faceted filter data for a category (or global).
+     */
+    public function facets(Request $request, AttributeFacetService $facetService): JsonResponse
+    {
+        $categoryId = $request->input('category_id') ? (int) $request->input('category_id') : null;
+        $minConf    = (float) ($request->input('min_confidence', 0.6));
+        $data = $facetService->getFacetsByCategory($categoryId, $minConf);
+        return response()->json(['data' => $data, 'category_id' => $categoryId]);
+    }
+
+    /**
+     * POST /api/v1/attribute-facets/rebuild?category_id=X
+     * Force-rebuild cached facets for a category.
+     */
+    public function facetsRebuild(Request $request, AttributeFacetService $facetService): JsonResponse
+    {
+        $categoryId = $request->input('category_id') ? (int) $request->input('category_id') : null;
+        $data = $facetService->rebuildCategoryFacets($categoryId);
+        return response()->json(['data' => $data, 'category_id' => $categoryId]);
     }
 }

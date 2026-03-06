@@ -2,6 +2,7 @@
 
 use App\Console\Commands\RunParserJobCommand;
 use App\Console\Commands\RebuildAttributes;
+use App\Console\Commands\AuditAttributes;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 
