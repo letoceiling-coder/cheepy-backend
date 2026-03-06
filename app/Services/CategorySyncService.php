@@ -23,8 +23,15 @@ class CategorySyncService
         $created = 0;
         $updated = 0;
 
-        $result = $this->menuParser->parse();
-        $items = $result['categories'] ?? [];
+        // Resolve MenuParser via container (ensures correct config bindings)
+        $menuParser = app(MenuParser::class);
+        $result = $menuParser->parse();
+
+        if (!isset($result['categories']) || !is_array($result['categories'])) {
+            throw new \Exception('MenuParser returned invalid structure');
+        }
+
+        $items = $result['categories'];
         if (empty($items)) {
             Log::warning('CategorySync: No categories from MenuParser');
             return ['created' => 0, 'updated' => 0];

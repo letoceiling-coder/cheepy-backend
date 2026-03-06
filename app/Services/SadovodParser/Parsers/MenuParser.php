@@ -3,6 +3,7 @@
 namespace App\Services\SadovodParser\Parsers;
 
 use App\Services\SadovodParser\HttpClient;
+use Illuminate\Support\Facades\Cache;
 use Symfony\Component\DomCrawler\Crawler;
 
 /**
@@ -17,6 +18,8 @@ class MenuParser
     private string $baseUrl;
     private array $excludeLinks;
     private array $excludeText;
+    private string $cacheKey = 'menu:categories';
+    private int $cacheTtlSeconds = 3600; // 1 hour
 
     public function __construct(HttpClient $http, array $config = [])
     {
@@ -33,11 +36,27 @@ class MenuParser
      */
     public function parse(string $html = null): array
     {
-        $crawler = $html ? (new Crawler())->addHtmlContent($html, 'UTF-8') : $this->http->getCrawler('/');
+        if ($html) {
+            $crawler = (new Crawler())->addHtmlContent($html, 'UTF-8');
+            $categories = $this->extractFromMenuCatalog($crawler);
+            return ['categories' => $categories];
+        }
 
-        $categories = $this->extractFromMenuCatalog($crawler);
-
-        return ['categories' => $categories];
+        try {
+            $crawler = $this->http->getCrawler('/');
+            $categories = $this->extractFromMenuCatalog($crawler);
+            if (!empty($categories)) {
+                Cache::put($this->cacheKey, $categories, $this->cacheTtlSeconds);
+            }
+            return ['categories' => $categories];
+        } catch (\Throwable $e) {
+            // If donor is blocked/captcha (anti-block triggers exception), fallback to cached categories.
+            $cached = Cache::get($this->cacheKey);
+            if (is_array($cached) && !empty($cached)) {
+                return ['categories' => $cached, 'cached' => true];
+            }
+            throw $e;
+        }
     }
 
     /**
