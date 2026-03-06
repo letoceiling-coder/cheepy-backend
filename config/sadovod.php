@@ -50,4 +50,9 @@ return [
      * Prevents queue explosion on large categories (e.g. 6000+ products).
      */
     'dispatch_batch_size' => (int) env('SADAVOD_DISPATCH_BATCH_SIZE', 50),
+
+    /*
+     * Max category pages per category (safety limit; pagination stops when page returns 0 products).
+     */
+    'max_category_pages' => (int) env('SADAVOD_MAX_CATEGORY_PAGES', 200),
 ];

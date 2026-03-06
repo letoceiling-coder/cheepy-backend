@@ -57,6 +57,21 @@ class ParseCategoryJob implements ShouldQueue
         $savePhotos = $options['save_photos'] ?? false;
         $saveDetails = !($options['no_details'] ?? false);
 
+        Log::info('ParseCategoryJob limits', [
+            'category' => $slug,
+            'category_id' => $this->categoryId,
+            'max_pages' => $maxPages,
+            'product_limit' => $productLimit,
+            'from_options' => [
+                'max_pages' => $options['max_pages'] ?? null,
+                'products_per_category' => $options['products_per_category'] ?? null,
+            ],
+            'from_category' => [
+                'parser_max_pages' => $category->parser_max_pages,
+                'parser_products_limit' => $category->parser_products_limit,
+            ],
+        ]);
+
         $config = config('sadovod');
         $http = new HttpClient(array_merge($config, config('parser_rate', [])));
         $catalogParser = new CatalogParser($http);
@@ -76,8 +91,17 @@ class ParseCategoryJob implements ShouldQueue
             'parser_job_id' => $this->parserJobId,
         ], $this->parserJobId);
 
+        $maxPagesSafety = (int) config('sadovod.max_category_pages', 200);
+
         while (true) {
             if ($this->isCancelled($job)) {
+                break;
+            }
+            if ($page > $maxPagesSafety) {
+                Log::warning('Category parser stopped by safety limit', [
+                    'category' => $slug,
+                    'page' => $page,
+                ]);
                 break;
             }
 
@@ -88,7 +112,19 @@ class ParseCategoryJob implements ShouldQueue
                 $products = $result['products'] ?? [];
                 $hasMore = $result['has_more'] ?? false;
 
+                $productCount = count($products);
+                Log::info('Products parsed page', [
+                    'category' => $slug,
+                    'page' => $page,
+                    'count' => $productCount,
+                ]);
+
+                // Stop only when page returns zero products (no dependency on hasNextPage).
                 if (empty($products)) {
+                    Log::info('Category parser finished (empty page)', [
+                        'category' => $slug,
+                        'page' => $page,
+                    ]);
                     break;
                 }
 
@@ -139,10 +175,22 @@ class ParseCategoryJob implements ShouldQueue
                     usleep(200_000); // 200ms
                 }
 
-                if (!$hasMore || ($maxPages > 0 && $page >= $maxPages)) {
+                // Stop only on configured max_pages limit (do not use hasNextPage).
+                if ($maxPages > 0 && $page >= $maxPages) {
+                    Log::info('Category parser finished (max_pages limit)', [
+                        'category' => $slug,
+                        'last_page' => $page,
+                        'max_pages' => $maxPages,
+                    ]);
                     break;
                 }
                 if ($productLimit > 0 && $savedCount >= $productLimit) {
+                    Log::info('Category parser finished (product limit)', [
+                        'category' => $slug,
+                        'last_page' => $page,
+                        'reason' => 'product_limit',
+                        'saved_count' => $savedCount,
+                    ]);
                     break;
                 }
 
@@ -167,6 +215,12 @@ class ParseCategoryJob implements ShouldQueue
         $category->update([
             'products_count' => $savedCount,
             'last_parsed_at' => now(),
+        ]);
+
+        Log::info('Category parser finished', [
+            'category' => $slug,
+            'last_page' => $page,
+            'total_dispatched' => $savedCount,
         ]);
 
         ParserLog::write('info', "Категория {$slug}: поставлено в очередь {$savedCount} товаров", [
