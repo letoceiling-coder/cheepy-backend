@@ -34,7 +34,7 @@ return new class extends Migration
             $table->string('attr_type', 20)->default('text');
 
             // Lower number = runs first
-            $table->unsignedSmallInt('priority')->default(100);
+            $table->unsignedSmallInteger('priority')->default(100);
 
             $table->boolean('enabled')->default(true);
 
