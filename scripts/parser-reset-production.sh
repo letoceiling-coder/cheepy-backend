@@ -32,20 +32,7 @@ fi
 
 echo ""
 echo "=== Step 5: Clean parser database data ==="
-php artisan tinker --execute="
-\DB::statement('SET FOREIGN_KEY_CHECKS=0');
-\DB::table('parser_logs')->truncate();
-\DB::table('parser_jobs')->truncate();
-\DB::table('product_attributes')->truncate();
-\DB::table('product_photos')->truncate();
-\DB::table('products')->truncate();
-\DB::statement('ALTER TABLE products AUTO_INCREMENT = 1');
-\DB::statement('ALTER TABLE product_photos AUTO_INCREMENT = 1');
-\DB::statement('ALTER TABLE product_attributes AUTO_INCREMENT = 1');
-\DB::statement('ALTER TABLE parser_jobs AUTO_INCREMENT = 1');
-\DB::statement('SET FOREIGN_KEY_CHECKS=1');
-echo 'DB cleanup done. Products: ' . \DB::table('products')->count() . ', Parser jobs: ' . \DB::table('parser_jobs')->count();
-"
+php scripts/truncate-parser-tables.php
 
 echo ""
 echo "=== Step 6: Deploy latest code & clear caches ==="
