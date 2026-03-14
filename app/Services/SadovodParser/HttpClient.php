@@ -3,14 +3,19 @@
 namespace App\Services\SadovodParser;
 
 use App\Models\ParserSetting;
+use App\Models\ParserState;
+use App\Services\Parser\ParserLogger;
 use App\Services\Parser\HttpClient as ParserHttpClient;
 use App\Services\ParserMetricsService;
 use GuzzleHttp\Client;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\DomCrawler\Crawler;
 
 class HttpClient
 {
+    private const NETWORK_TIMEOUT_STREAK_KEY = 'parser:network_timeout_streak';
+    private const NETWORK_TIMEOUT_THRESHOLD = 5;
     private Client $client;
     private string $baseUrl;
     private array $userAgents;
@@ -164,6 +169,7 @@ class HttpClient
             if ($path === '/' || $path === '') {
                 Log::debug('HttpClient response preview', ['path' => $path, 'preview' => substr($body, 0, 500)]);
             }
+            Cache::put(self::NETWORK_TIMEOUT_STREAK_KEY, 0, now()->addMinutes(30));
             $this->lastRequestAt = microtime(true);
             ParserMetricsService::incrementRequests();
             return $body;
@@ -171,6 +177,9 @@ class HttpClient
             $msg = $e->getMessage();
             if (str_contains($msg, 'timed out') || str_contains($msg, 'Connection timed out') || str_contains($msg, 'cURL error 28')) {
                 Log::warning('Parser timeout', ['url' => $this->getAbsoluteUrl($path)]);
+                $this->registerNetworkTimeout($this->getAbsoluteUrl($path));
+            } else {
+                Cache::put(self::NETWORK_TIMEOUT_STREAK_KEY, 0, now()->addMinutes(30));
             }
             ParserMetricsService::incrementRetries();
             throw $e;
@@ -201,5 +210,29 @@ class HttpClient
     public function getBaseUrl(): string
     {
         return $this->baseUrl;
+    }
+
+    private function registerNetworkTimeout(string $url): void
+    {
+        $streak = (int) Cache::get(self::NETWORK_TIMEOUT_STREAK_KEY, 0) + 1;
+        Cache::put(self::NETWORK_TIMEOUT_STREAK_KEY, $streak, now()->addMinutes(30));
+
+        ParserLogger::write('network_error', 'Parser timeout streak incremented', [
+            'url' => $url,
+            'attempt' => $streak,
+        ]);
+
+        if ($streak < self::NETWORK_TIMEOUT_THRESHOLD) {
+            return;
+        }
+
+        $state = ParserState::current();
+        if ($state->status !== ParserState::STATUS_PAUSED_NETWORK) {
+            $state->update(['status' => ParserState::STATUS_PAUSED_NETWORK]);
+            ParserLogger::write('network_error', 'Parser switched to PAUSED_NETWORK after timeout streak', [
+                'url' => $url,
+                'attempt' => $streak,
+            ]);
+        }
     }
 }

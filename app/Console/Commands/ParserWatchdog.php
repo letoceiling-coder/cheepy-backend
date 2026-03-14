@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Jobs\ParserDaemonJob;
 use App\Models\ParserJob;
+use App\Models\ParserSetting;
 use App\Models\ParserState;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
@@ -41,6 +42,17 @@ class ParserWatchdog extends Command
         }
 
         $queueTotal = $queueParser + $queuePhotos;
+        $settings = ParserSetting::current();
+        $queueThreshold = (int) ($settings->queue_threshold ?? config('parser.queue_threshold', 10000));
+
+        if ($queueTotal > $queueThreshold) {
+            Log::warning('Parser watchdog: queue threshold reached, limiting daemon concurrency', [
+                'queue_total' => $queueTotal,
+                'threshold' => $queueThreshold,
+            ]);
+            $this->warn("Watchdog: queue overloaded ({$queueTotal}), daemon dispatch temporarily limited");
+            return 0;
+        }
 
         // If queue has jobs but no workers → restart workers
         if ($queueTotal > 0 && $workersCount === 0) {

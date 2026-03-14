@@ -14,6 +14,11 @@ class ParserSetting extends Model
         'request_delay_min',
         'request_delay_max',
         'timeout_seconds',
+        'workers_parser',
+        'workers_photos',
+        'proxy_enabled',
+        'proxy_url',
+        'queue_threshold',
     ];
 
     protected $casts = [
@@ -23,6 +28,10 @@ class ParserSetting extends Model
         'request_delay_min' => 'integer',
         'request_delay_max' => 'integer',
         'timeout_seconds' => 'integer',
+        'workers_parser' => 'integer',
+        'workers_photos' => 'integer',
+        'proxy_enabled' => 'boolean',
+        'queue_threshold' => 'integer',
     ];
 
     public static function current(): self
@@ -48,6 +57,11 @@ class ParserSetting extends Model
             'request_delay_min' => 1500,
             'request_delay_max' => 3000,
             'timeout_seconds' => 60,
+            'workers_parser' => 2,
+            'workers_photos' => 1,
+            'proxy_enabled' => true,
+            'proxy_url' => 'http://89.169.39.244:3128',
+            'queue_threshold' => 10000,
         ];
     }
 }

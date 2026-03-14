@@ -16,6 +16,11 @@ Schedule::command('parser:watchdog', ['--idle-minutes' => 10])
     ->everyFiveMinutes()
     ->withoutOverlapping(10);
 
+// Auto-recovery for PAUSED_NETWORK parser state
+Schedule::command('parser:network-recover')
+    ->everyFiveMinutes()
+    ->withoutOverlapping(10);
+
 // Parser lock heartbeat: refresh TTL every 30s while parser runs
 Schedule::command('parser:lock-heartbeat')
     ->everyThirtySeconds();

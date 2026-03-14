@@ -13,6 +13,7 @@ class ParserProgress extends Model
         'processed_items',
         'failed_items',
         'current_url',
+        'speed_per_min',
     ];
 
     protected $casts = [
@@ -20,6 +21,7 @@ class ParserProgress extends Model
         'total_items' => 'integer',
         'processed_items' => 'integer',
         'failed_items' => 'integer',
+        'speed_per_min' => 'float',
     ];
 
     public function job(): BelongsTo

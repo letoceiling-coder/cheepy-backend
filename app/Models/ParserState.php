@@ -19,6 +19,7 @@ class ParserState extends Model
     public const STATUS_RUNNING = 'running';
     public const STATUS_STOPPED = 'stopped';
     public const STATUS_PAUSED = 'paused';
+    public const STATUS_PAUSED_NETWORK = 'paused_network';
 
     /** Get singleton row (id=1). */
     public static function current(): self
@@ -45,6 +46,6 @@ class ParserState extends Model
 
     public function isPaused(): bool
     {
-        return $this->status === self::STATUS_PAUSED;
+        return in_array($this->status, [self::STATUS_PAUSED, self::STATUS_PAUSED_NETWORK], true);
     }
 }

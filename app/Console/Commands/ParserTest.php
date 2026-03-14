@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\ParserSetting;
 use App\Services\Parser\HttpClient;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Http;
 use Symfony\Component\DomCrawler\Crawler;
 
 class ParserTest extends Command
@@ -16,6 +17,25 @@ class ParserTest extends Command
     {
         $url = (string) $this->option('url');
         $settings = ParserSetting::current();
+        $proxyEnabled = (bool) ($settings->proxy_enabled ?? config('parser.proxy_enabled', false));
+        $proxyUrl = (string) ($settings->proxy_url ?? config('parser.proxy_url', ''));
+
+        if ($proxyEnabled && $proxyUrl !== '') {
+            $this->line('proxy: checking...');
+            try {
+                Http::timeout(20)->withOptions([
+                    'proxy' => $proxyUrl,
+                    'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
+                ])->get($url)->throw();
+                $this->line('proxy: OK');
+            } catch (\Throwable $e) {
+                $this->error('proxy: FAIL - ' . $e->getMessage());
+                return 1;
+            }
+        } else {
+            $this->line('proxy: SKIPPED (disabled)');
+        }
+
         $http = new HttpClient(
             timeoutSeconds: max(10, (int) $settings->timeout_seconds),
             retryCount: 3,

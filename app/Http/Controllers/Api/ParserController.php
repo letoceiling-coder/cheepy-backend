@@ -58,6 +58,11 @@ class ParserController extends Controller
             'request_delay_min' => ['nullable', 'integer', 'min:100', 'max:10000'],
             'request_delay_max' => ['nullable', 'integer', 'min:100', 'max:15000'],
             'timeout_seconds' => ['nullable', 'integer', 'min:5', 'max:300'],
+            'workers_parser' => ['nullable', 'integer', 'min:1', 'max:20'],
+            'workers_photos' => ['nullable', 'integer', 'min:1', 'max:20'],
+            'proxy_enabled' => ['nullable', 'boolean'],
+            'proxy_url' => ['nullable', 'string', 'max:255'],
+            'queue_threshold' => ['nullable', 'integer', 'min:10', 'max:1000000'],
         ]);
 
         $settings = ParserSetting::current();
@@ -499,7 +504,7 @@ class ParserController extends Controller
 
         $progress = ParserProgress::query()
             ->latest('updated_at')
-            ->first(['job_id', 'total_items', 'processed_items', 'failed_items', 'current_url', 'updated_at']);
+            ->first(['job_id', 'total_items', 'processed_items', 'failed_items', 'current_url', 'speed_per_min', 'updated_at']);
 
         $parserState = ParserState::current();
         return response()->json([
@@ -587,6 +592,7 @@ class ParserController extends Controller
             'processed_items' => $row?->processed_items ?? 0,
             'failed_items' => $row?->failed_items ?? 0,
             'current_url' => $row?->current_url,
+            'speed_per_min' => (float) ($row?->speed_per_min ?? 0),
             'updated_at' => $row?->updated_at?->toIso8601String(),
         ]);
     }
