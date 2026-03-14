@@ -1,5 +1,10 @@
 <?php
 
+$hasReverbCredentials =
+    !empty(env('REVERB_APP_KEY')) &&
+    !empty(env('REVERB_APP_SECRET')) &&
+    !empty(env('REVERB_APP_ID'));
+
 return [
 
     /*
@@ -8,7 +13,12 @@ return [
     |--------------------------------------------------------------------------
     */
 
-    'default' => env('BROADCAST_CONNECTION', 'reverb'),
+    'default' => !$hasReverbCredentials
+        ? 'log'
+        : env(
+            'BROADCAST_CONNECTION',
+            app()->runningInConsole() ? 'log' : 'reverb'
+        ),
 
     /*
     |--------------------------------------------------------------------------

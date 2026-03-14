@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\PublicController;
 use App\Http\Controllers\Api\SellerController;
 use App\Http\Controllers\Api\SettingController;
 use App\Http\Middleware\JwtMiddleware;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Route;
 
 // =====================================================================
@@ -328,6 +329,77 @@ Route::prefix('v1')->group(function () {
             'database' => $db ? 'connected' : 'disconnected',
             'redis' => $redis ? 'connected' : 'disconnected',
             'parser_last_run' => $parserLastRun,
+            'timestamp' => now()->toIso8601String(),
+        ]);
+    });
+
+    Route::get('system/health', function () {
+        $database = false;
+        $redis = false;
+        $queue = false;
+        $queueSizes = ['parser' => 0, 'photos' => 0, 'default' => 0];
+
+        try {
+            DB::connection()->getPdo();
+            $database = true;
+        } catch (\Throwable $e) {
+            $database = false;
+        }
+
+        try {
+            Redis::ping();
+            $redis = true;
+        } catch (\Throwable $e) {
+            $redis = false;
+        }
+
+        try {
+            $q = Queue::connection(config('queue.default'));
+            $queueSizes = [
+                'parser' => (int) $q->size('parser'),
+                'photos' => (int) $q->size('photos'),
+                'default' => (int) $q->size('default'),
+            ];
+            $queue = true;
+        } catch (\Throwable $e) {
+            $queue = false;
+        }
+
+        $hasReverbCredentials =
+            !empty(env('REVERB_APP_KEY')) &&
+            !empty(env('REVERB_APP_SECRET')) &&
+            !empty(env('REVERB_APP_ID'));
+        $broadcastDriver = (string) config('broadcasting.default', 'log');
+        $broadcastHealthy = $broadcastDriver === 'log' || $hasReverbCredentials;
+
+        $parserSettings = null;
+        $parserState = null;
+        try {
+            $parserSettings = \App\Models\ParserSetting::current();
+            $parserState = \App\Models\ParserState::current();
+        } catch (\Throwable $e) {
+            // ignore parser details when unavailable
+        }
+
+        return response()->json([
+            'status' => ($database && $redis && $queue && $broadcastHealthy) ? 'ok' : 'degraded',
+            'database' => $database ? 'connected' : 'failed',
+            'redis' => $redis ? 'connected' : 'failed',
+            'queue' => [
+                'status' => $queue ? 'ok' : 'failed',
+                'sizes' => $queueSizes,
+            ],
+            'broadcast' => [
+                'driver' => $broadcastDriver,
+                'reverb_credentials' => $hasReverbCredentials ? 'present' : 'missing',
+                'safe_fallback' => $broadcastHealthy ? 'ok' : 'failed',
+            ],
+            'parser' => [
+                'state' => $parserState?->status,
+                'proxy_enabled' => (bool) ($parserSettings?->proxy_enabled ?? false),
+                'proxy_url' => $parserSettings?->proxy_url,
+                'timeout_seconds' => (int) ($parserSettings?->timeout_seconds ?? 0),
+            ],
             'timestamp' => now()->toIso8601String(),
         ]);
     });
