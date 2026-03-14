@@ -28,7 +28,7 @@ class ScheduleNextParserDaemon implements ShouldQueue
         }
 
         $settings = ParserSetting::current();
-        $queueThreshold = (int) ($settings->queue_threshold ?? config('parser.queue_threshold', 10000));
+        $queueThreshold = min(500, (int) ($settings->queue_threshold ?? config('parser.queue_threshold', 500)));
         $queueSize = 0;
         try {
             $conn = Queue::connection(config('queue.default'));

@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Models\ParserSetting;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -35,17 +34,8 @@ class SystemPreflight extends Command
         }
         $checks[] = ['redis', $redisOk ? 'ok' : 'failed'];
 
-        $proxyEnabled = (bool) config('parser.proxy_enabled', false);
-        $proxyUrl = (string) config('parser.proxy_url', '');
-        if ($dbOk) {
-            try {
-                $settings = ParserSetting::current();
-                $proxyEnabled = (bool) ($settings->proxy_enabled ?? $proxyEnabled);
-                $proxyUrl = (string) ($settings->proxy_url ?: $proxyUrl);
-            } catch (\Throwable $e) {
-                // keep config fallback
-            }
-        }
+        $proxyEnabled = (bool) config('parser.proxy_enabled', true);
+        $proxyUrl = (string) (config('parser.proxy') ?: config('parser.proxy_url', 'http://89.169.39.244:3128'));
 
         $proxyOk = true;
         if ($proxyEnabled && $proxyUrl !== '') {
@@ -62,12 +52,19 @@ class SystemPreflight extends Command
                 $proxyOk = false;
             }
         }
-        $checks[] = ['proxy', $proxyEnabled ? ($proxyOk ? 'ok' : 'failed') : 'skipped'];
+        $checks[] = ['proxy', $proxyEnabled ? ($proxyOk ? 'ok' : 'failed') : 'failed'];
 
         $donorOk = false;
         try {
-            Http::timeout(25)
-                ->withOptions(['curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4]])
+            $request = Http::timeout(25)
+                ->withOptions(['curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4]]);
+            if ($proxyEnabled && $proxyUrl !== '') {
+                $request = $request->withOptions([
+                    'proxy' => $proxyUrl,
+                    'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
+                ]);
+            }
+            $request
                 ->get('https://sadovodbaza.ru')
                 ->throw();
             $donorOk = true;

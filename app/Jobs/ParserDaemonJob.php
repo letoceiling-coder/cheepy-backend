@@ -4,12 +4,14 @@ namespace App\Jobs;
 
 use App\Models\ParserJob;
 use App\Models\ParserState;
+use App\Services\Parser\ParserLogger;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Redis;
 
 class ParserDaemonJob implements ShouldQueue
@@ -29,6 +31,20 @@ class ParserDaemonJob implements ShouldQueue
         if ($state->status !== ParserState::STATUS_RUNNING) {
             Log::info('Parser daemon blocked (state=' . $state->status . ')');
             return;
+        }
+
+        try {
+            $queueParser = (int) Queue::connection(config('queue.default'))->size('parser');
+            if ($queueParser > 500) {
+                ParserLogger::write('warning', 'Parser daemon throttled: parser queue above threshold', [
+                    'queue_size' => $queueParser,
+                    'threshold' => 500,
+                ]);
+                self::dispatch()->delay(now()->addMinutes(5));
+                return;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Parser daemon: queue size check failed', ['error' => $e->getMessage()]);
         }
 
         $running = ParserJob::whereIn('status', ['running', 'pending'])->first();

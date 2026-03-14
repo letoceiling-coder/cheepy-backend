@@ -3,6 +3,8 @@
 namespace App\Console\Commands;
 
 use App\Models\ParserSetting;
+use App\Models\ParserState;
+use App\Services\Parser\ParserLogger;
 use App\Services\Parser\HttpClient;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
@@ -11,29 +13,51 @@ use Symfony\Component\DomCrawler\Crawler;
 class ParserTest extends Command
 {
     protected $signature = 'parser:test {--url=https://sadovodbaza.ru : Base parser URL}';
-    protected $description = 'Smoke-test parser HTTP access, HTML structure and selectors';
+    protected $description = 'Smoke-test parser proxy access, HTTP availability and selectors';
 
     public function handle(): int
     {
         $url = (string) $this->option('url');
         $settings = ParserSetting::current();
-        $proxyEnabled = (bool) ($settings->proxy_enabled ?? config('parser.proxy_enabled', false));
-        $proxyUrl = (string) ($settings->proxy_url ?? config('parser.proxy_url', ''));
+        $proxyEnabled = (bool) config('parser.proxy_enabled', true);
+        $proxyUrl = (string) (config('parser.proxy') ?: config('parser.proxy_url', 'http://89.169.39.244:3128'));
 
-        if ($proxyEnabled && $proxyUrl !== '') {
-            $this->line('proxy: checking...');
-            try {
+        $this->line('proxy: checking...');
+        if (!$proxyEnabled || $proxyUrl === '') {
+            $this->error('proxy: FAIL - proxy is disabled or URL is missing');
+            ParserState::current()->update([
+                'status' => ParserState::STATUS_PAUSED_NETWORK,
+                'last_stop' => now(),
+            ]);
+            ParserLogger::write('network_error', 'Proxy test failed: disabled or missing URL', [
+                'url' => $url,
+            ]);
+            return 1;
+        }
+        try {
+            $curlCmd = sprintf('curl -I -x %s %s -m 20', escapeshellarg($proxyUrl), escapeshellarg($url));
+            $curlOut = function_exists('shell_exec') ? (string) @shell_exec($curlCmd . ' 2>&1') : '';
+            if ($curlOut !== '' && !str_contains($curlOut, '200')) {
+                throw new \RuntimeException(trim($curlOut));
+            }
+            if ($curlOut === '') {
                 Http::timeout(20)->withOptions([
                     'proxy' => $proxyUrl,
                     'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
                 ])->get($url)->throw();
-                $this->line('proxy: OK');
-            } catch (\Throwable $e) {
-                $this->error('proxy: FAIL - ' . $e->getMessage());
-                return 1;
             }
-        } else {
-            $this->line('proxy: SKIPPED (disabled)');
+            $this->line('proxy: OK');
+        } catch (\Throwable $e) {
+            $this->error('proxy: FAIL - ' . $e->getMessage());
+            ParserState::current()->update([
+                'status' => ParserState::STATUS_PAUSED_NETWORK,
+                'last_stop' => now(),
+            ]);
+            ParserLogger::write('network_error', 'Proxy test failed, daemon blocked', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            return 1;
         }
 
         $http = new HttpClient(

@@ -14,8 +14,8 @@ class ParserLogger
         ?string $source = 'Parser'
     ): void {
         $level = match ($type) {
-            'error', 'network_error', 'parsing_error' => 'error',
-            'warning' => 'warning',
+            'error', 'network_error', 'parsing_error', 'database_error' => 'error',
+            'warning', 'timeout' => 'warning',
             default => 'info',
         };
 

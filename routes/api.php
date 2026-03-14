@@ -444,6 +444,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('settings', [ParserController::class, 'updateSettings']);
         Route::get('stats', [ParserController::class, 'stats']);
         Route::get('diagnostics', [ParserController::class, 'diagnostics']);
+        Route::get('health', [ParserController::class, 'health']);
         Route::get('progress-overview', [ParserController::class, 'progressOverview']);
         Route::get('progress', [ParserController::class, 'progress']);
         Route::get('jobs', [ParserController::class, 'jobs']);

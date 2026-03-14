@@ -61,7 +61,7 @@ class ParserSetting extends Model
             'workers_photos' => 1,
             'proxy_enabled' => true,
             'proxy_url' => 'http://89.169.39.244:3128',
-            'queue_threshold' => 10000,
+            'queue_threshold' => 500,
         ];
     }
 }

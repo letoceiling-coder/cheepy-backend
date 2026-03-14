@@ -9,7 +9,6 @@ use App\Events\ParserStarted;
 use App\Events\ProductParsed;
 use App\Models\Category;
 use App\Models\ParserJob;
-use App\Models\ParserLog;
 use App\Models\ParserProgress;
 use App\Models\ParserSetting;
 use App\Models\Product;
@@ -24,6 +23,7 @@ use App\Services\SadovodParser\Parsers\ProductParser;
 use App\Jobs\DownloadPhotoJob;
 use App\Jobs\ParseCategoryJob;
 use App\Services\SadovodParser\Parsers\SellerParser;
+use App\Services\Parser\ParserLogger;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -706,17 +706,18 @@ class DatabaseParserService
 
     private function log(string $level, string $message, array $context = []): void
     {
-        ParserLog::write(
-            $level,
+        $type = match ($level) {
+            'error' => 'parsing_error',
+            'warning', 'warn' => 'timeout',
+            default => 'info',
+        };
+
+        ParserLogger::write(
+            $type,
             $message,
             $context,
             $this->job->id,
-            'Parser',
-            null,
-            null,
-            $context['url'] ?? $context['product_url'] ?? null,
-            isset($context['product_id']) ? (int) $context['product_id'] : null,
-            isset($context['attempt']) ? (int) $context['attempt'] : null
+            'Parser'
         );
     }
 
@@ -726,9 +727,12 @@ class DatabaseParserService
         $row->total_items = (int) ($this->job->total_products ?: $this->job->total_categories);
         $row->processed_items = max(0, (int) $row->processed_items + $processedDelta);
         $row->failed_items = max(0, (int) $row->failed_items + $failedDelta);
-        $startedAt = $this->job->started_at ?? $this->job->created_at;
-        $elapsedMinutes = $startedAt ? max(1 / 60, now()->diffInSeconds($startedAt) / 60) : 1;
-        $row->speed_per_min = round($row->processed_items / $elapsedMinutes, 2);
+        $shouldUpdateSpeed = $row->processed_items === 0 || $row->processed_items % 10 === 0;
+        if ($shouldUpdateSpeed) {
+            $startedAt = $this->job->started_at ?? $this->job->created_at;
+            $elapsedMinutes = $startedAt ? max(1 / 60, now()->diffInSeconds($startedAt) / 60) : 1;
+            $row->speed_per_min = (int) round($row->processed_items / $elapsedMinutes);
+        }
         if ($currentUrl !== null) {
             $row->current_url = mb_substr($currentUrl, 0, 990);
         }

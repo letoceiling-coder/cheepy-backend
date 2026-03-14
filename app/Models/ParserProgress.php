@@ -21,7 +21,7 @@ class ParserProgress extends Model
         'total_items' => 'integer',
         'processed_items' => 'integer',
         'failed_items' => 'integer',
-        'speed_per_min' => 'float',
+        'speed_per_min' => 'integer',
     ];
 
     public function job(): BelongsTo

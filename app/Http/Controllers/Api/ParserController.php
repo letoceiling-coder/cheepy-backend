@@ -12,7 +12,11 @@ use App\Models\Product;
 use App\Models\Category;
 use App\Jobs\ParserDaemonJob;
 use App\Jobs\RunParserJob;
+use App\Services\Parser\ParserLogger;
 use App\Services\DatabaseParserService;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Redis;
 use App\Services\PhotoDownloadService;
 use Illuminate\Http\JsonResponse;
@@ -370,6 +374,24 @@ class ParserController extends Controller
      */
     public function startDaemon(Request $request): JsonResponse
     {
+        try {
+            $proxyReady = $this->checkProxyAvailability();
+            if (!$proxyReady) {
+                ParserState::current()->update([
+                    'status' => ParserState::STATUS_PAUSED_NETWORK,
+                    'last_stop' => now(),
+                ]);
+                ParserLogger::write('network_error', 'Daemon start blocked: proxy check failed');
+
+                return response()->json([
+                    'error' => 'Proxy недоступен. Парсер переведен в paused_network.',
+                    'daemon_enabled' => false,
+                ], 503);
+            }
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Proxy precheck failed: ' . $e->getMessage()], 500);
+        }
+
         ParserState::current()->update([
             'status' => ParserState::STATUS_RUNNING,
             'last_start' => now(),
@@ -505,6 +527,8 @@ class ParserController extends Controller
         $progress = ParserProgress::query()
             ->latest('updated_at')
             ->first(['job_id', 'total_items', 'processed_items', 'failed_items', 'current_url', 'speed_per_min', 'updated_at']);
+        $proxyOk = $this->checkProxyAvailability();
+        $donorOk = $this->checkSadovodAvailability($proxyOk);
 
         $parserState = ParserState::current();
         return response()->json([
@@ -535,7 +559,52 @@ class ParserController extends Controller
             'error_frequency' => ['last_hour' => $errorsPerHour],
             'progress' => $progress,
             'warning' => $this->detectParserWarning($running, $queueParser + $queueDefault + $queuePhotos),
+            'proxy_status' => $proxyOk ? 'ok' : 'failed',
+            'sadovodbaza_status' => $donorOk ? 'ok' : 'failed',
             'metrics' => $metrics,
+        ]);
+    }
+
+    /**
+     * GET /api/v1/parser/health
+     */
+    public function health(): JsonResponse
+    {
+        $parserState = ParserState::current();
+        $queueParser = 0;
+        $queuePhotos = 0;
+        try {
+            $conn = Queue::connection(config('queue.default'));
+            $queueParser = (int) $conn->size('parser');
+            $queuePhotos = (int) $conn->size('photos');
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
+        $workersRunning = 0;
+        if (function_exists('shell_exec')) {
+            $supervisor = (string) (@shell_exec('supervisorctl status 2>/dev/null') ?? '');
+            foreach (preg_split('/\R/', $supervisor) as $line) {
+                if (str_contains($line, 'parser-worker') && str_contains($line, 'RUNNING')) {
+                    $workersRunning++;
+                }
+            }
+        }
+
+        $proxyOk = $this->checkProxyAvailability();
+        $donorOk = $this->checkSadovodAvailability($proxyOk);
+
+        return response()->json([
+            'parser_state' => $parserState->status,
+            'queue_size' => [
+                'parser' => $queueParser,
+                'photos' => $queuePhotos,
+                'total' => $queueParser + $queuePhotos,
+            ],
+            'workers' => $workersRunning,
+            'proxy_status' => $proxyOk ? 'ok' : 'failed',
+            'sadovodbaza_status' => $donorOk ? 'ok' : 'failed',
+            'timestamp' => now()->toIso8601String(),
         ]);
     }
 
@@ -726,6 +795,50 @@ class ParserController extends Controller
             }
         }
         return null;
+    }
+
+    private function checkProxyAvailability(): bool
+    {
+        $proxyEnabled = (bool) config('parser.proxy_enabled', true);
+        $proxyUrl = (string) (config('parser.proxy') ?: config('parser.proxy_url', ''));
+        if (!$proxyEnabled || $proxyUrl === '') {
+            return false;
+        }
+
+        try {
+            Http::timeout(20)
+                ->withOptions([
+                    'proxy' => $proxyUrl,
+                    'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
+                ])
+                ->get('https://sadovodbaza.ru')
+                ->throw();
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    private function checkSadovodAvailability(bool $viaProxy): bool
+    {
+        try {
+            $request = Http::timeout(20)->withOptions([
+                'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
+            ]);
+            if ($viaProxy) {
+                $request = $request->withOptions([
+                    'proxy' => (string) (config('parser.proxy') ?: config('parser.proxy_url', '')),
+                    'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
+                ]);
+            }
+            $response = $request->get('https://sadovodbaza.ru');
+            if (!$response->successful()) {
+                return false;
+            }
+            return str_contains(mb_strtolower($response->body()), 'sadovodbaza');
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     private function formatJob(ParserJob $job, bool $withLogs = false): array

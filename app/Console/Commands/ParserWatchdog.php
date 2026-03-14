@@ -36,14 +36,19 @@ class ParserWatchdog extends Command
         }
 
         $workersCount = 0;
+        $supervisorRows = [];
         if (function_exists('shell_exec')) {
+            $supervisorOut = (string) (@shell_exec('supervisorctl status 2>/dev/null') ?? '');
+            if ($supervisorOut !== '') {
+                $supervisorRows = array_values(array_filter(preg_split('/\R/', $supervisorOut)));
+            }
             $out = @shell_exec('ps aux 2>/dev/null | grep -E "artisan queue:work" | grep -v grep | wc -l');
             $workersCount = (int) trim((string) ($out ?? '0'));
         }
 
         $queueTotal = $queueParser + $queuePhotos;
         $settings = ParserSetting::current();
-        $queueThreshold = (int) ($settings->queue_threshold ?? config('parser.queue_threshold', 10000));
+        $queueThreshold = min(500, (int) ($settings->queue_threshold ?? config('parser.queue_threshold', 500)));
 
         if ($queueTotal > $queueThreshold) {
             Log::warning('Parser watchdog: queue threshold reached, limiting daemon concurrency', [
@@ -52,6 +57,45 @@ class ParserWatchdog extends Command
             ]);
             $this->warn("Watchdog: queue overloaded ({$queueTotal}), daemon dispatch temporarily limited");
             return 0;
+        }
+
+        if (!$dryRun && !empty($supervisorRows)) {
+            $desiredParser = (int) ($settings->workers_parser ?? config('parser.workers_parser', 2));
+            $desiredPhotos = (int) ($settings->workers_photos ?? config('parser.workers_photos', 1));
+            $runningParser = [];
+            $runningPhotos = [];
+
+            foreach ($supervisorRows as $row) {
+                if (!str_contains($row, 'RUNNING')) {
+                    continue;
+                }
+                $procName = trim((string) strtok($row, ' '));
+                if (str_contains($procName, 'parser-worker-photos:')) {
+                    $runningPhotos[] = $procName;
+                } elseif (str_contains($procName, 'parser-worker:')) {
+                    $runningParser[] = $procName;
+                }
+            }
+
+            if (count($runningParser) > $desiredParser) {
+                foreach (array_slice($runningParser, $desiredParser) as $proc) {
+                    @shell_exec('supervisorctl stop ' . escapeshellarg($proc) . ' 2>/dev/null');
+                }
+                Log::warning('Parser watchdog: reduced parser workers to target', [
+                    'running' => count($runningParser),
+                    'target' => $desiredParser,
+                ]);
+            }
+
+            if (count($runningPhotos) > $desiredPhotos) {
+                foreach (array_slice($runningPhotos, $desiredPhotos) as $proc) {
+                    @shell_exec('supervisorctl stop ' . escapeshellarg($proc) . ' 2>/dev/null');
+                }
+                Log::warning('Parser watchdog: reduced photo workers to target', [
+                    'running' => count($runningPhotos),
+                    'target' => $desiredPhotos,
+                ]);
+            }
         }
 
         // If queue has jobs but no workers → restart workers
