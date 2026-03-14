@@ -376,6 +376,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('start-daemon', [ParserController::class, 'startDaemon']);
         Route::post('stop', [ParserController::class, 'stop']);
         Route::post('stop-daemon', [ParserController::class, 'stopDaemon']);
+        Route::post('pause', [ParserController::class, 'pause']);
         Route::post('restart', [ParserController::class, 'restart']);
         Route::post('queue-clear', [ParserController::class, 'queueClear']);
         Route::post('clear-queue', [ParserController::class, 'queueClear']);

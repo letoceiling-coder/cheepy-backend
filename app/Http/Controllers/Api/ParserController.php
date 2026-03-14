@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ParserJob;
 use App\Models\ParserLog;
+use App\Models\ParserState;
 use App\Models\Product;
 use App\Models\Category;
 use App\Jobs\ParserDaemonJob;
@@ -21,8 +22,24 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 class ParserController extends Controller
 {
     /**
+     * GET /api/v1/parser/state
+     * Explicit parser state (source of truth for daemon).
+     */
+    public function state(Request $request): JsonResponse
+    {
+        $ps = ParserState::current();
+        return response()->json([
+            'status' => $ps->status,
+            'locked' => $ps->locked,
+            'last_start' => $ps->last_start?->toIso8601String(),
+            'last_stop' => $ps->last_stop?->toIso8601String(),
+            'updated_at' => $ps->updated_at->toIso8601String(),
+        ]);
+    }
+
+    /**
      * POST /api/v1/parser/start
-     * Запустить парсинг в фоновом процессе
+     * Запустить парсинг в фоновом процессе (один прогон или daemon)
      */
     public function start(Request $request): JsonResponse
     {
@@ -90,10 +107,15 @@ class ParserController extends Controller
 
     /**
      * POST /api/v1/parser/stop
-     * Mark all running/pending jobs as stopped so workers stop processing.
+     * 1. Set status=STOPPED, 2. Clear queues, 3. Restart workers, 4. Kill running jobs.
      */
     public function stop(Request $request): JsonResponse
     {
+        ParserState::current()->update([
+            'status' => ParserState::STATUS_STOPPED,
+            'last_stop' => now(),
+        ]);
+
         $updated = ParserJob::whereIn('status', ['running', 'pending'])
             ->update(['status' => 'stopped', 'finished_at' => now()]);
 
@@ -101,11 +123,25 @@ class ParserController extends Controller
             Redis::del('parser_running');
             Redis::del('parser_lock');
         } catch (\Throwable $e) {
-            // ignore if Redis not available
+            // ignore
+        }
+
+        try {
+            $conn = config('queue.default');
+            foreach (['parser', 'photos'] as $queue) {
+                \Illuminate\Support\Facades\Artisan::call('queue:clear', [
+                    'connection' => $conn,
+                    '--queue' => $queue,
+                    '--force' => true,
+                ]);
+            }
+            \Illuminate\Support\Facades\Artisan::call('queue:restart');
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Parser stop: queue clear/restart failed', ['error' => $e->getMessage()]);
         }
 
         return response()->json([
-            'message' => $updated > 0 ? 'Парсер остановлен' : 'Нет активных заданий',
+            'message' => 'Парсер остановлен',
             'jobs_stopped' => $updated,
         ]);
     }
@@ -293,38 +329,43 @@ class ParserController extends Controller
 
     /**
      * POST /api/v1/parser/start-daemon
-     * Start continuous parser: runs full parse, then repeats 60 sec after each run completes.
+     * Set status=RUNNING, dispatch first run.
      */
     public function startDaemon(Request $request): JsonResponse
     {
-        Setting::updateOrCreate(
-            ['key' => 'parser_daemon_enabled'],
-            ['value' => '1', 'group' => 'parser', 'type' => 'bool']
-        );
+        ParserState::current()->update([
+            'status' => ParserState::STATUS_RUNNING,
+            'last_start' => now(),
+        ]);
 
         ParserDaemonJob::dispatch();
 
         return response()->json([
-            'message' => 'Непрерывный парсер запущен. Следующий прогон — через 60 сек после завершения текущего.',
+            'message' => 'Парсер запущен. Следующий прогон — через 60 сек после завершения текущего.',
             'daemon_enabled' => true,
         ], 201);
     }
 
     /**
      * POST /api/v1/parser/stop-daemon
-     * Stop continuous parser (disables auto-restart).
+     * Same as stop: status=STOPPED, clear queue, restart workers.
      */
     public function stopDaemon(Request $request): JsonResponse
     {
-        Setting::updateOrCreate(
-            ['key' => 'parser_daemon_enabled'],
-            ['value' => '0', 'group' => 'parser', 'type' => 'bool']
-        );
+        return $this->stop($request);
+    }
 
-        return response()->json([
-            'message' => 'Непрерывный парсер отключён. Текущий прогон будет завершён.',
-            'daemon_enabled' => false,
+    /**
+     * POST /api/v1/parser/pause
+     * Set status=PAUSED — daemon won't schedule next run.
+     */
+    public function pause(Request $request): JsonResponse
+    {
+        ParserState::current()->update([
+            'status' => ParserState::STATUS_PAUSED,
+            'last_stop' => now(),
         ]);
+        return response()->json(['message' => 'Парсер приостановлен', 'status' => 'paused']);
     }
 
     /**
@@ -347,9 +388,11 @@ class ParserController extends Controller
 
         $warning = $this->detectParserWarning($running, $queueParser + $queuePhotos);
 
+        $parserState = ParserState::current();
         return response()->json([
             'is_running'          => $running !== null,
-            'daemon_enabled'      => (bool) Setting::get('parser_daemon_enabled', false),
+            'daemon_enabled'      => $parserState->status === ParserState::STATUS_RUNNING,
+            'parser_state'        => $parserState->status,
             'current_job'         => $running ? $this->formatJob($running) : null,
             'last_completed'      => $lastCompleted ? $this->formatJob($lastCompleted) : null,
             'queue_parser_size'   => $queueParser,
@@ -404,10 +447,11 @@ class ParserController extends Controller
             $workersRunning = (int) trim((string) ($out ?? '0'));
         }
 
+        $parserState = ParserState::current();
         return response()->json([
             'workers_running' => $workersRunning,
             'parser_running' => $running !== null,
-            'daemon_enabled' => (bool) Setting::get('parser_daemon_enabled', false),
+            'daemon_enabled' => $parserState->status === ParserState::STATUS_RUNNING,
             'lock_held' => $lockHeld,
             'current_job' => $running ? $this->formatJob($running) : null,
             'parser_queue_size' => $queueParser,

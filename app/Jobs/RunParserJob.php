@@ -10,6 +10,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redis;
 
 class RunParserJob implements ShouldQueue
 {
@@ -46,6 +47,7 @@ class RunParserJob implements ShouldQueue
             $service = new DatabaseParserService($job);
             $service->run();
         } catch (\Throwable $e) {
+            $this->releaseParserLock();
             Log::error("RunParserJob failed for job {$this->parserJobId}: " . $e->getMessage());
             $job->update([
                 'status' => 'failed',
@@ -66,8 +68,18 @@ class RunParserJob implements ShouldQueue
                 'error_message' => $exception->getMessage(),
             ]);
         }
+        $this->releaseParserLock();
         Log::error("RunParserJob permanently failed for job {$this->parserJobId}", [
             'exception' => $exception->getMessage(),
         ]);
+    }
+
+    private function releaseParserLock(): void
+    {
+        try {
+            Redis::del('parser_lock');
+        } catch (\Throwable $e) {
+            // ignore
+        }
     }
 }

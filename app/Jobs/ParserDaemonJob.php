@@ -3,13 +3,14 @@
 namespace App\Jobs;
 
 use App\Models\ParserJob;
-use App\Models\Setting;
+use App\Models\ParserState;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redis;
 
 class ParserDaemonJob implements ShouldQueue
 {
@@ -24,8 +25,9 @@ class ParserDaemonJob implements ShouldQueue
 
     public function handle(): void
     {
-        if (!Setting::get('parser_daemon_enabled', false)) {
-            Log::info('Parser daemon: disabled, stopping');
+        $state = ParserState::current();
+        if ($state->status !== ParserState::STATUS_RUNNING) {
+            Log::info('Parser daemon blocked (state=' . $state->status . ')');
             return;
         }
 
@@ -37,6 +39,16 @@ class ParserDaemonJob implements ShouldQueue
         }
 
         Log::info('Parser daemon iteration started');
+
+        try {
+            if (!Redis::set('parser_lock', 1, 'EX', 7200, 'NX')) {
+                Log::warning('Parser daemon: could not acquire lock, skipping');
+                return;
+            }
+        } catch (\Throwable $e) {
+            Log::error('Parser daemon: Redis lock failed', ['error' => $e->getMessage()]);
+            return;
+        }
 
         $job = ParserJob::create([
             'type' => 'full',

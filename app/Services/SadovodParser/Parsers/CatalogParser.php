@@ -3,6 +3,7 @@
 namespace App\Services\SadovodParser\Parsers;
 
 use App\Services\SadovodParser\HttpClient;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\DomCrawler\Crawler;
 
 class CatalogParser
@@ -27,6 +28,13 @@ class CatalogParser
         $crawler = $this->http->getCrawler($path);
         $products = $this->extractProductsFromListing($crawler);
         $hasMore = $this->hasNextPage($crawler);
+
+        Log::info('Products on page', [
+            'path' => $path,
+            'page' => $pageNumber,
+            'count' => count($products),
+            'has_more' => $hasMore,
+        ]);
 
         return [
             'products' => array_values($products),

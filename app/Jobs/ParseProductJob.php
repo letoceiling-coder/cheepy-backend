@@ -27,7 +27,8 @@ class ParseProductJob implements ShouldQueue
         public int $categoryId,
         public array $options = []
     ) {
-        $this->onQueue('parser');
+        // Keep product processing off the category queue to avoid parser starvation.
+        $this->onQueue((string) config('sadovod.product_queue', 'photos'));
     }
 
     public function handle(): void
@@ -35,19 +36,15 @@ class ParseProductJob implements ShouldQueue
         $job = ParserJob::find($this->parserJobId);
         if (!$job) {
             Log::warning('ParseProductJob: ParserJob not found', ['id' => $this->parserJobId]);
+            $this->logOrphanOnce('ParseProductJob', 'product');
             return;
         }
 
-        if ($this->isCancelled($job)) {
-            return;
-        }
-
+        // Не прерываем по статусу job: задача уже в очереди — сохраняем товар до конца.
+        // isCancelled проверяется только в ParseCategoryJob (прекращение постановки новых задач).
         $category = Category::find($this->categoryId);
         $saveDetails = $this->options['save_details'] ?? true;
         $savePhotos = $this->options['save_photos'] ?? false;
-
-        $externalId = $this->productData['external_id'] ?? $this->productData['id'] ?? null;
-        Log::info('ParseProductJob started', ['external_id' => $externalId]);
 
         $service = new DatabaseParserService($job);
         $result = $service->saveProductFromListing(
@@ -58,25 +55,28 @@ class ParseProductJob implements ShouldQueue
             true
         );
 
-        Log::info('Product save result', [
-            'external_id' => $externalId,
-            'saved' => $result,
-        ]);
-
         if ($result === false) {
-            Log::warning('Product skipped', ['external_id' => $externalId]);
+            Log::debug('Product skipped', [
+                'product_external_id' => $this->productData['external_id'] ?? $this->productData['id'] ?? null,
+                'category_id' => $this->categoryId,
+                'parser_job_id' => $this->parserJobId,
+            ]);
         }
-
-        ParserLog::write('debug', 'ParseProductJob completed', [
-            'product_external_id' => $this->productData['id'] ?? null,
-            'category_id' => $this->categoryId,
-            'parser_job_id' => $this->parserJobId,
-        ], $this->parserJobId, 'Parser', 'product', (string) ($this->productData['id'] ?? ''));
     }
 
-    private function isCancelled(ParserJob $job): bool
+    private function logOrphanOnce(string $jobType, string $entityType): void
     {
-        $job->refresh();
-        return in_array($job->status, ['cancelled', 'stopped'], true);
+        $key = "parser:orphan_logged:{$this->parserJobId}";
+        try {
+            if (\Illuminate\Support\Facades\Redis::set($key, 1, 'EX', 3600, 'NX')) {
+                ParserLog::write('error',
+                    "Орфанная задача: ParserJob #{$this->parserJobId} не найден. Товары не сохраняются. Выполните «Сброс системы», затем «Запустить».",
+                    ['job_type' => $jobType, 'parser_job_id' => $this->parserJobId],
+                    null, 'Parser', $entityType, (string) ($this->productData['id'] ?? '')
+                );
+            }
+        } catch (\Throwable $e) {
+            // ignore Redis/log failures
+        }
     }
 }

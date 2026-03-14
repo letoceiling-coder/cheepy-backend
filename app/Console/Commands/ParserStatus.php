@@ -3,8 +3,8 @@
 namespace App\Console\Commands;
 
 use App\Models\ParserJob;
+use App\Models\ParserState;
 use App\Models\Product;
-use App\Models\Setting;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Queue;
 
@@ -16,7 +16,7 @@ class ParserStatus extends Command
     public function handle(): int
     {
         $running = ParserJob::whereIn('status', ['running', 'pending'])->latest()->first();
-        $daemonEnabled = (bool) Setting::get('parser_daemon_enabled', false);
+        $daemonEnabled = ParserState::current()->status === ParserState::STATUS_RUNNING;
 
         $parserSize = 0;
         $photosSize = 0;

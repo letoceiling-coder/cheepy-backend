@@ -372,6 +372,9 @@ class DatabaseParserService
                 Log::warning('AttributeExtractionService failed, used legacy', ['error' => $e->getMessage()]);
             }
 
+            // Always persist core filter attributes (color/size) even if rule-based extraction misses them.
+            $this->syncCoreAttributes($product, $pData['characteristics'] ?? [], $category);
+
             // Фото: inline download или постановка в очередь
             if ($savePhotos && !empty($pData['photos'])) {
                 if ($dispatchPhotosToQueue) {
@@ -388,12 +391,15 @@ class DatabaseParserService
 
             $this->job->increment('saved_products');
             $this->job->increment('parsed_products');
-            $this->job->refresh();
-            event(new ProductParsed($this->job, [
-                'id' => $product->id,
-                'external_id' => $product->external_id,
-                'title' => $product->title ?? $pData['title'] ?? '',
-            ]));
+            $broadcastEvery = max(1, (int) config('sadovod.product_broadcast_every', 20));
+            if (((int) $this->job->parsed_products % $broadcastEvery) === 0) {
+                $this->job->refresh();
+                event(new ProductParsed($this->job, [
+                    'id' => $product->id,
+                    'external_id' => $product->external_id,
+                    'title' => $product->title ?? $pData['title'] ?? '',
+                ]));
+            }
             return true;
         } catch (\Throwable $e) {
             $this->log('error', "Ошибка сохранения товара: " . $e->getMessage(), [
@@ -437,6 +443,60 @@ class DatabaseParserService
         }
     }
 
+    private function syncCoreAttributes(Product $product, array $characteristics, ?Category $category): void
+    {
+        $color = $characteristics['color'] ?? $characteristics['Цвет'] ?? $product->color ?? null;
+        $size = $characteristics['size'] ?? $characteristics['Размер'] ?? $characteristics['size_range'] ?? $product->size_range ?? null;
+
+        $color = $this->normalizeCoreAttrValue($color);
+        $size = $this->normalizeCoreAttrValue($size);
+
+        if ($color !== null) {
+            ProductAttribute::updateOrCreate(
+                [
+                    'product_id' => $product->id,
+                    'attr_name' => 'Цвет',
+                    'attr_type' => 'color',
+                ],
+                [
+                    'category_id' => $category?->id,
+                    'attr_value' => $color,
+                ]
+            );
+        }
+
+        if ($size !== null) {
+            ProductAttribute::updateOrCreate(
+                [
+                    'product_id' => $product->id,
+                    'attr_name' => 'Размер',
+                    'attr_type' => 'size',
+                ],
+                [
+                    'category_id' => $category?->id,
+                    'attr_value' => $size,
+                ]
+            );
+        }
+    }
+
+    private function normalizeCoreAttrValue(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = trim(preg_replace('/\s+/u', ' ', $value) ?? $value);
+        if ($value === '' || mb_strlen($value) > 200) {
+            return null;
+        }
+        if (preg_match('/Добавить в корзину|Смотреть все|Позвонить/ui', $value)) {
+            return null;
+        }
+
+        return mb_substr($value, 0, 190);
+    }
+
     private function createPhotoRecordsOnly(Product $product, array $photos): void
     {
         if (empty($photos)) return;
@@ -473,7 +533,7 @@ class DatabaseParserService
             return null;
         }
 
-        return Cache::lock("seller:parse:{$slug}", 30)->get(function () use ($slug, $sellerFromProduct): ?Seller {
+        $seller = Cache::lock("seller:parse:{$slug}", 30)->get(function () use ($slug, $sellerFromProduct): ?Seller {
             $existing = Seller::where('slug', $slug)->first();
             if ($existing) {
                 Log::info('Seller reused', ['slug' => $slug, 'parser_job_id' => $this->job->id]);
@@ -509,6 +569,14 @@ class DatabaseParserService
             }
             return $seller;
         });
+
+        // Cache::lock()->get() returns false when lock is not acquired.
+        // Never propagate bool to keep strict ?Seller return type.
+        if ($seller === false) {
+            return Seller::where('slug', $slug)->first();
+        }
+
+        return $seller;
     }
 
     private function runSingleSeller(string $slug): void

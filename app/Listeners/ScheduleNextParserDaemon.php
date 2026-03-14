@@ -4,7 +4,7 @@ namespace App\Listeners;
 
 use App\Events\ParserFinished;
 use App\Jobs\ParserDaemonJob;
-use App\Models\Setting;
+use App\Models\ParserState;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\Log;
 
@@ -15,7 +15,8 @@ class ScheduleNextParserDaemon implements ShouldQueue
 
     public function handle(ParserFinished $event): void
     {
-        if (!Setting::get('parser_daemon_enabled', false)) {
+        if (ParserState::current()->status !== ParserState::STATUS_RUNNING) {
+            Log::info('ScheduleNextParserDaemon: parser state is not RUNNING, skipping');
             return;
         }
 

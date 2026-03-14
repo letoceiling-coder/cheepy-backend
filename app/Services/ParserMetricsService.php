@@ -76,4 +76,25 @@ class ParserMetricsService
             'retry_count' => self::getRetryCount(),
         ];
     }
+
+    public static function getProductsPerMinute(): float
+    {
+        try {
+            $running = \App\Models\ParserJob::whereIn('status', ['running', 'pending'])
+                ->latest('id')
+                ->first();
+
+            if ($running && $running->started_at) {
+                $minutes = max(1.0, (float) $running->started_at->diffInSeconds(now()) / 60.0);
+                // saved_products reflects actual parser throughput (including updates),
+                // while Product::count by parsed_at undercounts when the same product is updated repeatedly.
+                return round(((int) $running->saved_products) / $minutes, 2);
+            }
+
+            $count = \App\Models\Product::where('parsed_at', '>=', now()->subHour())->count();
+            return round($count / 60, 2);
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
 }

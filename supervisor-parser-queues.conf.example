@@ -4,11 +4,12 @@
 ;
 ; parser-workers = 6 (safe for 1.9-2 GiB RAM; use 4 on 1 GiB servers)
 ; photo-workers = 2 (process photo download jobs)
+; default-worker = 1 (optional, for jobs on default queue)
 ; Replace /var/www/online-parser.siteaacess.store with your app path.
 
 [program:parser-worker]
 process_name=%(program_name)s_%(process_num)02d
-command=php /var/www/online-parser.siteaacess.store/artisan queue:work redis --queue=parser --tries=2 --timeout=1800 --sleep=3
+command=php /var/www/online-parser.siteaacess.store/artisan queue:work redis --queue=parser --sleep=3 --tries=2 --timeout=600
 numprocs=6
 autostart=true
 autorestart=true
@@ -19,7 +20,7 @@ stopwaitsecs=60
 
 [program:photo-worker]
 process_name=%(program_name)s_%(process_num)02d
-command=php /var/www/online-parser.siteaacess.store/artisan queue:work redis --queue=photos --tries=2 --timeout=600 --sleep=3
+command=php /var/www/online-parser.siteaacess.store/artisan queue:work redis --queue=photos --sleep=3 --tries=2 --timeout=600
 numprocs=2
 autostart=true
 autorestart=true
@@ -27,3 +28,10 @@ user=www-data
 redirect_stderr=true
 stdout_logfile=/var/www/online-parser.siteaacess.store/storage/logs/photo-worker.log
 stopwaitsecs=30
+
+;[program:default-worker]
+;process_name=%(program_name)s_%(process_num)02d
+;command=php /var/www/online-parser.siteaacess.store/artisan queue:work redis --queue=default --sleep=3 --tries=2
+;numprocs=1
+;autostart=true
+;autorestart=true

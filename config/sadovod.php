@@ -58,6 +58,33 @@ return [
 
     /*
      * Max parser queue size before throttling (ParseCategoryJob waits until queue drops below this).
+     * When queue exceeds this, category dispatch pauses until workers drain the queue.
      */
-    'max_parser_queue_size' => (int) env('SADAVOD_MAX_PARSER_QUEUE_SIZE', 500),
+    'max_parser_queue_size' => (int) env('SADAVOD_MAX_PARSER_QUEUE_SIZE', 1000),
+
+    /*
+     * Queue for product processing jobs (separate from category queue).
+     */
+    'product_queue' => env('SADAVOD_PRODUCT_QUEUE', 'photos'),
+
+    /*
+     * Max product queue size before throttling category dispatch.
+     */
+    'max_product_queue_size' => (int) env('SADAVOD_MAX_PRODUCT_QUEUE_SIZE', 180000),
+
+    /*
+     * CPU load guard for dispatching new product jobs from categories.
+     * When 1-minute load average is higher, category dispatch waits.
+     */
+    'max_dispatch_cpu_load' => (float) env('SADAVOD_MAX_DISPATCH_CPU_LOAD', 6.0),
+
+    /*
+     * Sleep seconds between throttle checks.
+     */
+    'dispatch_throttle_sleep_sec' => (int) env('SADAVOD_DISPATCH_THROTTLE_SLEEP_SEC', 2),
+
+    /*
+     * Broadcast ProductParsed event once per N saved products.
+     */
+    'product_broadcast_every' => (int) env('SADAVOD_PRODUCT_BROADCAST_EVERY', 20),
 ];

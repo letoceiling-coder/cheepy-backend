@@ -20,6 +20,7 @@ class ParserQueueClear extends Command
         Artisan::call('queue:clear', [
             'connection' => $connection,
             '--queue' => $queue,
+            '--force' => true,
         ]);
 
         $this->info(Artisan::output());

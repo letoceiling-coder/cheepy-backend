@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Events\ParserFinished;
+use App\Listeners\ReleaseParserLockOnFinished;
 use App\Listeners\ScheduleNextParserDaemon;
 use App\Services\SadovodParser\HttpClient;
 use App\Services\SadovodParser\Parsers\MenuParser;
@@ -30,6 +31,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        Event::listen(ParserFinished::class, ReleaseParserLockOnFinished::class);
         Event::listen(ParserFinished::class, ScheduleNextParserDaemon::class);
     }
 }

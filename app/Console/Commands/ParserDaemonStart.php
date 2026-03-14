@@ -3,20 +3,20 @@
 namespace App\Console\Commands;
 
 use App\Jobs\ParserDaemonJob;
-use App\Models\Setting;
+use App\Models\ParserState;
 use Illuminate\Console\Command;
 
 class ParserDaemonStart extends Command
 {
     protected $signature = 'parser:daemon-start';
-    protected $description = 'Start continuous parser daemon (dispatches first run, schedules next on completion)';
+    protected $description = 'Start continuous parser daemon (sets parser_state=RUNNING, dispatches first run)';
 
     public function handle(): int
     {
-        Setting::updateOrCreate(
-            ['key' => 'parser_daemon_enabled'],
-            ['value' => '1', 'group' => 'parser', 'type' => 'bool']
-        );
+        ParserState::current()->update([
+            'status' => ParserState::STATUS_RUNNING,
+            'last_start' => now(),
+        ]);
 
         ParserDaemonJob::dispatch();
 

@@ -123,14 +123,41 @@ class ProductParser
     private function extractCharacteristics(Crawler $crawler): array
     {
         $chars = [];
-        $text = $crawler->filter('main')->text();
-        if (preg_match('/Цвет\s*([^\n]+)/u', $text, $m)) {
-            $chars['color'] = trim($m[1]);
+
+        try {
+            $colorNode = $crawler->filter('.color-label a, [class*="color-label"] a, a[href*="?color="], a[href*="&color="]')->first();
+            if ($colorNode->count() > 0) {
+                $color = $this->cleanAttributeValue($colorNode->text());
+                if ($color !== '') {
+                    $chars['color'] = $color;
+                    $chars['Цвет'] = $color;
+                }
+            }
+        } catch (\Throwable $e) {
+            // ignore selector parse errors
         }
-        if (preg_match('/Размер[^\d]*([\d\s\-]+)/ui', $text, $m)) {
-            $chars['size'] = trim($m[1]);
+
+        try {
+            $text = $crawler->filter('main')->text();
+        } catch (\Throwable $e) {
+            $text = '';
         }
-        if (preg_match('/Категория[^\n]*/u', $text, $m)) {
+
+        if ($text !== '' && !isset($chars['color']) && preg_match('/Цвет\s*([^\n\r]+)/u', $text, $m)) {
+            $color = $this->cleanAttributeValue($m[1]);
+            if ($color !== '') {
+                $chars['color'] = $color;
+                $chars['Цвет'] = $color;
+            }
+        }
+        if ($text !== '' && preg_match('/Размер(?:ный ряд)?[^\d]*([\d\s\-–]+)/ui', $text, $m)) {
+            $size = $this->cleanAttributeValue($m[1]);
+            if ($size !== '') {
+                $chars['size'] = $size;
+                $chars['Размер'] = $size;
+            }
+        }
+        if ($text !== '' && preg_match('/Категория[^\n]*/u', $text, $m)) {
             $chars['category_label'] = trim($m[0]);
         }
         $crawler->filter('main p, main [class*="description"]')->each(function (Crawler $node) use (&$chars) {
@@ -140,12 +167,30 @@ class ProductParser
                     $line = trim($line);
                     if (str_contains($line, ':')) {
                         [$k, $v] = explode(':', $line, 2);
-                        $chars[trim($k)] = trim($v);
+                        $key = trim($k);
+                        $value = $this->cleanAttributeValue($v);
+                        if ($value !== '') {
+                            $chars[$key] = $value;
+                        }
                     }
                 }
             }
         });
         return $chars;
+    }
+
+    private function cleanAttributeValue(string $value): string
+    {
+        $value = trim(preg_replace('/\s+/u', ' ', $value) ?? $value);
+        if ($value === '') {
+            return '';
+        }
+
+        // Stop at common trailing UI fragments accidentally captured from page text.
+        $value = preg_replace('/\s*(Размер(?:ный ряд)?|Добавить в корзину|Категория)\b.*$/ui', '', $value) ?? $value;
+        $value = trim($value, " \t\n\r\0\x0B,.;:-");
+
+        return mb_substr($value, 0, 120);
     }
 
     private function extractDescription(Crawler $crawler): string

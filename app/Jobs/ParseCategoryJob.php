@@ -36,6 +36,7 @@ class ParseCategoryJob implements ShouldQueue
         $job = ParserJob::find($this->parserJobId);
         if (!$job) {
             Log::warning('ParseCategoryJob: ParserJob not found', ['id' => $this->parserJobId]);
+            $this->logOrphanOnce('ParseCategoryJob', 'category');
             return;
         }
 
@@ -240,20 +241,67 @@ class ParseCategoryJob implements ShouldQueue
         return in_array($job->status, ['cancelled', 'stopped'], true);
     }
 
+    private function logOrphanOnce(string $jobType, string $entityType): void
+    {
+        $key = "parser:orphan_logged:{$this->parserJobId}";
+        try {
+            if (\Illuminate\Support\Facades\Redis::set($key, 1, 'EX', 3600, 'NX')) {
+                ParserLog::write('error',
+                    "Орфанная задача: ParserJob #{$this->parserJobId} не найден. Выполните «Сброс системы», затем «Запустить».",
+                    ['job_type' => $jobType, 'parser_job_id' => $this->parserJobId, 'category_id' => $this->categoryId],
+                    null, 'Parser', $entityType, (string) $this->categoryId
+                );
+            }
+        } catch (\Throwable $e) {
+            // ignore
+        }
+    }
+
     private function waitForQueueCapacity(): void
     {
-        $maxQueueSize = (int) config('sadovod.max_parser_queue_size', 500);
+        $maxParserQueueSize = (int) config('sadovod.max_parser_queue_size', 500);
+        $productQueue = (string) config('sadovod.product_queue', 'photos');
+        $maxProductQueueSize = (int) config('sadovod.max_product_queue_size', 180000);
+        $maxCpuLoad = (float) config('sadovod.max_dispatch_cpu_load', 6.0);
+        $throttleSleep = max(1, (int) config('sadovod.dispatch_throttle_sleep_sec', 2));
+
         while (true) {
             try {
-                $queueSize = Queue::connection('redis')->size('parser');
-                if ($queueSize < $maxQueueSize) {
+                $parserQueueSize = Queue::connection('redis')->size('parser');
+                $productQueueSize = Queue::connection('redis')->size($productQueue);
+                $cpuLoad = $this->getCpuLoad1m();
+                $cpuOk = $cpuLoad === null || $cpuLoad <= $maxCpuLoad;
+
+                if ($parserQueueSize < $maxParserQueueSize && $productQueueSize < $maxProductQueueSize && $cpuOk) {
                     break;
                 }
-                Log::info('Queue throttling active', ['queue_size' => $queueSize]);
-                sleep(2);
+                Log::info('Queue throttling active', [
+                    'parser_queue_size' => $parserQueueSize,
+                    'parser_queue_limit' => $maxParserQueueSize,
+                    'product_queue' => $productQueue,
+                    'product_queue_size' => $productQueueSize,
+                    'product_queue_limit' => $maxProductQueueSize,
+                    'cpu_load_1m' => $cpuLoad,
+                    'cpu_load_limit' => $maxCpuLoad,
+                ]);
+                sleep($throttleSleep);
             } catch (\Throwable $e) {
                 break;
             }
         }
+    }
+
+    private function getCpuLoad1m(): ?float
+    {
+        if (!function_exists('sys_getloadavg')) {
+            return null;
+        }
+
+        $load = sys_getloadavg();
+        if (!is_array($load) || !isset($load[0])) {
+            return null;
+        }
+
+        return (float) $load[0];
     }
 }
