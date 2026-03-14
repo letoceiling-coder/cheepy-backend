@@ -10,8 +10,8 @@ class HttpClient
     public function __construct(
         private readonly int $timeoutSeconds = 60,
         private readonly int $retryCount = 3,
-        private readonly int $delayMinMs = 800,
-        private readonly int $delayMaxMs = 2000,
+        private readonly int $delayMinMs = 1500,
+        private readonly int $delayMaxMs = 3000,
     ) {
     }
 
@@ -27,6 +27,11 @@ class HttpClient
                 // exponential-like backoff: 5s, 10s, 15s
                 return $attempt * 5000;
             })
+            ->withOptions([
+                'curl' => [
+                    CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
+                ],
+            ])
             ->withHeaders(array_merge([
                 'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
                 'Accept' => 'text/html,application/xhtml+xml',

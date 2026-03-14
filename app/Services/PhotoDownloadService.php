@@ -12,10 +12,14 @@ use Illuminate\Support\Facades\Storage;
 class PhotoDownloadService
 {
     private Client $client;
+    private int $delayMinMs = 1500;
+    private int $delayMaxMs = 3000;
 
     public function __construct()
     {
         $settings = ParserSetting::current();
+        $this->delayMinMs = max(100, (int) ($settings->request_delay_min ?? 1500));
+        $this->delayMaxMs = max($this->delayMinMs, (int) ($settings->request_delay_max ?? 3000));
         $this->client = new Client([
             'timeout' => max(10, (int) ($settings->timeout_seconds ?? 60)),
             'verify' => false,
@@ -109,7 +113,7 @@ class PhotoDownloadService
         while ($attempt < $maxAttempts) {
             $attempt++;
             try {
-                usleep(random_int(800000, 2000000));
+                usleep(random_int($this->delayMinMs * 1000, $this->delayMaxMs * 1000));
                 $response = $this->client->get($url, [
                     'headers' => [
                         'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',

@@ -45,8 +45,8 @@ class ParserSetting extends Model
             'download_photos' => true,
             'store_photo_links' => true,
             'max_workers' => 3,
-            'request_delay_min' => 800,
-            'request_delay_max' => 2000,
+            'request_delay_min' => 1500,
+            'request_delay_max' => 3000,
             'timeout_seconds' => 60,
         ];
     }
