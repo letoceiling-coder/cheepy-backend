@@ -475,8 +475,17 @@ class ParserController extends Controller
 
         $workersRunning = 0;
         if (function_exists('shell_exec')) {
-            $out = @shell_exec('ps aux 2>/dev/null | grep -E "artisan queue:work" | grep -v grep | wc -l');
-            $workersRunning = (int) trim((string) ($out ?? '0'));
+            $supervisor = (string) (@shell_exec('supervisorctl status 2>/dev/null') ?? '');
+            if ($supervisor !== '') {
+                foreach (preg_split('/\R/', $supervisor) as $line) {
+                    if (str_contains($line, 'parser-worker') && str_contains($line, 'RUNNING')) {
+                        $workersRunning++;
+                    }
+                }
+            } else {
+                $out = @shell_exec('ps aux 2>/dev/null | grep -E "artisan queue:work" | grep -v grep | wc -l');
+                $workersRunning = (int) trim((string) ($out ?? '0'));
+            }
         }
 
         $lastErrors = ParserLog::whereIn('level', ['error', 'warn'])

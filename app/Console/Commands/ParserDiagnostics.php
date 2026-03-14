@@ -50,10 +50,19 @@ class ParserDiagnostics extends Command
         }
 
         $workers = 0;
-        $out = [];
-        if (function_exists('exec')) {
-            exec('ps aux 2>/dev/null | grep -E "queue:work" | grep -v grep | wc -l 2>/dev/null', $out);
-            $workers = (int) trim($out[0] ?? '0');
+        if (function_exists('shell_exec')) {
+            $supervisor = (string) (@shell_exec('supervisorctl status 2>/dev/null') ?? '');
+            if ($supervisor !== '') {
+                foreach (preg_split('/\R/', $supervisor) as $line) {
+                    if (str_contains($line, 'parser-worker') && str_contains($line, 'RUNNING')) {
+                        $workers++;
+                    }
+                }
+            } else {
+                $out = [];
+                exec('ps aux 2>/dev/null | grep -E "queue:work" | grep -v grep | wc -l 2>/dev/null', $out);
+                $workers = (int) trim($out[0] ?? '0');
+            }
         }
 
         $this->table(
