@@ -109,15 +109,111 @@ Route::prefix('v1')->group(function () {
 
         $queueSize = 0;
         try {
-            $queueSize = (int) \Illuminate\Support\Facades\Queue::connection(config('queue.default'))->size('default');
+            $conn = \Illuminate\Support\Facades\Queue::connection(config('queue.default'));
+            $queueSize = (int) $conn->size('parser') + (int) $conn->size('photos') + (int) $conn->size('default');
         } catch (\Throwable $e) {
             $queueSize = 0;
         }
 
+        $now = now();
         $parserRunning = \App\Models\ParserJob::whereIn('status', ['running', 'pending'])->exists();
         $productsTotal = \App\Models\Product::count();
         $productsToday = \App\Models\Product::whereDate('parsed_at', today())->count();
-        $errorsToday = \App\Models\Product::where('status', 'error')->whereDate('updated_at', today())->count();
+        $productErrorsToday = \App\Models\Product::where('status', 'error')->whereDate('updated_at', today())->count();
+        $parserErrorsToday = \App\Models\ParserLog::where('level', 'error')->whereDate('logged_at', today())->count();
+        $errorsToday = (int) $productErrorsToday + (int) $parserErrorsToday;
+
+        $errors15m = 0;
+        $errors1h = 0;
+        $errors24h = 0;
+        $errorReasons1h = [];
+        $errorReasons = [];
+        $recentErrorLogs = [];
+        try {
+            $productErrors15m = \App\Models\Product::where('status', 'error')
+                ->where('updated_at', '>=', $now->copy()->subMinutes(15))
+                ->count();
+            $parserErrors15m = \App\Models\ParserLog::where('level', 'error')
+                ->where('logged_at', '>=', $now->copy()->subMinutes(15))
+                ->count();
+            $errors15m = (int) $productErrors15m + (int) $parserErrors15m;
+
+            $productErrors1h = \App\Models\Product::where('status', 'error')
+                ->where('updated_at', '>=', $now->copy()->subHour())
+                ->count();
+            $parserErrors1h = \App\Models\ParserLog::where('level', 'error')
+                ->where('logged_at', '>=', $now->copy()->subHour())
+                ->count();
+            $errors1h = (int) $productErrors1h + (int) $parserErrors1h;
+
+            $productErrors24h = \App\Models\Product::where('status', 'error')
+                ->where('updated_at', '>=', $now->copy()->subDay())
+                ->count();
+            $parserErrors24h = \App\Models\ParserLog::where('level', 'error')
+                ->where('logged_at', '>=', $now->copy()->subDay())
+                ->count();
+            $errors24h = (int) $productErrors24h + (int) $parserErrors24h;
+
+            $errorReasons1h = \App\Models\ParserLog::query()
+                ->selectRaw('module, message, COUNT(*) as cnt, MAX(logged_at) as last_seen')
+                ->where('level', 'error')
+                ->where('logged_at', '>=', $now->copy()->subHour())
+                ->groupBy('module', 'message')
+                ->orderByDesc('cnt')
+                ->limit(8)
+                ->get()
+                ->map(function ($row) use ($now) {
+                    $lastSeen = \Illuminate\Support\Carbon::parse($row->last_seen);
+                    return [
+                        'module' => (string) $row->module,
+                        'message' => mb_substr((string) $row->message, 0, 220),
+                        'count' => (int) $row->cnt,
+                        'last_seen' => $lastSeen->toIso8601String(),
+                        'age_minutes' => $lastSeen->diffInMinutes($now),
+                        'is_active_15m' => $lastSeen->greaterThanOrEqualTo($now->copy()->subMinutes(15)),
+                    ];
+                })
+                ->values()
+                ->all();
+
+            $errorReasons = \App\Models\ParserLog::query()
+                ->selectRaw('module, message, COUNT(*) as cnt, MAX(logged_at) as last_seen')
+                ->where('level', 'error')
+                ->where('logged_at', '>=', $now->copy()->subDay())
+                ->groupBy('module', 'message')
+                ->orderByDesc('cnt')
+                ->limit(8)
+                ->get()
+                ->map(function ($row) use ($now) {
+                    $lastSeen = \Illuminate\Support\Carbon::parse($row->last_seen);
+                    return [
+                        'module' => (string) $row->module,
+                        'message' => mb_substr((string) $row->message, 0, 220),
+                        'count' => (int) $row->cnt,
+                        'last_seen' => $lastSeen->toIso8601String(),
+                        'age_minutes' => $lastSeen->diffInMinutes($now),
+                        'is_active_15m' => $lastSeen->greaterThanOrEqualTo($now->copy()->subMinutes(15)),
+                    ];
+                })
+                ->values()
+                ->all();
+
+            $recentErrorLogs = \App\Models\ParserLog::query()
+                ->where('level', 'error')
+                ->latest('logged_at')
+                ->limit(10)
+                ->get(['id', 'module', 'message', 'logged_at'])
+                ->map(fn ($row) => [
+                    'id' => (int) $row->id,
+                    'module' => (string) $row->module,
+                    'message' => mb_substr((string) $row->message, 0, 260),
+                    'logged_at' => optional($row->logged_at)->toIso8601String(),
+                ])
+                ->values()
+                ->all();
+        } catch (\Throwable $e) {
+            // ignore additional diagnostics
+        }
         $lastJob = \App\Models\ParserJob::where('status', 'completed')->latest('finished_at')->first();
         $lastParserRun = $lastJob?->finished_at?->toIso8601String();
 
@@ -156,6 +252,24 @@ Route::prefix('v1')->group(function () {
             // ignore
         }
 
+        $parserWarning = null;
+        try {
+            $running = \App\Models\ParserJob::whereIn('status', ['running', 'pending'])->latest()->first();
+            if ($running && $queueSize > 200 && (int) $running->saved_products === 0) {
+                $orphanCount = \App\Models\ParserLog::whereNull('job_id')
+                    ->where('message', 'like', '%Орфанная%')
+                    ->where('logged_at', '>=', now()->subHours(2))
+                    ->count();
+                if ($orphanCount > 0) {
+                    $parserWarning = 'Обнаружены орфанные задачи. Выполните «Сброс системы», затем «Запустить».';
+                } elseif ($running->started_at && now()->diffInMinutes($running->started_at) >= 3) {
+                    $parserWarning = 'Очередь большая, товары не сохраняются. Рекомендуется: «Сброс системы» → «Запустить».';
+                }
+            }
+        } catch (\Throwable $e) {
+            // ignore — do not break system/status
+        }
+
         return response()->json(array_merge([
             'parser_running' => $parserRunning,
             'queue_workers' => $queueWorkers,
@@ -172,7 +286,19 @@ Route::prefix('v1')->group(function () {
                 'used' => $diskUsedGb,
                 'total' => $diskTotalGb,
             ],
+            'error_metrics' => [
+                'today_total' => $errorsToday,
+                'today_products' => (int) $productErrorsToday,
+                'today_parser_logs' => (int) $parserErrorsToday,
+                'last_15m' => $errors15m,
+                'last_1h' => $errors1h,
+                'last_24h' => $errors24h,
+            ],
+            'error_reasons_last_1h' => $errorReasons1h,
+            'error_reasons' => $errorReasons,
+            'recent_error_logs' => $recentErrorLogs,
             'timestamp' => now()->toIso8601String(),
+            'parser_warning' => $parserWarning,
         ], $parserMetrics));
     });
     Route::get('/health', function () {
@@ -242,6 +368,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
     Route::prefix('parser')->group(function () {
         Route::get('status', [ParserController::class, 'status']);
         Route::get('stats', [ParserController::class, 'stats']);
+        Route::get('diagnostics', [ParserController::class, 'diagnostics']);
         Route::get('progress', [ParserController::class, 'progress']);
         Route::get('jobs', [ParserController::class, 'jobs']);
         Route::get('jobs/{id}', [ParserController::class, 'jobDetail']);
@@ -251,7 +378,16 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('stop-daemon', [ParserController::class, 'stopDaemon']);
         Route::post('restart', [ParserController::class, 'restart']);
         Route::post('queue-clear', [ParserController::class, 'queueClear']);
+        Route::post('clear-queue', [ParserController::class, 'queueClear']);
         Route::post('queue-restart', [ParserController::class, 'queueRestart']);
+        Route::post('restart-workers', [ParserController::class, 'queueRestart']);
+        Route::post('queue-flush', [ParserController::class, 'queueFlush']);
+        Route::post('clear-failed', [ParserController::class, 'clearFailedJobs']);
+        Route::get('failed-jobs', [ParserController::class, 'failedJobs']);
+        Route::post('retry-job/{id}', [ParserController::class, 'retryJob']);
+        Route::post('kill-stuck', [ParserController::class, 'killStuck']);
+        Route::post('release-lock', [ParserController::class, 'releaseLock']);
+        Route::post('reset', [ParserController::class, 'reset']);
         Route::post('photos/download', [ParserController::class, 'downloadPhotos']);
         Route::post('categories/sync', CategorySyncController::class);
     });

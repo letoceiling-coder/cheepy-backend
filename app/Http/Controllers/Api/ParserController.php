@@ -11,6 +11,7 @@ use App\Jobs\ParserDaemonJob;
 use App\Jobs\RunParserJob;
 use App\Models\Setting;
 use App\Services\DatabaseParserService;
+use Illuminate\Support\Facades\Redis;
 use App\Services\PhotoDownloadService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -25,13 +26,37 @@ class ParserController extends Controller
      */
     public function start(Request $request): JsonResponse
     {
-        // Проверяем, нет ли уже работающего задания
-        $running = ParserJob::where('status', 'running')->first();
+        $running = ParserJob::whereIn('status', ['running', 'pending'])->first();
         if ($running) {
             return response()->json([
                 'error' => 'Парсер уже запущен',
                 'job_id' => $running->id,
             ], 409);
+        }
+
+        $lockKey = 'parser_lock';
+        $lockTtl = 7200;
+        try {
+            if (!Redis::set($lockKey, 1, 'EX', $lockTtl, 'NX')) {
+                return response()->json(['error' => 'Парсер уже запущен (lock)', 'job_id' => null], 409);
+            }
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Redis lock failed: ' . $e->getMessage()], 500);
+        }
+
+        // Clear queues to remove orphaned jobs from previous runs (prevents "ParserJob not found" blocking)
+        try {
+            $conn = \Illuminate\Support\Facades\Queue::connection(config('queue.default'));
+            foreach (['parser', 'photos'] as $q) {
+                \Illuminate\Support\Facades\Artisan::call('queue:clear', [
+                    'connection' => config('queue.default'),
+                    '--queue' => $q,
+                    '--force' => true,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // Log but continue — lock already acquired
+            \Illuminate\Support\Facades\Log::warning('Queue clear on start failed', ['error' => $e->getMessage()]);
         }
 
         $options = [
@@ -73,7 +98,8 @@ class ParserController extends Controller
             ->update(['status' => 'stopped', 'finished_at' => now()]);
 
         try {
-            \Illuminate\Support\Facades\Redis::del('parser_running');
+            Redis::del('parser_running');
+            Redis::del('parser_lock');
         } catch (\Throwable $e) {
             // ignore if Redis not available
         }
@@ -93,6 +119,12 @@ class ParserController extends Controller
         $updated = ParserJob::whereIn('status', ['running', 'pending'])
             ->update(['status' => 'stopped', 'finished_at' => now()]);
 
+        try {
+            Redis::del('parser_running');
+            Redis::del('parser_lock');
+        } catch (\Throwable $e) {
+            // ignore
+        }
         try {
             \Illuminate\Support\Facades\Artisan::call('queue:restart');
         } catch (\Throwable $e) {
@@ -116,6 +148,7 @@ class ParserController extends Controller
             \Illuminate\Support\Facades\Artisan::call('queue:clear', [
                 'connection' => config('queue.default'),
                 '--queue' => $queue,
+                '--force' => true,
             ]);
         } catch (\Throwable $e) {
             return response()->json(['error' => 'Queue clear failed: ' . $e->getMessage()], 500);
@@ -135,6 +168,127 @@ class ParserController extends Controller
             return response()->json(['error' => 'Queue restart failed: ' . $e->getMessage()], 500);
         }
         return response()->json(['message' => 'Воркеры перезапускаются']);
+    }
+
+    /**
+     * POST /api/v1/parser/queue-flush
+     * Clear parser, photos, and default queues (all job queues).
+     */
+    public function queueFlush(Request $request): JsonResponse
+    {
+        $conn = config('queue.default');
+        $cleared = [];
+        foreach (['parser', 'photos', 'default'] as $queue) {
+            try {
+                \Illuminate\Support\Facades\Artisan::call('queue:clear', [
+                    'connection' => $conn,
+                    '--queue' => $queue,
+                    '--force' => true,
+                ]);
+                $cleared[] = $queue;
+            } catch (\Throwable $e) {
+                return response()->json(['error' => "Queue {$queue} clear failed: " . $e->getMessage()], 500);
+            }
+        }
+        return response()->json(['message' => 'Очереди очищены', 'queues' => $cleared]);
+    }
+
+    /**
+     * POST /api/v1/parser/kill-stuck
+     * Mark stuck parser jobs as failed, release lock, restart workers.
+     */
+    public function killStuck(Request $request): JsonResponse
+    {
+        try {
+            \Illuminate\Support\Facades\Artisan::call('parser:kill-stuck', [
+                '--idle-minutes' => (int) $request->input('idle_minutes', 10),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Kill stuck failed: ' . $e->getMessage()], 500);
+        }
+        return response()->json(['message' => 'Зависшие задачи помечены как failed, lock освобождён, воркеры перезапускаются']);
+    }
+
+    /**
+     * POST /api/v1/parser/release-lock
+     * Release parser_lock (allows new parser start).
+     */
+    public function releaseLock(Request $request): JsonResponse
+    {
+        try {
+            Redis::del('parser_lock');
+            Redis::del('parser_running');
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Release lock failed: ' . $e->getMessage()], 500);
+        }
+        return response()->json(['message' => 'Блокировка снята']);
+    }
+
+    /**
+     * POST /api/v1/parser/clear-failed
+     * Clear all failed jobs from failed_jobs table.
+     */
+    public function clearFailedJobs(Request $request): JsonResponse
+    {
+        try {
+            \Illuminate\Support\Facades\Artisan::call('queue:flush');
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Clear failed jobs failed: ' . $e->getMessage()], 500);
+        }
+        return response()->json(['message' => 'Failed jobs очищены']);
+    }
+
+    /**
+     * GET /api/v1/parser/failed-jobs
+     * List failed jobs (last 20).
+     */
+    public function failedJobs(Request $request): JsonResponse
+    {
+        $rows = \Illuminate\Support\Facades\DB::table('failed_jobs')
+            ->orderByDesc('failed_at')
+            ->limit(20)
+            ->get(['id', 'uuid', 'queue', 'payload', 'exception', 'failed_at']);
+        $data = $rows->map(function ($row) {
+            $payload = @json_decode($row->payload, true);
+            $displayName = $payload['displayName'] ?? $row->queue ?? 'unknown';
+            return [
+                'id'       => $row->id,
+                'uuid'     => $row->uuid,
+                'queue'    => $row->queue,
+                'display_name' => $displayName,
+                'exception' => $row->exception ? substr($row->exception, 0, 500) : null,
+                'failed_at' => $row->failed_at,
+            ];
+        });
+        return response()->json(['data' => $data]);
+    }
+
+    /**
+     * POST /api/v1/parser/retry-job/{id}
+     * Retry a failed job by id (from failed_jobs table).
+     */
+    public function retryJob(Request $request, $id): JsonResponse
+    {
+        try {
+            \Illuminate\Support\Facades\Artisan::call('queue:retry', ['id' => [$id]]);
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Retry failed: ' . $e->getMessage()], 500);
+        }
+        return response()->json(['message' => 'Job возвращён в очередь']);
+    }
+
+    /**
+     * POST /api/v1/parser/reset
+     * Emergency reset: stop parser, release lock, clear queues, restart workers.
+     */
+    public function reset(Request $request): JsonResponse
+    {
+        try {
+            \Illuminate\Support\Facades\Artisan::call('parser:reset', ['--force' => true]);
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Reset failed: ' . $e->getMessage()], 500);
+        }
+        return response()->json(['message' => 'Парсер сброшен']);
     }
 
     /**
@@ -191,6 +345,8 @@ class ParserController extends Controller
             // ignore
         }
 
+        $warning = $this->detectParserWarning($running, $queueParser + $queuePhotos);
+
         return response()->json([
             'is_running'          => $running !== null,
             'daemon_enabled'      => (bool) Setting::get('parser_daemon_enabled', false),
@@ -199,6 +355,78 @@ class ParserController extends Controller
             'queue_parser_size'   => $queueParser,
             'queue_photos_size'   => $queuePhotos,
             'queue_total_size'    => $queueParser + $queuePhotos,
+            'warning'             => $warning,
+        ]);
+    }
+
+    /**
+     * GET /api/v1/parser/diagnostics
+     * Full diagnostics: queues, workers, metrics, running state.
+     */
+    public function diagnostics(): JsonResponse
+    {
+        $running = ParserJob::whereIn('status', ['running', 'pending'])->latest()->first();
+        $queueParser = 0;
+        $queueDefault = 0;
+        $queuePhotos = 0;
+        try {
+            $conn = \Illuminate\Support\Facades\Queue::connection(config('queue.default'));
+            $queueParser = $conn->size('parser');
+            $queueDefault = $conn->size('default');
+            $queuePhotos = $conn->size('photos');
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
+        $failedJobs = 0;
+        try {
+            $failedJobs = \Illuminate\Support\Facades\DB::table('failed_jobs')->count();
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
+        $metrics = [];
+        if (class_exists(\App\Services\ParserMetricsService::class)) {
+            $metrics = \App\Services\ParserMetricsService::getMetrics();
+            $metrics['products_per_minute'] = \App\Services\ParserMetricsService::getProductsPerMinute();
+        }
+
+        $lockHeld = false;
+        try {
+            $lockHeld = (bool) Redis::get('parser_lock');
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
+        $workersRunning = 0;
+        if (function_exists('shell_exec')) {
+            $out = @shell_exec('ps aux 2>/dev/null | grep -E "artisan queue:work" | grep -v grep | wc -l');
+            $workersRunning = (int) trim((string) ($out ?? '0'));
+        }
+
+        return response()->json([
+            'workers_running' => $workersRunning,
+            'parser_running' => $running !== null,
+            'daemon_enabled' => (bool) Setting::get('parser_daemon_enabled', false),
+            'lock_held' => $lockHeld,
+            'current_job' => $running ? $this->formatJob($running) : null,
+            'parser_queue_size' => $queueParser,
+            'photos_queue_size' => $queuePhotos,
+            'queue' => [
+                'parser' => $queueParser,
+                'default' => $queueDefault,
+                'photos' => $queuePhotos,
+                'total' => $queueParser + $queueDefault + $queuePhotos,
+            ],
+            'failed_jobs_count' => $failedJobs,
+            'failed_jobs' => $failedJobs,
+            'products_total' => Product::count(),
+            'products_today' => Product::whereDate('parsed_at', today())->count(),
+            'errors_today' => (int) Product::where('status', 'error')->whereDate('updated_at', today())->count()
+                + (int) ParserLog::where('level', 'error')->whereDate('logged_at', today())->count(),
+            'parser_lock_status' => $lockHeld ? 'held' : 'free',
+            'warning' => $this->detectParserWarning($running, $queueParser + $queueDefault + $queuePhotos),
+            'metrics' => $metrics,
         ]);
     }
 
@@ -222,7 +450,9 @@ class ParserController extends Controller
             // ignore
         }
         $productsToday = \App\Models\Product::whereDate('parsed_at', today())->count();
-        $errorsToday = \App\Models\Product::where('status', 'error')->whereDate('updated_at', today())->count();
+        $errorsToday =
+            (int) \App\Models\Product::where('status', 'error')->whereDate('updated_at', today())->count()
+            + (int) \App\Models\ParserLog::where('level', 'error')->whereDate('logged_at', today())->count();
 
         return response()->json([
             'products_total' => \App\Models\Product::count(),
@@ -342,6 +572,29 @@ class ParserController extends Controller
             'failed' => $result['failed'],
             'skipped' => $result['skipped'],
         ]);
+    }
+
+    private function detectParserWarning(?ParserJob $running, int $queueTotal): ?string
+    {
+        if ($running && $queueTotal > 200 && (int) $running->saved_products === 0) {
+            $minutes = $running->started_at ? (int) now()->diffInMinutes($running->started_at) : 0;
+            if ($minutes >= 3) {
+                $orphanCount = 0;
+                try {
+                    $orphanCount = ParserLog::whereNull('job_id')
+                        ->where('message', 'like', '%Орфанная%')
+                        ->where('logged_at', '>=', now()->subHours(2))
+                        ->count();
+                } catch (\Throwable $e) {
+                    // ignore
+                }
+                if ($orphanCount > 0) {
+                    return 'Обнаружены орфанные задачи (ParserJob не найден). Выполните «Сброс системы», затем «Запустить».';
+                }
+                return 'Очередь большая, но товары не сохраняются. Возможны орфанные задачи. Рекомендуется: «Сброс системы» → «Запустить».';
+            }
+        }
+        return null;
     }
 
     private function formatJob(ParserJob $job, bool $withLogs = false): array
