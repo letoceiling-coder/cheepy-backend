@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+php artisan system:preflight
+
 php artisan config:clear
 php artisan route:clear
 php artisan cache:clear
