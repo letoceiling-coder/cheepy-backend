@@ -367,6 +367,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
     // Parser
     Route::prefix('parser')->group(function () {
         Route::get('status', [ParserController::class, 'status']);
+        Route::get('state', [ParserController::class, 'state']);
         Route::get('stats', [ParserController::class, 'stats']);
         Route::get('diagnostics', [ParserController::class, 'diagnostics']);
         Route::get('progress', [ParserController::class, 'progress']);

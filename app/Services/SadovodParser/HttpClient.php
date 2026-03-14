@@ -45,7 +45,7 @@ class HttpClient
         $verify = $config['verify_ssl'] ?? config('sadovod.verify_ssl', true);
         $this->client = new Client([
             'base_uri' => $this->baseUrl,
-            'timeout' => 30,
+            'timeout' => 60,
             'verify' => $verify,
             'allow_redirects' => true,
             'headers' => [
@@ -134,8 +134,9 @@ class HttpClient
     {
         $this->applyRateLimit();
         $this->applyDelay();
+        usleep(random_int(500000, 1500000)); // 0.5-1.5 sec random delay
 
-        $timeout = $timeoutSeconds ?? 30;
+        $timeout = $timeoutSeconds ?? 60;
         $maxAttempts = ($retries ?? $this->retryCount) + 1;
 
         $lastError = null;
@@ -165,6 +166,12 @@ class HttpClient
                 return $body;
             } catch (RequestException $e) {
                 $lastError = $e;
+                $msg = $e->getMessage();
+                $isTimeout = str_contains($msg, 'timed out') || str_contains($msg, 'Connection timed out') || str_contains($msg, 'cURL error 28');
+                if ($isTimeout) {
+                    $url = $this->getAbsoluteUrl($path);
+                    Log::warning('Parser timeout', ['url' => $url, 'attempt' => $attempt + 1]);
+                }
                 $statusCode = $e->hasResponse() ? $e->getResponse()->getStatusCode() : 0;
                 if (in_array($statusCode, $this->blockCodes, true)) {
                     ParserMetricsService::incrementBlocked();
