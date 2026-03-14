@@ -5,12 +5,13 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ParserJob;
 use App\Models\ParserLog;
+use App\Models\ParserProgress;
+use App\Models\ParserSetting;
 use App\Models\ParserState;
 use App\Models\Product;
 use App\Models\Category;
 use App\Jobs\ParserDaemonJob;
 use App\Jobs\RunParserJob;
-use App\Models\Setting;
 use App\Services\DatabaseParserService;
 use Illuminate\Support\Facades\Redis;
 use App\Services\PhotoDownloadService;
@@ -34,6 +35,37 @@ class ParserController extends Controller
             'last_start' => $ps->last_start?->toIso8601String(),
             'last_stop' => $ps->last_stop?->toIso8601String(),
             'updated_at' => $ps->updated_at->toIso8601String(),
+        ]);
+    }
+
+    /**
+     * GET /api/v1/parser/settings
+     */
+    public function settings(Request $request): JsonResponse
+    {
+        return response()->json(ParserSetting::current());
+    }
+
+    /**
+     * POST /api/v1/parser/settings
+     */
+    public function updateSettings(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'download_photos' => ['nullable', 'boolean'],
+            'store_photo_links' => ['nullable', 'boolean'],
+            'max_workers' => ['nullable', 'integer', 'min:1', 'max:20'],
+            'request_delay_min' => ['nullable', 'integer', 'min:100', 'max:10000'],
+            'request_delay_max' => ['nullable', 'integer', 'min:100', 'max:15000'],
+            'timeout_seconds' => ['nullable', 'integer', 'min:5', 'max:300'],
+        ]);
+
+        $settings = ParserSetting::current();
+        $settings->update($validated);
+
+        return response()->json([
+            'message' => 'Настройки парсера обновлены',
+            'data' => $settings->fresh(),
         ]);
     }
 
@@ -447,12 +479,27 @@ class ParserController extends Controller
             $workersRunning = (int) trim((string) ($out ?? '0'));
         }
 
+        $lastErrors = ParserLog::whereIn('level', ['error', 'warn'])
+            ->latest('logged_at')
+            ->limit(10)
+            ->get(['id', 'level', 'message', 'logged_at', 'url', 'attempt']);
+
+        $errorsPerHour = ParserLog::where('level', 'error')
+            ->where('logged_at', '>=', now()->subHour())
+            ->count();
+
+        $progress = ParserProgress::query()
+            ->latest('updated_at')
+            ->first(['job_id', 'total_items', 'processed_items', 'failed_items', 'current_url', 'updated_at']);
+
         $parserState = ParserState::current();
         return response()->json([
             'workers_running' => $workersRunning,
             'parser_running' => $running !== null,
             'daemon_enabled' => $parserState->status === ParserState::STATUS_RUNNING,
+            'parser_state' => $parserState->status,
             'lock_held' => $lockHeld,
+            'worker_status' => $workersRunning > 0 ? 'running' : 'stopped',
             'current_job' => $running ? $this->formatJob($running) : null,
             'parser_queue_size' => $queueParser,
             'photos_queue_size' => $queuePhotos,
@@ -469,6 +516,10 @@ class ParserController extends Controller
             'errors_today' => (int) Product::where('status', 'error')->whereDate('updated_at', today())->count()
                 + (int) ParserLog::where('level', 'error')->whereDate('logged_at', today())->count(),
             'parser_lock_status' => $lockHeld ? 'held' : 'free',
+            'memory_usage' => memory_get_usage(true),
+            'last_errors' => $lastErrors,
+            'error_frequency' => ['last_hour' => $errorsPerHour],
+            'progress' => $progress,
             'warning' => $this->detectParserWarning($running, $queueParser + $queueDefault + $queuePhotos),
             'metrics' => $metrics,
         ]);
@@ -507,6 +558,27 @@ class ParserController extends Controller
             'queue_photos_size' => $queuePhotos,
             'errors_today' => $errorsToday,
             'last_parser_run' => $lastCompleted?->finished_at?->toIso8601String(),
+        ]);
+    }
+
+    /**
+     * GET /api/v1/parser/progress-overview
+     */
+    public function progressOverview(Request $request): JsonResponse
+    {
+        $jobId = $request->input('job_id');
+        $query = ParserProgress::query()->latest('updated_at');
+        if ($jobId) {
+            $query->where('job_id', (int) $jobId);
+        }
+        $row = $query->first();
+
+        return response()->json([
+            'total_items' => $row?->total_items ?? 0,
+            'processed_items' => $row?->processed_items ?? 0,
+            'failed_items' => $row?->failed_items ?? 0,
+            'current_url' => $row?->current_url,
+            'updated_at' => $row?->updated_at?->toIso8601String(),
         ]);
     }
 

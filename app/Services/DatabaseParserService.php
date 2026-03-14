@@ -10,6 +10,8 @@ use App\Events\ProductParsed;
 use App\Models\Category;
 use App\Models\ParserJob;
 use App\Models\ParserLog;
+use App\Models\ParserProgress;
+use App\Models\ParserSetting;
 use App\Models\Product;
 use App\Models\ProductAttribute;
 use App\Models\ProductPhoto;
@@ -42,6 +44,8 @@ class DatabaseParserService
     {
         $this->job = $job;
         $this->options = $job->options ?? [];
+        $settings = ParserSetting::current();
+        $this->options['save_photos'] = $this->options['save_photos'] ?? (bool) $settings->download_photos;
 
         $config = config('sadovod');
         $this->http = new HttpClient($config);
@@ -58,6 +62,10 @@ class DatabaseParserService
     public function run(): void
     {
         $this->updateJob(['status' => 'running', 'started_at' => now()]);
+        ParserProgress::updateOrCreate(
+            ['job_id' => $this->job->id],
+            ['total_items' => 0, 'processed_items' => 0, 'failed_items' => 0, 'current_url' => null]
+        );
         $this->job->refresh();
         event(new ParserStarted($this->job));
 
@@ -391,6 +399,7 @@ class DatabaseParserService
 
             $this->job->increment('saved_products');
             $this->job->increment('parsed_products');
+            $this->updateProgress(null, 1, 0);
             $broadcastEvery = max(1, (int) config('sadovod.product_broadcast_every', 20));
             if (((int) $this->job->parsed_products % $broadcastEvery) === 0) {
                 $this->job->refresh();
@@ -408,6 +417,7 @@ class DatabaseParserService
                 'job_id' => $this->job->id,
             ]);
             $this->job->increment('errors_count');
+            $this->updateProgress($pData['url'] ?? null, 0, 1);
             $this->job->refresh();
             event(new ParserError($this->job, "Ошибка сохранения товара: " . $e->getMessage(), ['product_id' => $pData['id'] ?? null]));
             return false;
@@ -677,6 +687,7 @@ class DatabaseParserService
     private function updateAction(string $action): void
     {
         $this->job->update(['current_action' => $action]);
+        $this->updateProgress(null, 0, 0);
     }
 
     private function isCancelled(): bool
@@ -695,7 +706,30 @@ class DatabaseParserService
 
     private function log(string $level, string $message, array $context = []): void
     {
-        ParserLog::write($level, $message, $context, $this->job->id);
+        ParserLog::write(
+            $level,
+            $message,
+            $context,
+            $this->job->id,
+            'Parser',
+            null,
+            null,
+            $context['url'] ?? $context['product_url'] ?? null,
+            isset($context['product_id']) ? (int) $context['product_id'] : null,
+            isset($context['attempt']) ? (int) $context['attempt'] : null
+        );
+    }
+
+    private function updateProgress(?string $currentUrl = null, int $processedDelta = 0, int $failedDelta = 0): void
+    {
+        $row = ParserProgress::firstOrNew(['job_id' => $this->job->id]);
+        $row->total_items = (int) ($this->job->total_products ?: $this->job->total_categories);
+        $row->processed_items = max(0, (int) $row->processed_items + $processedDelta);
+        $row->failed_items = max(0, (int) $row->failed_items + $failedDelta);
+        if ($currentUrl !== null) {
+            $row->current_url = mb_substr($currentUrl, 0, 990);
+        }
+        $row->save();
     }
 
     private function extractSlug(string $url): string

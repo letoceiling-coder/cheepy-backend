@@ -4,8 +4,9 @@ namespace App\Services;
 
 use App\Models\Product;
 use App\Models\ProductPhoto;
+use App\Models\ParserSetting;
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 class PhotoDownloadService
@@ -14,8 +15,9 @@ class PhotoDownloadService
 
     public function __construct()
     {
+        $settings = ParserSetting::current();
         $this->client = new Client([
-            'timeout' => 30,
+            'timeout' => max(10, (int) ($settings->timeout_seconds ?? 60)),
             'verify' => false,
             'headers' => [
                 'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
@@ -102,15 +104,20 @@ class PhotoDownloadService
 
     private function downloadOne(string $url, string $productId, int $index): array
     {
-        try {
-            usleep(random_int(500000, 1500000)); // 0.5-1.5 sec rate limit
-            $response = $this->client->get($url, [
-                'headers' => [
-                    'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept' => 'image/*',
-                    'Referer' => 'https://sadovodbaza.ru/',
-                ],
-            ]);
+        $attempt = 0;
+        $maxAttempts = 3;
+        while ($attempt < $maxAttempts) {
+            $attempt++;
+            try {
+                usleep(random_int(800000, 2000000));
+                $response = $this->client->get($url, [
+                    'headers' => [
+                        'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept' => 'image/*',
+                        'Accept-Language' => 'ru-RU,ru;q=0.9',
+                        'Referer' => 'https://sadovodbaza.ru/',
+                    ],
+                ]);
             $body = (string) $response->getBody();
             $mimeType = $response->getHeaderLine('Content-Type');
             $mimeType = explode(';', $mimeType)[0];
@@ -136,21 +143,27 @@ class PhotoDownloadService
                 }
             }
 
-            return [
-                'success' => true,
-                'local_path' => $localPath,
-                'local_medium_path' => $localMediumPath,
-                'hash' => $hash,
-                'mime_type' => $mimeType,
-                'file_size' => strlen($body),
-            ];
-        } catch (\Throwable $e) {
-            $msg = $e->getMessage();
-            if (str_contains($msg, 'timed out') || str_contains($msg, 'Connection timed out') || str_contains($msg, 'cURL error 28')) {
-                Log::warning('Parser timeout (photo)', ['url' => $url]);
+                return [
+                    'success' => true,
+                    'local_path' => $localPath,
+                    'local_medium_path' => $localMediumPath,
+                    'hash' => $hash,
+                    'mime_type' => $mimeType,
+                    'file_size' => strlen($body),
+                ];
+            } catch (\Throwable $e) {
+                $msg = $e->getMessage();
+                if (str_contains($msg, 'timed out') || str_contains($msg, 'Connection timed out') || str_contains($msg, 'cURL error 28')) {
+                    Log::warning('Parser timeout', ['url' => $url, 'attempt' => $attempt]);
+                }
+                if ($attempt < $maxAttempts) {
+                    usleep($attempt * 2_000_000);
+                    continue;
+                }
+                return ['success' => false, 'error' => $msg];
             }
-            return ['success' => false, 'error' => $msg];
         }
+        return ['success' => false, 'error' => 'Photo download failed'];
     }
 
     /**

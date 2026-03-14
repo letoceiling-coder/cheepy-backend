@@ -2,9 +2,10 @@
 
 namespace App\Services\SadovodParser;
 
+use App\Models\ParserSetting;
+use App\Services\Parser\HttpClient as ParserHttpClient;
 use App\Services\ParserMetricsService;
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\DomCrawler\Crawler;
 
@@ -22,12 +23,14 @@ class HttpClient
     private array $blockCodes;
     private float $minRequestInterval;
     private ?float $lastRequestAt = null;
+    private ParserHttpClient $requestClient;
 
     public function __construct(array $config = [])
     {
+        $parserSettings = ParserSetting::current();
         $this->baseUrl = $config['base_url'] ?? config('sadovod.base_url', 'https://sadovodbaza.ru');
-        $this->delayMinMs = $config['delay_min_ms'] ?? config('parser_rate.delay_min_ms', 200);
-        $this->delayMaxMs = $config['delay_max_ms'] ?? config('parser_rate.delay_max_ms', 500);
+        $this->delayMinMs = (int) ($parserSettings->request_delay_min ?? ($config['delay_min_ms'] ?? config('parser_rate.delay_min_ms', 800)));
+        $this->delayMaxMs = (int) ($parserSettings->request_delay_max ?? ($config['delay_max_ms'] ?? config('parser_rate.delay_max_ms', 2000)));
         $this->maxRpm = config('parser_rate.max_requests_per_minute', 300);
         $maxRps = config('parser_rate.max_requests_per_second');
         $this->retryCount = config('parser_rate.retry_count', 3);
@@ -43,9 +46,16 @@ class HttpClient
             : [$config['user_agent'] ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'];
 
         $verify = $config['verify_ssl'] ?? config('sadovod.verify_ssl', true);
+        $timeout = (int) ($parserSettings->timeout_seconds ?? 60);
+        $this->requestClient = new ParserHttpClient(
+            timeoutSeconds: max(10, $timeout),
+            retryCount: $this->retryCount,
+            delayMinMs: max(100, $this->delayMinMs),
+            delayMaxMs: max($this->delayMinMs, $this->delayMaxMs)
+        );
         $this->client = new Client([
             'base_uri' => $this->baseUrl,
-            'timeout' => 60,
+            'timeout' => $timeout,
             'verify' => $verify,
             'allow_redirects' => true,
             'headers' => [
@@ -134,60 +144,37 @@ class HttpClient
     {
         $this->applyRateLimit();
         $this->applyDelay();
-        usleep(random_int(500000, 1500000)); // 0.5-1.5 sec random delay
 
-        $timeout = $timeoutSeconds ?? 60;
-        $maxAttempts = ($retries ?? $this->retryCount) + 1;
+        try {
+            $ua = $this->getNextUserAgent();
+            $url = $this->getAbsoluteUrl($path);
+            $body = $this->requestClient->get($url, [
+                'User-Agent' => $ua,
+                'Accept' => 'text/html,application/xhtml+xml',
+                'Accept-Language' => 'ru-RU,ru;q=0.9',
+            ]);
+            $statusCode = 200;
 
-        $lastError = null;
-        for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {
-            try {
-                $ua = $this->getNextUserAgent();
-                $response = $this->client->get($path, [
-                    'headers' => ['User-Agent' => $ua],
-                    'timeout' => $timeout,
-                ]);
-                $statusCode = $response->getStatusCode();
-                $body = (string) $response->getBody();
-
-                if ($this->detectBlock($body, $statusCode)) {
-                    ParserMetricsService::incrementBlocked();
-                    Log::warning('Parser: block detected', ['path' => $path, 'status' => $statusCode, 'preview' => substr($body, 0, 500)]);
-                    $delayMs = min($this->delayMaxMs * 2, 10000);
-                    usleep($delayMs * 1000);
-                    throw new \RuntimeException("Block detected: HTTP {$statusCode}");
-                }
-
-                if ($path === '/' || $path === '') {
-                    Log::debug('HttpClient response preview', ['path' => $path, 'preview' => substr($body, 0, 500)]);
-                }
-                $this->lastRequestAt = microtime(true);
-                ParserMetricsService::incrementRequests();
-                return $body;
-            } catch (RequestException $e) {
-                $lastError = $e;
-                $msg = $e->getMessage();
-                $isTimeout = str_contains($msg, 'timed out') || str_contains($msg, 'Connection timed out') || str_contains($msg, 'cURL error 28');
-                if ($isTimeout) {
-                    $url = $this->getAbsoluteUrl($path);
-                    Log::warning('Parser timeout', ['url' => $url, 'attempt' => $attempt + 1]);
-                }
-                $statusCode = $e->hasResponse() ? $e->getResponse()->getStatusCode() : 0;
-                if (in_array($statusCode, $this->blockCodes, true)) {
-                    ParserMetricsService::incrementBlocked();
-                    Log::warning('Parser: block response', ['path' => $path, 'status' => $statusCode]);
-                }
-                if ($attempt < $maxAttempts - 1) {
-                    ParserMetricsService::incrementRetries();
-                    $backoff = $this->retryBackoff[$attempt] ?? 10;
-                    sleep($backoff);
-                } else {
-                    throw $e;
-                }
+            if ($this->detectBlock($body, $statusCode)) {
+                ParserMetricsService::incrementBlocked();
+                Log::warning('Parser: block detected', ['path' => $path, 'status' => $statusCode, 'preview' => substr($body, 0, 500)]);
+                throw new \RuntimeException("Block detected: HTTP {$statusCode}");
             }
-        }
 
-        throw $lastError ?? new \RuntimeException('Request failed');
+            if ($path === '/' || $path === '') {
+                Log::debug('HttpClient response preview', ['path' => $path, 'preview' => substr($body, 0, 500)]);
+            }
+            $this->lastRequestAt = microtime(true);
+            ParserMetricsService::incrementRequests();
+            return $body;
+        } catch (\Throwable $e) {
+            $msg = $e->getMessage();
+            if (str_contains($msg, 'timed out') || str_contains($msg, 'Connection timed out') || str_contains($msg, 'cURL error 28')) {
+                Log::warning('Parser timeout', ['url' => $this->getAbsoluteUrl($path)]);
+            }
+            ParserMetricsService::incrementRetries();
+            throw $e;
+        }
     }
 
     /**
