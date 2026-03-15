@@ -805,18 +805,29 @@ class ParserController extends Controller
             return false;
         }
 
-        try {
-            Http::timeout(20)
-                ->withOptions([
-                    'proxy' => $proxyUrl,
-                    'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
-                ])
-                ->get('https://sadovodbaza.ru')
-                ->throw();
-            return true;
-        } catch (\Throwable $e) {
-            return false;
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            try {
+                Http::timeout(20)
+                    ->withOptions([
+                        'proxy' => $proxyUrl,
+                        'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
+                    ])
+                    ->get('https://sadovodbaza.ru')
+                    ->throw();
+                return true;
+            } catch (\Throwable $e) {
+                if ($attempt < 3) {
+                    usleep($attempt * 500000);
+                    continue;
+                }
+                ParserLogger::write('network_error', 'Proxy precheck failed after retries', [
+                    'attempt' => $attempt,
+                    'error' => $e->getMessage(),
+                    'url' => 'https://sadovodbaza.ru',
+                ]);
+            }
         }
+        return false;
     }
 
     private function checkSadovodAvailability(bool $viaProxy): bool
