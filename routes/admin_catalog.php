@@ -3,6 +3,7 @@
 use App\Http\Controllers\Admin\Catalog\CatalogCategoryController;
 use App\Http\Controllers\Admin\Catalog\CategoryMappingController;
 use App\Http\Controllers\Admin\Catalog\DonorCategoryController;
+use App\Http\Controllers\Admin\Catalog\MappingSuggestionController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -21,4 +22,6 @@ Route::prefix('admin/catalog')->group(function () {
     Route::get('category-mapping', [CategoryMappingController::class, 'index']);
     Route::post('category-mapping', [CategoryMappingController::class, 'store']);
     Route::delete('category-mapping/{id}', [CategoryMappingController::class, 'destroy']);
+
+    Route::get('mapping/suggestions', [MappingSuggestionController::class, 'index']);
 });
