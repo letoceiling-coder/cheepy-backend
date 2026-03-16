@@ -20,6 +20,7 @@ return new class extends Migration
 
             $table->foreign('parent_id')->references('id')->on('catalog_categories')->onDelete('cascade');
             $table->index('parent_id');
+            $table->index(['parent_id', 'sort_order']);
             $table->index('is_active');
         });
     }
