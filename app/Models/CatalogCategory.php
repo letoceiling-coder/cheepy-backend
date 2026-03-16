@@ -4,8 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 
 class CatalogCategory extends Model
 {
@@ -41,18 +41,15 @@ class CatalogCategory extends Model
     }
 
     /**
-     * Donor categories linked to this catalog category via category_mapping.
-     * CatalogCategory → CategoryMapping → DonorCategory
+     * Donor categories linked to this catalog category (many-to-many via category_mapping).
      */
-    public function donorCategories(): HasManyThrough
+    public function donorCategories(): BelongsToMany
     {
-        return $this->hasManyThrough(
+        return $this->belongsToMany(
             DonorCategory::class,
-            CategoryMapping::class,
-            'catalog_category_id',  // FK on category_mapping → catalog_categories
-            'id',                   // PK on donor_categories (category_mapping.donor_category_id points here)
-            'id',                   // PK on catalog_categories
-            'donor_category_id'     // FK on category_mapping → donor_categories
+            'category_mapping',
+            'catalog_category_id',
+            'donor_category_id'
         );
     }
 }

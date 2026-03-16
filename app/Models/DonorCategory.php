@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
@@ -37,5 +38,18 @@ class DonorCategory extends Model
     public function mapping(): HasOne
     {
         return $this->hasOne(CategoryMapping::class, 'donor_category_id');
+    }
+
+    /**
+     * Catalog categories linked to this donor category (many-to-many via category_mapping).
+     */
+    public function catalogCategories(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            CatalogCategory::class,
+            'category_mapping',
+            'donor_category_id',
+            'catalog_category_id'
+        );
     }
 }
