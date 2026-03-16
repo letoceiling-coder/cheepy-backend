@@ -571,4 +571,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::put('/', [SettingController::class, 'update']);
         Route::put('{key}', [SettingController::class, 'updateOne']);
     });
+
+    // Catalog Phase 1 — dual category system (CATALOG_ARCHITECTURE_V2)
+    require base_path('routes/admin_catalog.php');
 });

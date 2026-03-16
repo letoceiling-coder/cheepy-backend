@@ -2,7 +2,15 @@
 
 namespace App\Providers;
 
+use App\Events\CatalogCategoryCreated;
+use App\Events\CatalogCategoryDeleted;
+use App\Events\CatalogCategoryUpdated;
+use App\Events\CatalogMappingCreated;
 use App\Events\ParserFinished;
+use App\Listeners\LogCatalogCategoryCreated;
+use App\Listeners\LogCatalogCategoryDeleted;
+use App\Listeners\LogCatalogCategoryUpdated;
+use App\Listeners\LogCatalogMappingCreated;
 use App\Listeners\ReleaseParserLockOnFinished;
 use App\Listeners\ScheduleNextParserDaemon;
 use App\Services\SadovodParser\HttpClient;
@@ -33,5 +41,11 @@ class AppServiceProvider extends ServiceProvider
     {
         Event::listen(ParserFinished::class, ReleaseParserLockOnFinished::class);
         Event::listen(ParserFinished::class, ScheduleNextParserDaemon::class);
+
+        // Catalog Phase 1 — dual category logging
+        Event::listen(CatalogCategoryCreated::class, LogCatalogCategoryCreated::class);
+        Event::listen(CatalogCategoryUpdated::class, LogCatalogCategoryUpdated::class);
+        Event::listen(CatalogCategoryDeleted::class, LogCatalogCategoryDeleted::class);
+        Event::listen(CatalogMappingCreated::class, LogCatalogMappingCreated::class);
     }
 }
