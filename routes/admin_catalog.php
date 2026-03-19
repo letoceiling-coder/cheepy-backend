@@ -14,8 +14,9 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('admin/catalog')->group(function () {
     Route::get('categories', [CatalogCategoryController::class, 'index']);
     Route::post('categories', [CatalogCategoryController::class, 'store']);
-    Route::patch('categories/{id}', [CatalogCategoryController::class, 'update']);
-    Route::delete('categories/{id}', [CatalogCategoryController::class, 'destroy']);
+    Route::patch('categories/reorder', [CatalogCategoryController::class, 'reorder']);
+    Route::patch('categories/{id}', [CatalogCategoryController::class, 'update'])->whereNumber('id');
+    Route::delete('categories/{id}', [CatalogCategoryController::class, 'destroy'])->whereNumber('id');
 
     Route::get('donor-categories', [DonorCategoryController::class, 'index']);
 
