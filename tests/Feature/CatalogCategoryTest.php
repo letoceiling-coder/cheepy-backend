@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\CategoryMapping;
 use App\Models\DonorCategory;
 use App\Services\Catalog\CatalogCategoryService;
 use App\Services\Catalog\CategoryMappingService;
@@ -106,5 +107,46 @@ class CatalogCategoryTest extends TestCase
         $resolved = $this->mappingService->resolveCatalogCategory($donor->id);
         $this->assertNotNull($resolved);
         $this->assertSame('resolved', $resolved->slug);
+    }
+
+    public function test_mapping_remap_updates_single_row(): void
+    {
+        $catalog1 = $this->catalogService->create([
+            'name' => 'C1',
+            'slug' => 'c1',
+            'is_active' => true,
+        ]);
+        $catalog2 = $this->catalogService->create([
+            'name' => 'C2',
+            'slug' => 'c2',
+            'is_active' => true,
+        ]);
+        $donor = DonorCategory::create([
+            'external_id' => 'ext-remap',
+            'name' => 'Donor R',
+            'slug' => 'donor-r',
+            'parser_enabled' => true,
+        ]);
+        $this->mappingService->create([
+            'donor_category_id' => $donor->id,
+            'catalog_category_id' => $catalog1->id,
+            'confidence' => 80,
+            'is_manual' => false,
+        ]);
+        $this->assertDatabaseCount('category_mapping', 1);
+
+        $existing = CategoryMapping::where('donor_category_id', $donor->id)->first();
+        $this->assertNotNull($existing);
+        $existing->update([
+            'catalog_category_id' => $catalog2->id,
+            'confidence' => 95,
+            'is_manual' => true,
+        ]);
+
+        $this->assertDatabaseCount('category_mapping', 1);
+        $fresh = $existing->fresh();
+        $this->assertSame($catalog2->id, $fresh->catalog_category_id);
+        $this->assertSame(95, $fresh->confidence);
+        $this->assertTrue($fresh->is_manual);
     }
 }

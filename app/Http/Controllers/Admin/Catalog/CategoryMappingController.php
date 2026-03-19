@@ -17,7 +17,19 @@ class CategoryMappingController extends Controller
     public function index(Request $request): JsonResponse
     {
         $perPage = min((int) $request->get('per_page', 50), 100);
-        $paginated = $this->service->listPaginated($perPage);
+        $status = $request->get('status');
+        $status = is_string($status) ? strtolower($status) : null;
+        if ($status !== null && ! in_array($status, ['mapped', 'unmapped'], true)) {
+            $status = null;
+        }
+
+        $minConfidence = null;
+        if ($request->get('min_confidence')) {
+            $minConfidence = (int) $request->get('min_confidence');
+        }
+
+        $paginated = $this->service->listPaginated($perPage, $minConfidence, $status);
+
         return response()->json([
             'data' => $paginated->items(),
             'meta' => [
@@ -32,15 +44,33 @@ class CategoryMappingController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'donor_category_id' => 'required|integer|exists:donor_categories,id|unique:category_mapping,donor_category_id',
+            'donor_category_id' => 'required|integer|exists:donor_categories,id',
             'catalog_category_id' => 'required|integer|exists:catalog_categories,id',
             'confidence' => 'nullable|integer|min:0|max:100',
             'is_manual' => 'nullable|boolean',
         ]);
+
+        $existing = CategoryMapping::where('donor_category_id', $data['donor_category_id'])->first();
+
+        if ($existing) {
+            $existing->update([
+                'catalog_category_id' => $data['catalog_category_id'],
+                'confidence' => $data['confidence'] ?? 100,
+                'is_manual' => true,
+            ]);
+
+            return response()->json([
+                'data' => $existing->fresh()->load(['donorCategory', 'catalogCategory']),
+            ]);
+        }
+
         $data['confidence'] = $data['confidence'] ?? 100;
         $data['is_manual'] = $data['is_manual'] ?? false;
         $mapping = $this->service->create($data);
-        return response()->json($mapping->load(['donorCategory', 'catalogCategory']), 201);
+
+        return response()->json([
+            'data' => $mapping->load(['donorCategory', 'catalogCategory']),
+        ], 201);
     }
 
     public function destroy(int $id): JsonResponse
