@@ -44,6 +44,26 @@ class MappingSuggestionService
     }
 
     /**
+     * Single-donor suggestion for AutoMappingService (same scoring as bulk suggest).
+     *
+     * @return array{catalog_category_id: int, confidence: int}|null
+     */
+    public function suggestForDonorCategory(DonorCategory $donor): ?array
+    {
+        $donor->loadMissing('parent');
+        $catalogs = CatalogCategory::with('parent')->get();
+        $best = $this->findBestMatch($donor, $catalogs);
+        if ($best === null) {
+            return null;
+        }
+
+        return [
+            'catalog_category_id' => (int) $best['catalog']->id,
+            'confidence' => (int) $best['score'],
+        ];
+    }
+
+    /**
      * @param  Collection<int, CatalogCategory>  $catalogs
      * @return array{catalog: CatalogCategory, score: int}|null
      */

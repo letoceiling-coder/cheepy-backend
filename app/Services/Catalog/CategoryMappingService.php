@@ -62,4 +62,31 @@ class CategoryMappingService
             ->first();
         return $mapping?->catalogCategory;
     }
+
+    /**
+     * Auto-mapping pipeline: insert or update non-manual mapping only.
+     */
+    public function applyAutomaticMapping(
+        int $donorCategoryId,
+        int $catalogCategoryId,
+        int $confidence,
+        ?CategoryMapping $existing = null,
+    ): CategoryMapping {
+        $existing ??= CategoryMapping::query()->where('donor_category_id', $donorCategoryId)->first();
+
+        $payload = [
+            'donor_category_id' => $donorCategoryId,
+            'catalog_category_id' => $catalogCategoryId,
+            'confidence' => $confidence,
+            'is_manual' => false,
+        ];
+
+        if ($existing) {
+            $existing->update($payload);
+
+            return $existing->fresh();
+        }
+
+        return $this->create($payload);
+    }
 }

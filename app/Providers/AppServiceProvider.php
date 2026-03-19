@@ -13,6 +13,8 @@ use App\Listeners\LogCatalogCategoryUpdated;
 use App\Listeners\LogCatalogMappingCreated;
 use App\Listeners\ReleaseParserLockOnFinished;
 use App\Listeners\ScheduleNextParserDaemon;
+use App\Models\DonorCategory;
+use App\Observers\DonorCategoryObserver;
 use App\Services\SadovodParser\HttpClient;
 use App\Services\SadovodParser\Parsers\MenuParser;
 use Illuminate\Support\Facades\Event;
@@ -47,5 +49,7 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(CatalogCategoryUpdated::class, LogCatalogCategoryUpdated::class);
         Event::listen(CatalogCategoryDeleted::class, LogCatalogCategoryDeleted::class);
         Event::listen(CatalogMappingCreated::class, LogCatalogMappingCreated::class);
+
+        DonorCategory::observe(DonorCategoryObserver::class);
     }
 }
