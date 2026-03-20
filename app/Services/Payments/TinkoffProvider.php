@@ -1,0 +1,24 @@
+<?php
+
+namespace App\Services\Payments;
+
+use App\Models\SaasApiKey;
+use Illuminate\Http\Request;
+
+class TinkoffProvider implements PaymentProviderInterface
+{
+    public function normalizeAmount(float $amount): int
+    {
+        return (int) round($amount * 100);
+    }
+
+    public function createCheckout(SaasApiKey $apiKey, float $amount, array $context = []): array
+    {
+        throw new \RuntimeException('Tinkoff provider is not implemented');
+    }
+
+    public function handleWebhook(Request $request): array
+    {
+        return ['ok' => false, 'provider_id' => null, 'provider_event_id' => null, 'status' => null, 'amount_total' => null, 'currency' => null];
+    }
+}

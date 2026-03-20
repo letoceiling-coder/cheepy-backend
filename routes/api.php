@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\AiMetricsController;
 use App\Http\Controllers\Api\CategorySyncController;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
@@ -13,6 +14,9 @@ use App\Http\Controllers\Api\LogController;
 use App\Http\Controllers\Api\ParserController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\PublicController;
+use App\Http\Controllers\Api\SaasApiKeyController;
+use App\Http\Controllers\Api\SaasSearchController;
+use App\Http\Controllers\Api\SystemProductController;
 use App\Http\Controllers\Api\SellerController;
 use App\Http\Controllers\Api\SettingController;
 use App\Http\Middleware\JwtMiddleware;
@@ -417,6 +421,16 @@ Route::prefix('v1/public')->group(function () {
     Route::get('featured', [PublicController::class, 'featured']);
 });
 
+Route::prefix('v1')->middleware('saas.api')->group(function () {
+    Route::get('search', [SaasSearchController::class, 'index']);
+});
+
+Route::prefix('v1')->group(function () {
+    Route::post('webhook/stripe', [SaasApiKeyController::class, 'stripeWebhook']);
+    Route::post('webhook/tinkoff', [SaasApiKeyController::class, 'tinkoffWebhook']);
+    Route::post('webhook/sber', [SaasApiKeyController::class, 'sberWebhook']);
+});
+
 // =====================================================================
 // AUTH
 // =====================================================================
@@ -433,11 +447,27 @@ Route::prefix('v1/auth')->group(function () {
 // =====================================================================
 Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
 
-    // Dashboard
+    // Dashboard (shared)
     Route::get('dashboard', [DashboardController::class, 'index']);
+    Route::get('admin/ai/metrics', [AiMetricsController::class, 'index']);
 
-    // Parser
-    Route::prefix('parser')->group(function () {
+    // -----------------------------------------------------------------
+    // PARSER (Admin Panel) — /api/v1/admin/parser
+    // Products (donor), Sellers (donor), Parser controls.
+    // CRM MUST NOT call these.
+    // -----------------------------------------------------------------
+    Route::prefix('admin/parser')->group(function () {
+        Route::get('products', [ProductController::class, 'index']);
+        Route::get('products/{id}', [ProductController::class, 'show']);
+        Route::patch('products/{id}', [ProductController::class, 'update']);
+        Route::delete('products/{id}', [ProductController::class, 'destroy']);
+        Route::post('products/bulk', [ProductController::class, 'bulk']);
+
+        Route::get('sellers', [SellerController::class, 'index']);
+        Route::get('sellers/{slug}/products', [SellerController::class, 'products']);
+        Route::get('sellers/{slug}', [SellerController::class, 'show']);
+        Route::patch('sellers/{id}', [SellerController::class, 'update']);
+
         Route::get('status', [ParserController::class, 'status']);
         Route::get('state', [ParserController::class, 'state']);
         Route::get('settings', [ParserController::class, 'settings']);
@@ -468,6 +498,25 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('reset', [ParserController::class, 'reset']);
         Route::post('photos/download', [ParserController::class, 'downloadPhotos']);
         Route::post('categories/sync', CategorySyncController::class);
+    });
+
+    // -----------------------------------------------------------------
+    // CRM — /api/v1/crm
+    // System products, future system-sellers.
+    // Parser panel MUST NOT use these.
+    // -----------------------------------------------------------------
+    Route::prefix('crm')->group(function () {
+        Route::get('system-products', [SystemProductController::class, 'index']);
+        Route::post('system-products', [SystemProductController::class, 'store']);
+        Route::post('system-products/create-from-donor', [SystemProductController::class, 'createFromDonor']);
+        Route::get('system-products/{id}', [SystemProductController::class, 'show']);
+        Route::patch('system-products/{id}', [SystemProductController::class, 'update']);
+        Route::delete('system-products/{id}', [SystemProductController::class, 'destroy']);
+        Route::get('api-keys', [SaasApiKeyController::class, 'index']);
+        Route::get('api-keys/{id}', [SaasApiKeyController::class, 'show']);
+        Route::patch('api-keys/{id}', [SaasApiKeyController::class, 'update']);
+        Route::post('api-keys/{id}/balance', [SaasApiKeyController::class, 'addBalance']);
+        Route::post('api-keys/{id}/checkout', [SaasApiKeyController::class, 'checkout']);
     });
 
     // Attribute Rules & Synonyms
@@ -506,30 +555,13 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('rebuild', [\App\Http\Controllers\Api\AttributeRuleController::class, 'facetsRebuild']);
     });
 
-    // Products
-    Route::prefix('products')->group(function () {
-        Route::get('/', [ProductController::class, 'index']);
-        Route::get('{id}', [ProductController::class, 'show']);
-        Route::patch('{id}', [ProductController::class, 'update']);
-        Route::delete('{id}', [ProductController::class, 'destroy']);
-        Route::post('bulk', [ProductController::class, 'bulk']);
-    });
-
-    // Categories
+    // Categories (shared — parser config, catalog mapping)
     Route::prefix('categories')->group(function () {
         Route::get('/', [CategoryController::class, 'index']);
         Route::get('{id}', [CategoryController::class, 'show']);
         Route::patch('{id}', [CategoryController::class, 'update']);
         Route::post('reorder', [CategoryController::class, 'reorder']);
         Route::get('{id}/filters', [CategoryController::class, 'availableFilters']);
-    });
-
-    // Sellers
-    Route::prefix('sellers')->group(function () {
-        Route::get('/', [SellerController::class, 'index']);
-        Route::get('{slug}', [SellerController::class, 'show']);
-        Route::get('{slug}/products', [SellerController::class, 'products']);
-        Route::patch('{id}', [SellerController::class, 'update']);
     });
 
     // Brands
