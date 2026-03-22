@@ -421,9 +421,10 @@ Route::prefix('v1/public')->group(function () {
     Route::get('featured', [PublicController::class, 'featured']);
 });
 
-Route::prefix('v1')->middleware('saas.api')->group(function () {
-    Route::get('search', [SaasSearchController::class, 'index']);
-});
+// SaasSearchController not deployed
+// Route::prefix('v1')->middleware('saas.api')->group(function () {
+//     Route::get('search', [SaasSearchController::class, 'index']);
+// });
 
 Route::prefix('v1')->group(function () {
     Route::post('api-keys', [SaasApiKeyController::class, 'store']);
@@ -451,7 +452,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
 
     // Dashboard (shared)
     Route::get('dashboard', [DashboardController::class, 'index']);
-    Route::get('admin/ai/metrics', [AiMetricsController::class, 'index']);
+    // Route::get('admin/ai/metrics', [AiMetricsController::class, 'index']); // not deployed
 
     // -----------------------------------------------------------------
     // PARSER (Admin Panel) — /api/v1/admin/parser
@@ -508,12 +509,13 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
     // Parser panel MUST NOT use these.
     // -----------------------------------------------------------------
     Route::prefix('crm')->group(function () {
-        Route::get('system-products', [SystemProductController::class, 'index']);
-        Route::post('system-products', [SystemProductController::class, 'store']);
-        Route::post('system-products/create-from-donor', [SystemProductController::class, 'createFromDonor']);
-        Route::get('system-products/{id}', [SystemProductController::class, 'show']);
-        Route::patch('system-products/{id}', [SystemProductController::class, 'update']);
-        Route::delete('system-products/{id}', [SystemProductController::class, 'destroy']);
+        // SystemProductController not deployed
+        // Route::get('system-products', [SystemProductController::class, 'index']);
+        // Route::post('system-products', [SystemProductController::class, 'store']);
+        // Route::post('system-products/create-from-donor', [SystemProductController::class, 'createFromDonor']);
+        // Route::get('system-products/{id}', [SystemProductController::class, 'show']);
+        // Route::patch('system-products/{id}', [SystemProductController::class, 'update']);
+        // Route::delete('system-products/{id}', [SystemProductController::class, 'destroy']);
         Route::get('api-keys', [SaasApiKeyController::class, 'index']);
         Route::get('api-keys/{id}', [SaasApiKeyController::class, 'show']);
         Route::patch('api-keys/{id}', [SaasApiKeyController::class, 'update']);
