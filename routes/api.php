@@ -307,33 +307,40 @@ Route::prefix('v1')->group(function () {
         ], $parserMetrics));
     });
     Route::get('/health', function () {
-        $status = 'ok';
-        $db = false;
-        $redis = false;
-        $parserLastRun = null;
+        $db = 'failed';
+        $redis = 'failed';
+        $queue = 'failed';
+
         try {
             DB::connection()->getPdo();
             DB::connection()->getDatabaseName();
-            $db = true;
+            $db = 'ok';
         } catch (\Throwable $e) {
-            $status = 'degraded';
+            // ignored
         }
+
         try {
             Redis::ping();
-            $redis = true;
+            $redis = 'ok';
         } catch (\Throwable $e) {
-            $status = 'degraded';
+            // ignored
         }
-        $lastJob = \App\Models\ParserJob::where('status', 'completed')->latest('finished_at')->first();
-        if ($lastJob) {
-            $parserLastRun = $lastJob->finished_at?->toIso8601String();
+
+        try {
+            $q = Queue::connection(config('queue.default'));
+            $q->size('default');
+            $queue = 'ok';
+        } catch (\Throwable $e) {
+            // ignored
         }
+
+        $status = ($db === 'ok' && $redis === 'ok' && $queue === 'ok') ? 'ok' : 'degraded';
+
         return response()->json([
             'status' => $status,
-            'database' => $db ? 'connected' : 'disconnected',
-            'redis' => $redis ? 'connected' : 'disconnected',
-            'parser_last_run' => $parserLastRun,
-            'timestamp' => now()->toIso8601String(),
+            'db' => $db,
+            'queue' => $queue,
+            'redis' => $redis,
         ]);
     });
 
@@ -427,6 +434,7 @@ Route::prefix('v1/public')->group(function () {
 // });
 
 Route::prefix('v1')->group(function () {
+    Route::get('payments/{id}', [\App\Http\Controllers\Api\PaymentStatusController::class, 'show']);
     Route::post('api-keys', [SaasApiKeyController::class, 'store']);
     Route::post('webhook/stripe', [SaasApiKeyController::class, 'stripeWebhook']);
     Route::post('webhook/tinkoff', [SaasApiKeyController::class, 'tinkoffWebhook'])->middleware('throttle:60,1');
@@ -523,9 +531,12 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('api-keys/{id}/checkout', [SaasApiKeyController::class, 'checkout']);
         Route::post('webhook/replay/{id}', [SaasApiKeyController::class, 'webhookReplay']);
         Route::get('payment-providers', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'index']);
+        Route::get('webhook-logs', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'allLogs']);
+        Route::get('payment-alerts', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'paymentAlerts']);
         Route::get('payment-providers/{name}', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'show']);
         Route::patch('payment-providers/{name}', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'update']);
         Route::post('payment-providers/{name}/test', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'test']);
+        Route::post('payment-providers/{name}/test-payment', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'createTestPayment']);
         Route::get('payment-providers/{name}/logs', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'logs']);
     });
 
@@ -616,4 +627,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
 
     // Catalog Phase 1 — dual category system (CATALOG_ARCHITECTURE_V2)
     require base_path('routes/admin_catalog.php');
+
+    // Admin System Products — CRM (system_products)
+    require base_path('routes/admin_system_products.php');
 });
