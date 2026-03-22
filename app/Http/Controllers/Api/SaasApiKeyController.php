@@ -15,6 +15,29 @@ use Illuminate\Support\Str;
 
 class SaasApiKeyController extends Controller
 {
+    public function store(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'name' => 'required|string|max:255',
+        ]);
+        $plain = 'sk_live_' . Str::random(40);
+        $key = SaasApiKey::create([
+            'name' => $data['name'],
+            'api_key_hash' => SaasApiKey::hashKey($plain),
+            'requests_per_minute' => 60,
+            'balance' => 0,
+            'cost_per_request' => 0.001,
+            'is_active' => true,
+        ]);
+        return response()->json([
+            'id' => $key->id,
+            'name' => $key->name,
+            'api_key' => $plain,
+            'balance' => (float) $key->balance,
+            'created_at' => $key->created_at?->toIso8601String(),
+        ], 201);
+    }
+
     public function index(Request $request): JsonResponse
     {
         $q = SaasApiKey::query()->orderByDesc('id');

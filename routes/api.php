@@ -426,6 +426,7 @@ Route::prefix('v1')->middleware('saas.api')->group(function () {
 });
 
 Route::prefix('v1')->group(function () {
+    Route::post('api-keys', [SaasApiKeyController::class, 'store']);
     Route::post('webhook/stripe', [SaasApiKeyController::class, 'stripeWebhook']);
     Route::post('webhook/tinkoff', [SaasApiKeyController::class, 'tinkoffWebhook']);
     Route::post('webhook/sber', [SaasApiKeyController::class, 'sberWebhook']);
