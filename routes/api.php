@@ -426,14 +426,6 @@ Route::prefix('v1')->middleware('saas.api')->group(function () {
 });
 
 Route::prefix('v1')->group(function () {
-    Route::post('_debug-json', function (\Illuminate\Http\Request $r) {
-        return response()->json([
-            'content' => $r->getContent(),
-            'content_len' => strlen($r->getContent() ?? ''),
-            'all' => $r->all(),
-            'header_ct' => $r->header('Content-Type'),
-        ]);
-    });
     Route::post('api-keys', [SaasApiKeyController::class, 'store']);
     Route::post('webhook/stripe', [SaasApiKeyController::class, 'stripeWebhook']);
     Route::post('webhook/tinkoff', [SaasApiKeyController::class, 'tinkoffWebhook']);

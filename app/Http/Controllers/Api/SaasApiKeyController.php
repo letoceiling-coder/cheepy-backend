@@ -310,21 +310,13 @@ class SaasApiKeyController extends Controller
 
     private function ensureJsonParsed(Request $request): void
     {
-        $ct = $request->header('Content-Type', '');
-        if (!str_contains($ct, 'application/json')) {
-            return;
-        }
         $content = $request->getContent();
-        \Illuminate\Support\Facades\Log::debug('api-keys store json debug', [
-            'content_len' => $content === null ? 0 : strlen($content),
-            'content_preview' => $content === null || $content === '' ? '(empty)' : substr($content, 0, 100),
-        ]);
         if ($content === '' || $content === null) {
             return;
         }
         $decoded = json_decode($content, true);
         if (is_array($decoded)) {
-            $request->request->add($decoded);
+            $request->merge($decoded);
         }
     }
 
