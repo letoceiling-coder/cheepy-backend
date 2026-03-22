@@ -315,6 +315,10 @@ class SaasApiKeyController extends Controller
             return;
         }
         $content = $request->getContent();
+        \Illuminate\Support\Facades\Log::debug('api-keys store json debug', [
+            'content_len' => $content === null ? 0 : strlen($content),
+            'content_preview' => $content === null || $content === '' ? '(empty)' : substr($content, 0, 100),
+        ]);
         if ($content === '' || $content === null) {
             return;
         }
