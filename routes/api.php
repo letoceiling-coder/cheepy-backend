@@ -428,8 +428,8 @@ Route::prefix('v1')->middleware('saas.api')->group(function () {
 Route::prefix('v1')->group(function () {
     Route::post('api-keys', [SaasApiKeyController::class, 'store']);
     Route::post('webhook/stripe', [SaasApiKeyController::class, 'stripeWebhook']);
-    Route::post('webhook/tinkoff', [SaasApiKeyController::class, 'tinkoffWebhook']);
-    Route::post('webhook/sber', [SaasApiKeyController::class, 'sberWebhook']);
+    Route::post('webhook/tinkoff', [SaasApiKeyController::class, 'tinkoffWebhook'])->middleware('throttle:60,1');
+    Route::post('webhook/sber', [SaasApiKeyController::class, 'sberWebhook'])->middleware('throttle:60,1');
     Route::post('webhook/atol', [SaasApiKeyController::class, 'atolWebhook']);
 });
 
@@ -519,6 +519,12 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::patch('api-keys/{id}', [SaasApiKeyController::class, 'update']);
         Route::post('api-keys/{id}/balance', [SaasApiKeyController::class, 'addBalance']);
         Route::post('api-keys/{id}/checkout', [SaasApiKeyController::class, 'checkout']);
+        Route::post('webhook/replay/{id}', [SaasApiKeyController::class, 'webhookReplay']);
+        Route::get('payment-providers', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'index']);
+        Route::get('payment-providers/{name}', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'show']);
+        Route::patch('payment-providers/{name}', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'update']);
+        Route::post('payment-providers/{name}/test', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'test']);
+        Route::get('payment-providers/{name}/logs', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'logs']);
     });
 
     // Attribute Rules & Synonyms
