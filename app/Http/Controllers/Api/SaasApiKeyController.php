@@ -17,6 +17,7 @@ class SaasApiKeyController extends Controller
 {
     public function store(Request $request): JsonResponse
     {
+        $this->ensureJsonParsed($request);
         $data = $request->validate([
             'name' => 'required|string|max:255',
         ]);
@@ -305,6 +306,22 @@ class SaasApiKeyController extends Controller
         });
 
         return response()->json(['received' => true]);
+    }
+
+    private function ensureJsonParsed(Request $request): void
+    {
+        $ct = $request->header('Content-Type', '');
+        if (!str_contains($ct, 'application/json')) {
+            return;
+        }
+        $content = $request->getContent();
+        if ($content === '' || $content === null) {
+            return;
+        }
+        $decoded = json_decode($content, true);
+        if (is_array($decoded)) {
+            $request->request->add($decoded);
+        }
     }
 
     private function provider(string $provider): PaymentProviderInterface
