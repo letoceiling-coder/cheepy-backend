@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\PaymentWebhookLog;
 use App\Models\SaasApiKey;
 use App\Services\Payments\PaymentProviderInterface;
 use App\Services\Payments\PaymentProviderManager;
@@ -216,49 +217,78 @@ class SaasApiKeyController extends Controller
         ]);
     }
 
-    public function stripeWebhook(Request $request): JsonResponse
+    public function stripeWebhook(Request $request): \Symfony\Component\HttpFoundation\Response
     {
         return $this->providerWebhook('stripe', $request);
     }
 
-    public function tinkoffWebhook(Request $request): JsonResponse
+    public function tinkoffWebhook(Request $request): \Symfony\Component\HttpFoundation\Response
     {
-        return $this->providerWebhook('tinkoff', $request);
+        \Illuminate\Support\Facades\Log::info('tinkoff webhook', $request->all());
+
+        $log = PaymentWebhookLog::create([
+            'provider' => 'tinkoff',
+            'provider_event_id' => $request->input('PaymentId'),
+            'payload' => $request->all(),
+            'headers' => $request->headers->all(),
+            'status' => 'received',
+        ]);
+
+        try {
+            $response = $this->providerWebhook('tinkoff', $request, $log);
+            return $response;
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Tinkoff webhook failed', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            $log->update([
+                'status' => 'failed',
+                'error' => $e->getMessage(),
+            ]);
+
+            return response('OK', 200, ['Content-Type' => 'text/plain']);
+        }
     }
 
-    public function sberWebhook(Request $request): JsonResponse
+    public function sberWebhook(Request $request): \Symfony\Component\HttpFoundation\Response
     {
         return $this->providerWebhook('sber', $request);
     }
 
-    public function atolWebhook(Request $request): JsonResponse
+    public function atolWebhook(Request $request): \Symfony\Component\HttpFoundation\Response
     {
         return $this->providerWebhook('atol', $request);
     }
 
-    private function providerWebhook(string $provider, Request $request): JsonResponse
+    private function providerWebhook(string $provider, Request $request, ?PaymentWebhookLog $webhookLog = null): \Symfony\Component\HttpFoundation\Response
     {
         $providerService = $this->provider($provider);
         $result = $providerService->handleWebhook($request);
         if (($result['ok'] ?? false) !== true) {
-            return response()->json(['error' => 'Invalid webhook'], 400);
+            $status = (int) ($result['http_status'] ?? 400);
+            return response()->json(['error' => 'Invalid webhook'], $status);
         }
 
         $providerId = (string) ($result['provider_id'] ?? '');
         $providerEventId = (string) ($result['provider_event_id'] ?? '');
         $status = (string) ($result['status'] ?? '');
         if ($providerId === '' || $status === '') {
-            return response()->json(['received' => true]);
+            return $this->webhookSuccessResponse($provider);
         }
 
         $manager = app(PaymentProviderManager::class);
-        DB::transaction(function () use ($provider, $providerId, $providerEventId, $status, $result, $manager) {
+        DB::transaction(function () use ($provider, $providerId, $providerEventId, $status, $result, $manager, $webhookLog) {
             if ($providerEventId !== '') {
                 $alreadyProcessed = DB::table('payments')
                     ->where('provider', $provider)
                     ->where('provider_event_id', $providerEventId)
                     ->exists();
                 if ($alreadyProcessed) {
+                    if ($webhookLog) {
+                        $webhookLog->update(['status' => 'processed']);
+                    }
                     return;
                 }
             }
@@ -268,10 +298,31 @@ class SaasApiKeyController extends Controller
                 ->where('provider_id', $providerId)
                 ->lockForUpdate()
                 ->first();
+
+            if (!$payment && $provider === 'tinkoff' && !empty($result['order_id'])) {
+                $orderId = $result['order_id'];
+                if (preg_match('/^pay_(\d+)$/', $orderId, $m)) {
+                    $ourId = (int) $m[1];
+                    $payment = DB::table('payments')
+                        ->where('provider', $provider)
+                        ->where('id', $ourId)
+                        ->lockForUpdate()
+                        ->first();
+                    if ($payment) {
+                        DB::table('payments')->where('id', $payment->id)->update([
+                            'provider_id' => $providerId,
+                            'updated_at' => now(),
+                        ]);
+                    }
+                }
+            }
             if (!$payment) {
                 return;
             }
-            if ($payment->status === 'succeeded') {
+            if ($payment->provider_event_id === $providerEventId || $payment->status === 'succeeded') {
+                if ($webhookLog) {
+                    $webhookLog->update(['status' => 'processed']);
+                }
                 return;
             }
 
@@ -281,6 +332,9 @@ class SaasApiKeyController extends Controller
                     'provider_event_id' => $providerEventId !== '' ? $providerEventId : $payment->provider_event_id,
                     'updated_at' => now(),
                 ]);
+                if ($webhookLog) {
+                    $webhookLog->update(['status' => 'processed']);
+                }
                 return;
             }
 
@@ -297,6 +351,23 @@ class SaasApiKeyController extends Controller
                     'provider_event_id' => $providerEventId !== '' ? $providerEventId : $payment->provider_event_id,
                     'updated_at' => now(),
                 ]);
+                if ($webhookLog) {
+                    $webhookLog->update(['status' => 'processed']);
+                }
+                return;
+            }
+
+            $payment = DB::table('payments')
+                ->where('id', $payment->id)
+                ->lockForUpdate()
+                ->first();
+            if (!$payment) {
+                return;
+            }
+            if ($payment->provider_event_id === $providerEventId || $payment->status === 'succeeded') {
+                if ($webhookLog) {
+                    $webhookLog->update(['status' => 'processed']);
+                }
                 return;
             }
 
@@ -311,8 +382,20 @@ class SaasApiKeyController extends Controller
                 'provider_event_id' => $providerEventId !== '' ? $providerEventId : $payment->provider_event_id,
                 'updated_at' => now(),
             ]);
+
+            if ($webhookLog) {
+                $webhookLog->update(['status' => 'processed']);
+            }
         });
 
+        return $this->webhookSuccessResponse($provider);
+    }
+
+    private function webhookSuccessResponse(string $provider): \Symfony\Component\HttpFoundation\Response
+    {
+        if ($provider === 'tinkoff') {
+            return response('OK', 200, ['Content-Type' => 'text/plain']);
+        }
         return response()->json(['received' => true]);
     }
 
