@@ -8,6 +8,11 @@ use Illuminate\Support\Facades\Http;
 
 class StripeProvider implements PaymentProviderInterface
 {
+    public function __construct(
+        private array $config = []
+    ) {
+    }
+
     public function normalizeAmount(float $amount): int
     {
         return (int) round($amount * 100);
@@ -53,7 +58,7 @@ class StripeProvider implements PaymentProviderInterface
     {
         $payload = $request->getContent();
         $signature = (string) $request->header('Stripe-Signature', '');
-        $secret = (string) env('STRIPE_WEBHOOK_SECRET', '');
+        $secret = (string) ($this->config['webhook_secret'] ?? '');
 
         if (!$this->verifySignature($payload, $signature, $secret)) {
             return ['ok' => false, 'provider_id' => null, 'provider_event_id' => null, 'status' => null, 'amount_total' => null, 'currency' => null];

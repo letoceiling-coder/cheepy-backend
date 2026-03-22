@@ -5,9 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\SaasApiKey;
 use App\Services\Payments\PaymentProviderInterface;
-use App\Services\Payments\SberProvider;
-use App\Services\Payments\StripeProvider;
-use App\Services\Payments\TinkoffProvider;
+use App\Services\Payments\PaymentProviderManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -17,7 +15,6 @@ class SaasApiKeyController extends Controller
 {
     public function store(Request $request): JsonResponse
     {
-        $this->ensureJsonParsed($request);
         $data = $request->validate([
             'name' => 'required|string|max:255',
         ]);
@@ -169,14 +166,18 @@ class SaasApiKeyController extends Controller
     public function checkout(Request $request, int $id): JsonResponse
     {
         $key = SaasApiKey::findOrFail($id);
+        $manager = app(PaymentProviderManager::class);
+        $activeNames = $manager->getActiveProviderNames();
+        $allowedProviders = implode(',', $activeNames);
+        $defaultProvider = $activeNames[0] ?? 'stripe';
         $data = $request->validate([
-            'provider' => 'nullable|string|in:stripe,tinkoff,sber',
+            'provider' => 'nullable|string|in:' . ($allowedProviders ?: 'stripe'),
             'amount' => 'required|numeric|min:0.01',
             'success_url' => 'nullable|url',
             'cancel_url' => 'nullable|url',
         ]);
 
-        $provider = strtolower((string) ($data['provider'] ?? 'stripe'));
+        $provider = strtolower((string) ($data['provider'] ?? $defaultProvider));
         $amount = round((float) $data['amount'], 4);
         $paymentId = DB::table('payments')->insertGetId([
             'api_key_id' => $key->id,
@@ -230,6 +231,11 @@ class SaasApiKeyController extends Controller
         return $this->providerWebhook('sber', $request);
     }
 
+    public function atolWebhook(Request $request): JsonResponse
+    {
+        return $this->providerWebhook('atol', $request);
+    }
+
     private function providerWebhook(string $provider, Request $request): JsonResponse
     {
         $providerService = $this->provider($provider);
@@ -245,7 +251,8 @@ class SaasApiKeyController extends Controller
             return response()->json(['received' => true]);
         }
 
-        DB::transaction(function () use ($provider, $providerId, $providerEventId, $status, $result) {
+        $manager = app(PaymentProviderManager::class);
+        DB::transaction(function () use ($provider, $providerId, $providerEventId, $status, $result, $manager) {
             if ($providerEventId !== '') {
                 $alreadyProcessed = DB::table('payments')
                     ->where('provider', $provider)
@@ -277,11 +284,12 @@ class SaasApiKeyController extends Controller
                 return;
             }
 
-            $providerService = $this->provider($provider);
+            $providerService = $manager->getProvider($provider);
             $expectedAmountTotal = $providerService->normalizeAmount((float) $payment->amount);
             $incomingAmountTotal = (int) ($result['amount_total'] ?? -1);
             $incomingCurrency = strtolower((string) ($result['currency'] ?? ''));
-            $expectedCurrency = strtolower((string) config("payments.{$provider}.currency", 'usd'));
+            $providerRecord = $manager->getProviderRecord($provider);
+            $expectedCurrency = strtolower((string) ($providerRecord->config['currency'] ?? 'usd'));
 
             if ($incomingAmountTotal !== $expectedAmountTotal || $incomingCurrency !== $expectedCurrency) {
                 DB::table('payments')->where('id', $payment->id)->update([
@@ -308,25 +316,8 @@ class SaasApiKeyController extends Controller
         return response()->json(['received' => true]);
     }
 
-    private function ensureJsonParsed(Request $request): void
-    {
-        $content = $request->getContent();
-        if ($content === '' || $content === null) {
-            return;
-        }
-        $decoded = json_decode($content, true);
-        if (is_array($decoded)) {
-            $request->merge($decoded);
-        }
-    }
-
     private function provider(string $provider): PaymentProviderInterface
     {
-        return match ($provider) {
-            'stripe' => app(StripeProvider::class),
-            'tinkoff' => app(TinkoffProvider::class),
-            'sber' => app(SberProvider::class),
-            default => throw new \RuntimeException('Unsupported provider'),
-        };
+        return app(PaymentProviderManager::class)->getProvider($provider);
     }
 }

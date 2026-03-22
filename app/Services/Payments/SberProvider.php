@@ -7,6 +7,11 @@ use Illuminate\Http\Request;
 
 class SberProvider implements PaymentProviderInterface
 {
+    public function __construct(
+        private array $config = []
+    ) {
+    }
+
     public function normalizeAmount(float $amount): int
     {
         return (int) round($amount * 100);

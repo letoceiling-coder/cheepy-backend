@@ -430,6 +430,7 @@ Route::prefix('v1')->group(function () {
     Route::post('webhook/stripe', [SaasApiKeyController::class, 'stripeWebhook']);
     Route::post('webhook/tinkoff', [SaasApiKeyController::class, 'tinkoffWebhook']);
     Route::post('webhook/sber', [SaasApiKeyController::class, 'sberWebhook']);
+    Route::post('webhook/atol', [SaasApiKeyController::class, 'atolWebhook']);
 });
 
 // =====================================================================

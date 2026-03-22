@@ -5,7 +5,7 @@ namespace App\Services\Payments;
 use App\Models\SaasApiKey;
 use Illuminate\Http\Request;
 
-class TinkoffProvider implements PaymentProviderInterface
+class AtolProvider implements PaymentProviderInterface
 {
     public function __construct(
         private array $config = []
@@ -19,7 +19,7 @@ class TinkoffProvider implements PaymentProviderInterface
 
     public function createCheckout(SaasApiKey $apiKey, float $amount, array $context = []): array
     {
-        throw new \RuntimeException('Tinkoff provider is not implemented');
+        throw new \RuntimeException('Atol provider is not implemented');
     }
 
     public function handleWebhook(Request $request): array
