@@ -8,7 +8,7 @@ class ParserState extends Model
 {
     protected $table = 'parser_state';
 
-    protected $fillable = ['status', 'locked', 'last_start', 'last_stop'];
+    protected $fillable = ['status', 'network_mode', 'locked', 'last_start', 'last_stop'];
 
     protected $casts = [
         'locked' => 'boolean',

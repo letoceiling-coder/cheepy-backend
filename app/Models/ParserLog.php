@@ -47,6 +47,14 @@ class ParserLog extends Model
         ?int $attempt = null
     ): void
     {
+        try {
+            if (!ParserState::current()->isRunning()) {
+                return;
+            }
+        } catch (\Throwable $e) {
+            return;
+        }
+
         static::create([
             'job_id' => $jobId,
             'level' => $level,

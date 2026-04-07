@@ -19,6 +19,11 @@ class ParserSetting extends Model
         'proxy_enabled',
         'proxy_url',
         'queue_threshold',
+        'default_max_pages',
+        'default_products_per_category',
+        'default_linked_only',
+        'default_category_ids',
+        'default_no_details',
     ];
 
     protected $casts = [
@@ -32,6 +37,11 @@ class ParserSetting extends Model
         'workers_photos' => 'integer',
         'proxy_enabled' => 'boolean',
         'queue_threshold' => 'integer',
+        'default_max_pages' => 'integer',
+        'default_products_per_category' => 'integer',
+        'default_linked_only' => 'boolean',
+        'default_category_ids' => 'array',
+        'default_no_details' => 'boolean',
     ];
 
     public static function current(): self
@@ -51,7 +61,7 @@ class ParserSetting extends Model
     public static function defaults(): array
     {
         return [
-            'download_photos' => true,
+            'download_photos' => false,
             'store_photo_links' => true,
             'max_workers' => 3,
             'request_delay_min' => 1500,
@@ -61,7 +71,12 @@ class ParserSetting extends Model
             'workers_photos' => 1,
             'proxy_enabled' => true,
             'proxy_url' => 'http://89.169.39.244:3128',
-            'queue_threshold' => 500,
+            'queue_threshold' => 150,
+            'default_max_pages' => 0,
+            'default_products_per_category' => 0,
+            'default_linked_only' => false,
+            'default_category_ids' => [],
+            'default_no_details' => false,
         ];
     }
 }

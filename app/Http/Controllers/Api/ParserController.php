@@ -14,8 +14,11 @@ use App\Jobs\ParserDaemonJob;
 use App\Jobs\RunParserJob;
 use App\Services\Parser\ParserLogger;
 use App\Services\DatabaseParserService;
+use App\Support\ParserJobOptions;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Redis;
 use App\Services\PhotoDownloadService;
@@ -35,6 +38,7 @@ class ParserController extends Controller
         $ps = ParserState::current();
         return response()->json([
             'status' => $ps->status,
+            'network_mode' => $ps->network_mode,
             'locked' => $ps->locked,
             'last_start' => $ps->last_start?->toIso8601String(),
             'last_stop' => $ps->last_stop?->toIso8601String(),
@@ -55,6 +59,25 @@ class ParserController extends Controller
      */
     public function updateSettings(Request $request): JsonResponse
     {
+        Log::warning('SETTINGS RECEIVED', $request->all());
+
+        $aliases = $request->only(['max_pages', 'categories', 'linked_only', 'products_per_category', 'no_details']);
+        if (array_key_exists('max_pages', $aliases)) {
+            $request->merge(['default_max_pages' => $aliases['max_pages']]);
+        }
+        if (array_key_exists('categories', $aliases)) {
+            $request->merge(['default_category_ids' => $aliases['categories']]);
+        }
+        if (array_key_exists('linked_only', $aliases)) {
+            $request->merge(['default_linked_only' => $aliases['linked_only']]);
+        }
+        if (array_key_exists('products_per_category', $aliases)) {
+            $request->merge(['default_products_per_category' => $aliases['products_per_category']]);
+        }
+        if (array_key_exists('no_details', $aliases)) {
+            $request->merge(['default_no_details' => $aliases['no_details']]);
+        }
+
         $validated = $request->validate([
             'download_photos' => ['nullable', 'boolean'],
             'store_photo_links' => ['nullable', 'boolean'],
@@ -67,10 +90,18 @@ class ParserController extends Controller
             'proxy_enabled' => ['nullable', 'boolean'],
             'proxy_url' => ['nullable', 'string', 'max:255'],
             'queue_threshold' => ['nullable', 'integer', 'min:10', 'max:1000000'],
+            'default_max_pages' => ['nullable', 'integer', 'min:0', 'max:10000'],
+            'default_products_per_category' => ['nullable', 'integer', 'min:0', 'max:1000000'],
+            'default_linked_only' => ['nullable', 'boolean'],
+            'default_category_ids' => ['nullable', 'array'],
+            'default_category_ids.*' => ['integer', 'min:1'],
+            'default_no_details' => ['nullable', 'boolean'],
         ]);
 
         $settings = ParserSetting::current();
         $settings->update($validated);
+
+        Log::warning('SETTINGS SAVED', $settings->fresh()->toArray());
 
         return response()->json([
             'message' => 'Настройки парсера обновлены',
@@ -117,19 +148,27 @@ class ParserController extends Controller
             \Illuminate\Support\Facades\Log::warning('Queue clear on start failed', ['error' => $e->getMessage()]);
         }
 
-        $options = [
-            'categories'           => $request->input('categories', []),
-            'linked_only'          => $request->boolean('linked_only', false),
-            'products_per_category'=> (int) $request->input('products_per_category', 0),
-            'max_pages'            => (int) $request->input('max_pages', 0),
-            'no_details'           => $request->boolean('no_details', false),
-            'save_photos'          => $request->boolean('save_photos', false),
-            'save_to_db'           => $request->boolean('save_to_db', true),
-            'category_slug'        => $request->input('category_slug'),
-            'seller_slug'          => $request->input('seller_slug'),
-        ];
+        $overrideKeys = ['categories', 'linked_only', 'products_per_category', 'max_pages', 'no_details', 'save_photos', 'save_to_db', 'category_slug', 'seller_slug'];
+        $overrides = [];
+        foreach ($overrideKeys as $key) {
+            if (! $request->has($key)) {
+                continue;
+            }
+            $overrides[$key] = match ($key) {
+                'categories' => $request->input('categories', []),
+                'linked_only', 'no_details', 'save_photos', 'save_to_db' => $request->boolean($key),
+                'products_per_category', 'max_pages' => (int) $request->input($key, 0),
+                default => $request->input($key),
+            };
+        }
+
+        $options = ParserJobOptions::buildForApiStart($overrides);
 
         $type = $request->input('type', 'full');
+
+        ParserJobOptions::assertCategoriesForJob($type, $options);
+
+        Log::critical('OPTIONS BEFORE CREATE', $options);
 
         $job = ParserJob::create([
             'type'    => $type,
@@ -375,34 +414,78 @@ class ParserController extends Controller
     public function startDaemon(Request $request): JsonResponse
     {
         try {
-            $proxyReady = $this->checkProxyAvailability();
-            if (!$proxyReady) {
-                ParserState::current()->update([
-                    'status' => ParserState::STATUS_PAUSED_NETWORK,
-                    'last_stop' => now(),
-                ]);
-                ParserLogger::write('network_error', 'Daemon start blocked: proxy check failed');
+            $proxy = $this->checkProxyAvailability(true);
+            $networkMode = null;
 
-                return response()->json([
-                    'error' => 'Proxy недоступен. Парсер переведен в paused_network.',
-                    'daemon_enabled' => false,
-                ], 503);
+            if ($proxy['proxy_ok']) {
+                $donorViaProxy = $this->checkDonorAvailability(true);
+                if ($donorViaProxy) {
+                    $networkMode = 'proxy';
+                    Log::warning('[NETWORK MODE]', ['mode' => 'proxy']);
+                } else {
+                    $direct = $this->checkDonorAvailability(false);
+                    if ($direct) {
+                        $networkMode = 'direct';
+                        Log::warning('[NETWORK MODE]', ['mode' => 'direct']);
+                    } else {
+                        Log::critical('[NETWORK FAIL] both failed', [
+                            'phase' => 'proxy_ok_donor_unreachable',
+                            'proxy_reason' => $proxy['reason'] ?? null,
+                        ]);
+                        ParserState::current()->update([
+                            'status' => ParserState::STATUS_PAUSED_NETWORK,
+                            'network_mode' => null,
+                            'last_stop' => now(),
+                        ]);
+                        ParserLogger::write('network_error', 'Donor unavailable: reachable via proxy tunnel but donor failed; direct also failed');
+
+                        return response()->json([
+                            'error' => 'Donor unavailable (proxy + direct failed)',
+                            'daemon_enabled' => false,
+                        ], 503);
+                    }
+                }
+            } else {
+                $direct = $this->checkDonorAvailability(false);
+                if ($direct) {
+                    $networkMode = 'direct';
+                    Log::warning('[NETWORK MODE]', ['mode' => 'direct', 'proxy_reason' => $proxy['reason'] ?? null]);
+                } else {
+                    Log::critical('[NETWORK FAIL] both failed', ['proxy_reason' => $proxy['reason'] ?? null]);
+                    ParserState::current()->update([
+                        'status' => ParserState::STATUS_PAUSED_NETWORK,
+                        'network_mode' => null,
+                        'last_stop' => now(),
+                    ]);
+                    ParserLogger::write('network_error', 'Donor unavailable (proxy + direct failed)', [
+                        'proxy_reason' => $proxy['reason'] ?? null,
+                    ]);
+
+                    return response()->json([
+                        'error' => 'Donor unavailable (proxy + direct failed)',
+                        'daemon_enabled' => false,
+                    ], 503);
+                }
             }
+
+            Config::set('parser.use_proxy', $networkMode === 'proxy');
+
+            ParserState::current()->update([
+                'status' => ParserState::STATUS_RUNNING,
+                'network_mode' => $networkMode,
+                'last_start' => now(),
+            ]);
+
+            ParserDaemonJob::dispatch();
+
+            return response()->json([
+                'message' => 'Парсер запущен. Следующий прогон — через 60 сек после завершения текущего.',
+                'daemon_enabled' => true,
+                'network_mode' => $networkMode,
+            ], 201);
         } catch (\Throwable $e) {
-            return response()->json(['error' => 'Proxy precheck failed: ' . $e->getMessage()], 500);
+            return response()->json(['error' => 'Network precheck failed: ' . $e->getMessage()], 500);
         }
-
-        ParserState::current()->update([
-            'status' => ParserState::STATUS_RUNNING,
-            'last_start' => now(),
-        ]);
-
-        ParserDaemonJob::dispatch();
-
-        return response()->json([
-            'message' => 'Парсер запущен. Следующий прогон — через 60 сек после завершения текущего.',
-            'daemon_enabled' => true,
-        ], 201);
     }
 
     /**
@@ -452,6 +535,7 @@ class ParserController extends Controller
             'is_running'          => $running !== null,
             'daemon_enabled'      => $parserState->status === ParserState::STATUS_RUNNING,
             'parser_state'        => $parserState->status,
+            'network_mode'        => $parserState->network_mode,
             'current_job'         => $running ? $this->formatJob($running) : null,
             'last_completed'      => $lastCompleted ? $this->formatJob($lastCompleted) : null,
             'queue_parser_size'   => $queueParser,
@@ -527,15 +611,24 @@ class ParserController extends Controller
         $progress = ParserProgress::query()
             ->latest('updated_at')
             ->first(['job_id', 'total_items', 'processed_items', 'failed_items', 'current_url', 'speed_per_min', 'updated_at']);
-        $proxyOk = $this->checkProxyAvailability();
-        $donorOk = $this->checkSadovodAvailability($proxyOk);
-
+        $proxyProbe = $this->checkProxyAvailability(true);
+        $proxyOk = $proxyProbe['proxy_ok'];
         $parserState = ParserState::current();
+        $donorOk = $this->checkDonorAvailability(
+            $parserState->isRunning() && $parserState->network_mode === 'proxy'
+        );
+
+        $errorsTodayProducts = (int) Product::where('status', 'error')
+            ->whereDate('status_changed_at', today())
+            ->count();
+        $errorsTodayParserLogs = (int) ParserLog::where('level', 'error')->whereDate('logged_at', today())->count();
+
         return response()->json([
             'workers_running' => $workersRunning,
             'parser_running' => $running !== null,
             'daemon_enabled' => $parserState->status === ParserState::STATUS_RUNNING,
             'parser_state' => $parserState->status,
+            'network_mode' => $parserState->network_mode,
             'lock_held' => $lockHeld,
             'worker_status' => $workersRunning > 0 ? 'running' : 'stopped',
             'current_job' => $running ? $this->formatJob($running) : null,
@@ -551,8 +644,11 @@ class ParserController extends Controller
             'failed_jobs' => $failedJobs,
             'products_total' => Product::count(),
             'products_today' => Product::whereDate('parsed_at', today())->count(),
-            'errors_today' => (int) Product::where('status', 'error')->whereDate('updated_at', today())->count()
-                + (int) ParserLog::where('level', 'error')->whereDate('logged_at', today())->count(),
+            'errors_today' => $errorsTodayProducts + $errorsTodayParserLogs,
+            'errors_today_breakdown' => [
+                'products_status_error' => $errorsTodayProducts,
+                'parser_logs_error' => $errorsTodayParserLogs,
+            ],
             'parser_lock_status' => $lockHeld ? 'held' : 'free',
             'memory_usage' => memory_get_usage(true),
             'last_errors' => $lastErrors,
@@ -560,6 +656,7 @@ class ParserController extends Controller
             'progress' => $progress,
             'warning' => $this->detectParserWarning($running, $queueParser + $queueDefault + $queuePhotos),
             'proxy_status' => $proxyOk ? 'ok' : 'failed',
+            'proxy_probe_reason' => $proxyProbe['reason'] ?? null,
             'sadovodbaza_status' => $donorOk ? 'ok' : 'failed',
             'metrics' => $metrics,
         ]);
@@ -591,11 +688,15 @@ class ParserController extends Controller
             }
         }
 
-        $proxyOk = $this->checkProxyAvailability();
-        $donorOk = $this->checkSadovodAvailability($proxyOk);
+        $proxyProbe = $this->checkProxyAvailability(true);
+        $proxyOk = $proxyProbe['proxy_ok'];
+        $donorOk = $this->checkDonorAvailability(
+            $parserState->isRunning() && $parserState->network_mode === 'proxy'
+        );
 
         return response()->json([
             'parser_state' => $parserState->status,
+            'network_mode' => $parserState->network_mode,
             'queue_size' => [
                 'parser' => $queueParser,
                 'photos' => $queuePhotos,
@@ -603,6 +704,7 @@ class ParserController extends Controller
             ],
             'workers' => $workersRunning,
             'proxy_status' => $proxyOk ? 'ok' : 'failed',
+            'proxy_probe_reason' => $proxyProbe['reason'] ?? null,
             'sadovodbaza_status' => $donorOk ? 'ok' : 'failed',
             'timestamp' => now()->toIso8601String(),
         ]);
@@ -628,9 +730,13 @@ class ParserController extends Controller
             // ignore
         }
         $productsToday = \App\Models\Product::whereDate('parsed_at', today())->count();
-        $errorsToday =
-            (int) \App\Models\Product::where('status', 'error')->whereDate('updated_at', today())->count()
-            + (int) \App\Models\ParserLog::where('level', 'error')->whereDate('logged_at', today())->count();
+        $errProducts =
+            (int) \App\Models\Product::where('status', 'error')
+                ->whereDate('status_changed_at', today())
+                ->count();
+        $errLogs =
+            (int) \App\Models\ParserLog::where('level', 'error')->whereDate('logged_at', today())->count();
+        $errorsToday = $errProducts + $errLogs;
 
         return response()->json([
             'products_total' => \App\Models\Product::count(),
@@ -640,6 +746,10 @@ class ParserController extends Controller
             'queue_parser_size' => $queueParser,
             'queue_photos_size' => $queuePhotos,
             'errors_today' => $errorsToday,
+            'errors_today_breakdown' => [
+                'products_status_error' => $errProducts,
+                'parser_logs_error' => $errLogs,
+            ],
             'last_parser_run' => $lastCompleted?->finished_at?->toIso8601String(),
         ]);
     }
@@ -797,14 +907,30 @@ class ParserController extends Controller
         return null;
     }
 
-    private function checkProxyAvailability(): bool
+    /**
+     * Daemon is considered active only when parser_state is RUNNING.
+     */
+    private function isParserActive(): bool
     {
+        return ParserState::current()->isRunning();
+    }
+
+    /**
+     * @return array{proxy_ok: bool, reason: string, skipped?: bool}
+     */
+    private function checkProxyAvailability(bool $forcePrecheckWhenStopped = false): array
+    {
+        if (!$forcePrecheckWhenStopped && !$this->isParserActive()) {
+            return ['proxy_ok' => false, 'reason' => 'parser_inactive_skipped', 'skipped' => true];
+        }
+
         $proxyEnabled = (bool) config('parser.proxy_enabled', true);
         $proxyUrl = (string) (config('parser.proxy') ?: config('parser.proxy_url', ''));
         if (!$proxyEnabled || $proxyUrl === '') {
-            return false;
+            return ['proxy_ok' => false, 'reason' => 'proxy_disabled_or_missing'];
         }
 
+        $lastReason = 'error';
         for ($attempt = 1; $attempt <= 3; $attempt++) {
             try {
                 Http::timeout(20)
@@ -814,8 +940,9 @@ class ParserController extends Controller
                     ])
                     ->get('https://sadovodbaza.ru')
                     ->throw();
-                return true;
+                return ['proxy_ok' => true, 'reason' => 'ok'];
             } catch (\Throwable $e) {
+                $lastReason = $this->classifyNetworkError($e);
                 if ($attempt < 3) {
                     usleep($attempt * 500000);
                     continue;
@@ -823,33 +950,57 @@ class ParserController extends Controller
                 ParserLogger::write('network_error', 'Proxy precheck failed after retries', [
                     'attempt' => $attempt,
                     'error' => $e->getMessage(),
+                    'reason' => $lastReason,
                     'url' => 'https://sadovodbaza.ru',
                 ]);
             }
         }
-        return false;
+
+        return ['proxy_ok' => false, 'reason' => $lastReason];
     }
 
-    private function checkSadovodAvailability(bool $viaProxy): bool
+    private function checkDonorAvailability(bool $useProxy = false): bool
     {
         try {
-            $request = Http::timeout(20)->withOptions([
+            $options = [
                 'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
-            ]);
-            if ($viaProxy) {
-                $request = $request->withOptions([
-                    'proxy' => (string) (config('parser.proxy') ?: config('parser.proxy_url', '')),
-                    'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
-                ]);
+            ];
+            if ($useProxy) {
+                $proxyUrl = (string) (config('parser.proxy') ?: config('parser.proxy_url', ''));
+                if ($proxyUrl === '') {
+                    return false;
+                }
+                $options['proxy'] = $proxyUrl;
             }
-            $response = $request->get('https://sadovodbaza.ru');
+
+            $response = Http::timeout(10)
+                ->withOptions($options)
+                ->get('https://sadovodbaza.ru');
+
             if (!$response->successful()) {
                 return false;
             }
+
             return str_contains(mb_strtolower($response->body()), 'sadovodbaza');
         } catch (\Throwable $e) {
             return false;
         }
+    }
+
+    private function classifyNetworkError(\Throwable $e): string
+    {
+        $msg = strtolower($e->getMessage());
+        if (str_contains($msg, 'timed out') || str_contains($msg, 'timeout') || str_contains($msg, 'curl error 28')) {
+            return 'timeout';
+        }
+        if (str_contains($msg, 'connection refused') || str_contains($msg, 'curl error 7')) {
+            return 'refused';
+        }
+        if (str_contains($msg, 'could not resolve') || str_contains($msg, 'curl error 6')) {
+            return 'dns';
+        }
+
+        return 'error';
     }
 
     private function formatJob(ParserJob $job, bool $withLogs = false): array

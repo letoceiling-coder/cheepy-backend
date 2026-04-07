@@ -17,54 +17,73 @@ class ParserTest extends Command
 
     public function handle(): int
     {
+        if (!ParserState::current()->isRunning()) {
+            $this->info('Skipped: parser is not running (no proxy/HTTP checks, no parser_logs).');
+
+            return 0;
+        }
+
         $url = (string) $this->option('url');
         $settings = ParserSetting::current();
+        $state = ParserState::current();
         $proxyEnabled = (bool) config('parser.proxy_enabled', true);
-        $proxyUrl = (string) (config('parser.proxy') ?: config('parser.proxy_url', 'http://89.169.39.244:3128'));
+        $proxyUrl = (string) (config('parser.proxy') ?: config('parser.proxy_url') ?: config('parser.proxy.url', ''));
 
-        $this->line('proxy: checking...');
-        if (!$proxyEnabled || $proxyUrl === '') {
-            $this->error('proxy: FAIL - proxy is disabled or URL is missing');
-            ParserState::current()->update([
-                'status' => ParserState::STATUS_PAUSED_NETWORK,
-                'last_stop' => now(),
-            ]);
-            ParserLogger::write('network_error', 'Proxy test failed: disabled or missing URL', [
-                'url' => $url,
-            ]);
-            return 1;
-        }
-        try {
-            $curlCmd = sprintf('curl -I -x %s %s -m 20', escapeshellarg($proxyUrl), escapeshellarg($url));
-            $curlOut = function_exists('shell_exec') ? (string) @shell_exec($curlCmd . ' 2>&1') : '';
-            if ($curlOut !== '' && !str_contains($curlOut, '200')) {
-                throw new \RuntimeException(trim($curlOut));
+        $networkMode = $state->network_mode;
+
+        if ($networkMode === 'proxy') {
+            $this->line('proxy: checking (network_mode=proxy)...');
+            if (!$proxyEnabled || $proxyUrl === '') {
+                $this->error('proxy: FAIL - proxy is disabled or URL is missing');
+                ParserState::current()->update([
+                    'status' => ParserState::STATUS_PAUSED_NETWORK,
+                    'last_stop' => now(),
+                ]);
+                ParserLogger::write('network_error', 'Proxy test failed: disabled or missing URL', [
+                    'url' => $url,
+                ]);
+
+                return 1;
             }
-            if ($curlOut === '') {
-                Http::timeout(20)->withOptions([
-                    'proxy' => $proxyUrl,
-                    'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
-                ])->get($url)->throw();
+            try {
+                $curlCmd = sprintf('curl -I -x %s %s -m 20', escapeshellarg($proxyUrl), escapeshellarg($url));
+                $curlOut = function_exists('shell_exec') ? (string) @shell_exec($curlCmd . ' 2>&1') : '';
+                if ($curlOut !== '' && !str_contains($curlOut, '200')) {
+                    throw new \RuntimeException(trim($curlOut));
+                }
+                if ($curlOut === '') {
+                    Http::timeout(20)->withOptions([
+                        'proxy' => $proxyUrl,
+                        'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
+                    ])->get($url)->throw();
+                }
+                $this->line('proxy: OK');
+            } catch (\Throwable $e) {
+                $this->error('proxy: FAIL - ' . $e->getMessage());
+                ParserState::current()->update([
+                    'status' => ParserState::STATUS_PAUSED_NETWORK,
+                    'last_stop' => now(),
+                ]);
+                ParserLogger::write('network_error', 'Proxy test failed, daemon blocked', [
+                    'url' => $url,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return 1;
             }
-            $this->line('proxy: OK');
-        } catch (\Throwable $e) {
-            $this->error('proxy: FAIL - ' . $e->getMessage());
-            ParserState::current()->update([
-                'status' => ParserState::STATUS_PAUSED_NETWORK,
-                'last_stop' => now(),
-            ]);
-            ParserLogger::write('network_error', 'Proxy test failed, daemon blocked', [
-                'url' => $url,
-                'error' => $e->getMessage(),
-            ]);
-            return 1;
+        } else {
+            $this->line('network: direct (network_mode=' . ($networkMode ?? 'null') . ') — proxy check skipped');
         }
 
+        $proxyFromSettings = (string) ($settings->proxy_url ?? '');
+        $useProxy = filter_var(config('parser.use_proxy', false), FILTER_VALIDATE_BOOLEAN);
         $http = new HttpClient(
             timeoutSeconds: max(10, (int) $settings->timeout_seconds),
             retryCount: 3,
             delayMinMs: max(100, (int) $settings->request_delay_min),
             delayMaxMs: max(500, (int) $settings->request_delay_max),
+            proxyUrlOverride: $proxyFromSettings,
+            useProxyOverride: $useProxy,
         );
 
         try {

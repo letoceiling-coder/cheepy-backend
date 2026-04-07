@@ -10,7 +10,7 @@ use App\Events\ProductParsed;
 use App\Models\Category;
 use App\Models\ParserJob;
 use App\Models\ParserProgress;
-use App\Models\ParserSetting;
+use App\Models\ParserState;
 use App\Models\Product;
 use App\Models\ProductAttribute;
 use App\Models\ProductPhoto;
@@ -24,12 +24,17 @@ use App\Jobs\DownloadPhotoJob;
 use App\Jobs\ParseCategoryJob;
 use App\Services\SadovodParser\Parsers\SellerParser;
 use App\Services\Parser\ParserLogger;
+use App\Support\ParserJobOptions;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use JsonException;
+use RuntimeException;
 
 class DatabaseParserService
 {
+    private const PARSER_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024;
+
     private HttpClient $http;
     private CatalogParser $catalogParser;
     private ProductParser $productParser;
@@ -40,20 +45,150 @@ class DatabaseParserService
 
     private array $options;
 
+    private string $optionsIntegrityHash;
+
+    /** @var array<string, mixed> */
+    private array $httpConfig;
+
+    /** @var array{pages: int, pages_attempted: int, products: int} Per-category tallies (reset in parseCategoryPages). */
+    private array $debugCounters = [
+        'pages' => 0,
+        'pages_attempted' => 0,
+        'products' => 0,
+    ];
+
     public function __construct(ParserJob $job)
     {
         $this->job = $job;
-        $this->options = $job->options ?? [];
-        $settings = ParserSetting::current();
-        $this->options['save_photos'] = $this->options['save_photos'] ?? (bool) $settings->download_photos;
+        $opts = $job->options;
+        if (! is_array($opts)) {
+            throw new \RuntimeException('CRITICAL: NO HTTP CONFIG IN OPTIONS');
+        }
+        if (! isset($opts['runtime']['http_client']) || ! is_array($opts['runtime']['http_client'])) {
+            throw new \RuntimeException('CRITICAL: NO HTTP CONFIG IN OPTIONS');
+        }
+        ParserJobOptions::assertWorkerOptions($opts);
+        $this->options = $opts;
 
-        $config = config('sadovod');
-        $this->http = new HttpClient($config);
+        $this->assertCoreOptionsStrict();
+
+        $this->httpConfig = $this->options['runtime']['http_client'];
+
+        try {
+            $normalized = $this->normalizeOptions($this->options);
+            $optionsJson = json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            throw new RuntimeException('CRITICAL: OPTIONS NOT JSON-SERIALIZABLE: '.$e->getMessage(), 0, $e);
+        }
+        $this->optionsIntegrityHash = md5($optionsJson);
+        Log::critical('JOB OPTIONS HASH', [
+            'job_id' => $this->job->id,
+            'hash' => $this->optionsIntegrityHash,
+        ]);
+
+        Log::critical('OPTIONS VALIDATED', $this->options);
+        Log::warning('JOB OPTIONS', ['job_id' => $this->job->id, 'options' => $this->options]);
+
+        $this->http = new HttpClient($this->httpConfig);
         $this->catalogParser = new CatalogParser($this->http);
         $this->productParser = new ProductParser($this->http);
         $this->sellerParser = new SellerParser($this->http);
         $this->menuParser = new MenuParser($this->http);
         $this->photoService = new PhotoDownloadService();
+    }
+
+    /**
+     * Fail fast: any missing option stops the worker with a loud error.
+     *
+     * @param  array<string, mixed>  $options
+     * @return mixed
+     */
+    private function requireOption(array $options, string $key): mixed
+    {
+        if (! array_key_exists($key, $options)) {
+            throw new RuntimeException("CRITICAL: missing option {$key}");
+        }
+
+        return $options[$key];
+    }
+
+    private function assertOptionsIntegrity(): void
+    {
+        try {
+            $normalized = $this->normalizeOptions($this->options);
+            $optionsJson = json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            throw new RuntimeException('CRITICAL: OPTIONS NOT JSON-SERIALIZABLE: '.$e->getMessage(), 0, $e);
+        }
+        $currentHash = md5($optionsJson);
+        if ($currentHash !== $this->optionsIntegrityHash) {
+            throw new RuntimeException('CRITICAL: OPTIONS MUTATED');
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function normalizeOptions(array $options): array
+    {
+        ksort($options);
+
+        foreach ($options as $key => $value) {
+            if (is_array($value)) {
+                if (array_is_list($value)) {
+                    $options[$key] = array_map(function ($v) {
+                        return is_numeric($v) ? (int) $v : $v;
+                    }, $value);
+
+                    continue;
+                }
+                $options[$key] = $this->normalizeOptions($value);
+            }
+        }
+
+        return $options;
+    }
+
+    private function assertCoreOptionsStrict(): void
+    {
+        $required = ['categories', 'linked_only', 'products_per_category', 'max_pages', 'no_details', 'save_photos', 'save_to_db'];
+        foreach ($required as $key) {
+            $this->requireOption($this->options, $key);
+            if ($this->options[$key] === null) {
+                throw new RuntimeException("CRITICAL: {$key} null");
+            }
+        }
+        if (! is_array($this->options['categories'])) {
+            throw new RuntimeException('CRITICAL: categories must be array');
+        }
+    }
+
+    private function requestDelayMicros(): int
+    {
+        if (! array_key_exists('request_delay_ms', $this->httpConfig)) {
+            throw new \RuntimeException('CRITICAL: http_client.request_delay_ms missing');
+        }
+
+        return max(1, (int) $this->httpConfig['request_delay_ms']) * 1000;
+    }
+
+    private function productBroadcastEvery(): int
+    {
+        if (! array_key_exists('product_broadcast_every', $this->httpConfig)) {
+            throw new \RuntimeException('CRITICAL: http_client.product_broadcast_every missing');
+        }
+
+        return max(1, (int) $this->httpConfig['product_broadcast_every']);
+    }
+
+    private function donorBaseUrl(): string
+    {
+        if (! array_key_exists('base_url', $this->httpConfig)) {
+            throw new \RuntimeException('CRITICAL: http_client.base_url missing');
+        }
+
+        return rtrim((string) $this->httpConfig['base_url'], '/');
     }
 
     /**
@@ -76,6 +211,8 @@ class DatabaseParserService
                 'seller'    => $this->runSingleSeller($this->options['seller_slug'] ?? ''),
                 default     => $this->runFullPipeline(),
             };
+
+            $this->job->refresh();
 
             // For pipeline (full), completion is set by the last ParseCategoryJob
             if ($this->job->type !== 'full' || $this->job->total_categories <= 0) {
@@ -184,22 +321,49 @@ class DatabaseParserService
     {
         $this->runMenuOnly();
 
-        $categoryFilter = $this->options['categories'] ?? [];
+        $allowedCategories = $this->requireOption($this->options, 'categories');
+        $linkedOnly = (bool) $this->requireOption($this->options, 'linked_only');
+        Log::critical('CATEGORIES FILTER APPLIED', [
+            'categories' => $allowedCategories,
+            'parser_job_id' => $this->job->id,
+        ]);
+        Log::critical('CATEGORIES FILTER', [
+            'allowed' => $allowedCategories,
+        ]);
+
         $query = Category::where('enabled', true);
 
-        if (!empty($categoryFilter)) {
-            $ids = array_map('intval', array_filter($categoryFilter, 'is_numeric'));
-            if (!empty($ids)) {
+        if (! empty($allowedCategories)) {
+            $ids = array_map('intval', array_filter($allowedCategories, 'is_numeric'));
+            if (! empty($ids)) {
                 $query->whereIn('id', $ids);
             } else {
-                $query->whereIn('external_slug', $categoryFilter);
+                $query->whereIn('external_slug', $allowedCategories);
             }
-        } elseif (!empty($this->options['linked_only'])) {
+        } elseif ($linkedOnly) {
             $query->where('linked_to_parser', true);
         }
 
         $categories = $query->orderBy('sort_order')->get();
-        $total = $categories->count();
+
+        $categoriesToRun = [];
+        foreach ($categories as $category) {
+            if (! empty($allowedCategories)) {
+                if (! $this->categoryMatchesJobAllowList($category, $allowedCategories)) {
+                    Log::critical('CATEGORY SKIPPED', [
+                        'category_id' => $category->id,
+                    ]);
+                    continue;
+                }
+            }
+            $categoriesToRun[] = $category;
+        }
+
+        if (! empty($allowedCategories) && count($categoriesToRun) > 1) {
+            throw new RuntimeException('CRITICAL: CATEGORY FILTER IGNORED');
+        }
+
+        $total = count($categoriesToRun);
         $this->updateJob(['total_categories' => $total]);
 
         if ($total === 0) {
@@ -210,8 +374,10 @@ class DatabaseParserService
             return;
         }
 
-        foreach ($categories as $category) {
-            if ($this->isCancelled()) break;
+        foreach ($categoriesToRun as $category) {
+            if ($this->isCancelled()) {
+                break;
+            }
             ParseCategoryJob::dispatch($this->job->id, $category->id);
         }
 
@@ -221,27 +387,56 @@ class DatabaseParserService
     }
 
     /**
+     * @param  array<int, mixed>  $allowedCategories
+     */
+    private function categoryMatchesJobAllowList(Category $category, array $allowedCategories): bool
+    {
+        $allowedIds = array_values(array_unique(array_map('intval', array_filter($allowedCategories, 'is_numeric'))));
+        if ($allowedIds !== []) {
+            return in_array((int) $category->id, $allowedIds, true);
+        }
+
+        $slugs = array_values(array_filter($allowedCategories, static fn ($v) => is_string($v) && $v !== ''));
+
+        return in_array((string) ($category->external_slug ?? ''), $slugs, true);
+    }
+
+    /**
      * Sequential full parse (legacy, used for single-category or when not using pipeline).
      */
     private function runFull(): void
     {
         $this->runMenuOnly();
 
-        $categoryFilter = $this->options['categories'] ?? [];
+        $categoryFilter = $this->requireOption($this->options, 'categories');
+        $linkedOnly = (bool) $this->requireOption($this->options, 'linked_only');
+        Log::critical('CATEGORIES FILTER APPLIED', [
+            'categories' => $categoryFilter,
+            'parser_job_id' => $this->job->id,
+        ]);
+        Log::warning('CATEGORIES SELECTED', [
+            'categories' => $categoryFilter,
+            'linked_only' => $linkedOnly,
+            'parser_job_id' => $this->job->id,
+        ]);
+
         $query = Category::where('enabled', true);
 
-        if (!empty($categoryFilter)) {
+        if (! empty($categoryFilter)) {
             $ids = array_map('intval', array_filter($categoryFilter, 'is_numeric'));
-            if (!empty($ids)) {
+            if (! empty($ids)) {
                 $query->whereIn('id', $ids);
             } else {
                 $query->whereIn('external_slug', $categoryFilter);
             }
-        } elseif (!empty($this->options['linked_only'])) {
+        } elseif ($linkedOnly) {
             $query->where('linked_to_parser', true);
         }
 
         $categories = $query->orderBy('sort_order')->get();
+        if (! empty($categoryFilter) && $categories->count() > 1) {
+            throw new RuntimeException('CRITICAL: CATEGORY FILTER IGNORED');
+        }
         $this->updateJob(['total_categories' => $categories->count()]);
 
         foreach ($categories as $category) {
@@ -254,38 +449,112 @@ class DatabaseParserService
     // SINGLE CATEGORY
     // -------------------------------------------------------------------------
 
-    private function runSingleCategory(string $slug, ?Category $category = null): void
+    public function runCategoryPipeline(Category $category): void
     {
-        if (!$category) {
-            $category = Category::where('external_slug', $slug)->first();
+        $slug = $category->external_slug ?? '';
+        if ($slug === '') {
+            return;
         }
 
         $this->updateAction("Категория: {$slug}");
         $this->updateJob(['current_category_slug' => $slug]);
 
-        $productsPerPage = 24; // по умолчанию на странице донора
-        $maxPages = $this->options['max_pages'] ?? ($category?->parser_max_pages ?? 0);
-        $productLimit = $this->options['products_per_category'] ?? ($category?->parser_products_limit ?? 0);
-        $savePhotos = $this->options['save_photos'] ?? false;
-        $saveDetails = !($this->options['no_details'] ?? false);
+        $savedCount = $this->parseCategoryPages($category, true);
+
+        $category->update([
+            'products_count' => $savedCount,
+            'last_parsed_at' => now(),
+        ]);
+
+        $this->log('info', "Категория {$slug}: сохранено {$savedCount} товаров (pipeline)");
+
+        $this->job->increment('parsed_categories');
+        $this->job->refresh();
+        $this->maybeCompleteFullPipelineJob();
+    }
+
+    private function maybeCompleteFullPipelineJob(): void
+    {
+        if ($this->job->type !== 'full') {
+            return;
+        }
+        $this->job->refresh();
+        $total = (int) $this->job->total_categories;
+        $done = (int) $this->job->parsed_categories;
+        if ($total > 0 && $done >= $total) {
+            $this->updateJob(['status' => 'completed', 'finished_at' => now()]);
+            $this->job->refresh();
+            event(new ParserFinished($this->job));
+            $this->log('info', 'Парсинг завершён успешно (pipeline)', [
+                'products' => $this->job->saved_products,
+                'errors' => $this->job->errors_count,
+            ]);
+        }
+    }
+
+    private function parseCategoryPages(Category $category, bool $dispatchPhotosToQueue): int
+    {
+        $slug = $category->external_slug ?? '';
+        if ($slug === '') {
+            return 0;
+        }
+
+        $this->assertOptionsIntegrity();
+
+        $this->debugCounters = [
+            'pages' => 0,
+            'pages_attempted' => 0,
+            'products' => 0,
+        ];
+
+        $memory = memory_get_usage(true);
+        if ($memory > self::PARSER_MEMORY_LIMIT_BYTES) {
+            Log::critical('MEMORY LIMIT REACHED', [
+                'memory' => $memory,
+                'parser_job_id' => $this->job->id,
+            ]);
+            throw new RuntimeException('CRITICAL: MEMORY LIMIT');
+        }
+
+        $productsPerPage = 24;
+        $maxPagesRaw = $this->requireOption($this->options, 'max_pages');
+        if ($maxPagesRaw === null) {
+            throw new RuntimeException('CRITICAL: max_pages null');
+        }
+        $maxPages = (int) $maxPagesRaw;
+        $productLimit = (int) $this->requireOption($this->options, 'products_per_category');
+        $saveDetails = ! ((bool) $this->requireOption($this->options, 'no_details'));
 
         $page = 1;
         $savedCount = 0;
 
         while (true) {
-            if ($this->isCancelled()) break;
+            if ($this->isCancelled()) {
+                break;
+            }
+
+            if ($maxPages > 0 && $page > $maxPages) {
+                throw new RuntimeException('CRITICAL: PAGE LIMIT VIOLATION');
+            }
 
             $this->updateAction("Категория: {$slug} | Страница {$page}" . ($maxPages ? "/{$maxPages}" : ''));
             $this->updateJob(['current_page' => $page]);
 
             try {
+                $this->debugCounters['pages_attempted']++;
                 $result = $this->catalogParser->parseCategory('/catalog/' . $slug, $page - 1, $productsPerPage);
                 $products = $result['products'] ?? [];
                 $hasMore = $result['has_more'] ?? false;
 
-                if (empty($products)) break;
+                if (empty($products)) {
+                    Log::warning('EMPTY PAGE DETECTED', [
+                        'category' => $slug,
+                        'page' => $page,
+                        'parser_job_id' => $this->job->id,
+                    ]);
+                    break;
+                }
 
-                // Первая страница — определяем totalPages
                 if ($page === 1) {
                     $totalPages = $result['total_pages'] ?? 1;
                     if ($maxPages > 0) {
@@ -295,12 +564,26 @@ class DatabaseParserService
                 }
 
                 foreach ($products as $pData) {
-                    if ($this->isCancelled()) break 2;
-                    if ($productLimit > 0 && $savedCount >= $productLimit) break 2;
+                    if ($this->isCancelled()) {
+                        break 2;
+                    }
+                    if ($productLimit > 0 && $savedCount >= $productLimit) {
+                        Log::warning('PRODUCT LIMIT REACHED', [
+                            'category' => $slug,
+                            'saved_count' => $savedCount,
+                            'products_per_category' => $productLimit,
+                            'parser_job_id' => $this->job->id,
+                        ]);
+                        break 2;
+                    }
 
-                    $saved = $this->saveProductFromListing($pData, $category, $saveDetails, $savePhotos);
+                    $saved = $this->saveProductFromListing($pData, $category, $saveDetails, $dispatchPhotosToQueue);
                     if ($saved) {
                         $savedCount++;
+                        $this->debugCounters['products']++;
+                        if ($productLimit > 0 && $this->debugCounters['products'] > $productLimit) {
+                            throw new RuntimeException('CRITICAL: PRODUCT LIMIT BROKEN');
+                        }
                         $this->job->refresh();
                         if ($savedCount % 10 === 0) {
                             event(new ParserProgressUpdated($this->job));
@@ -308,27 +591,109 @@ class DatabaseParserService
                     }
                 }
 
-                $this->job->increment('parsed_categories');
-                $this->job->refresh();
+                if (! empty($products)) {
+                    $this->debugCounters['pages']++;
+                    if ($maxPages > 0 && $this->debugCounters['pages'] > $maxPages) {
+                        throw new RuntimeException('CRITICAL: PAGE LIMIT BROKEN');
+                    }
+                    Log::warning('PAGE PARSED', [
+                        'category' => $slug,
+                        'page' => $page,
+                        'parser_job_id' => $this->job->id,
+                    ]);
+                }
 
-                if (!$hasMore || ($maxPages > 0 && $page >= $maxPages)) break;
-                if ($productLimit > 0 && $savedCount >= $productLimit) break;
+                if ($maxPages > 0 && $page >= $maxPages) {
+                    Log::warning('PAGE LIMIT REACHED', [
+                        'category' => $slug,
+                        'page' => $page,
+                        'max_pages' => $maxPages,
+                        'parser_job_id' => $this->job->id,
+                        'reason' => 'max_pages_cap',
+                    ]);
+                }
+
+                if (! $hasMore || ($maxPages > 0 && $page >= $maxPages)) {
+                    break;
+                }
+                if ($productLimit > 0 && $savedCount >= $productLimit) {
+                    Log::warning('PRODUCT LIMIT REACHED', [
+                        'category' => $slug,
+                        'saved_count' => $savedCount,
+                        'products_per_category' => $productLimit,
+                        'parser_job_id' => $this->job->id,
+                        'where' => 'end_of_page',
+                    ]);
+                    break;
+                }
 
                 $page++;
-                usleep((int) (config('sadovod.request_delay_ms', 500) * 1000));
+                usleep($this->requestDelayMicros());
             } catch (\Throwable $e) {
                 $this->log('error', "Ошибка парсинга страницы {$page} категории {$slug}: " . $e->getMessage());
                 $this->job->increment('errors_count');
                 $this->job->refresh();
                 event(new ParserError($this->job, "Ошибка парсинга страницы {$page} категории {$slug}: " . $e->getMessage()));
                 break;
+            } finally {
+                gc_collect_cycles();
             }
         }
 
-        $category?->update([
+        if ($maxPages > 0 && $this->debugCounters['pages'] > $maxPages) {
+            throw new RuntimeException('CRITICAL: PAGE LIMIT BROKEN');
+        }
+        if ($productLimit > 0 && $this->debugCounters['products'] > $productLimit) {
+            throw new RuntimeException('CRITICAL: PRODUCT LIMIT BROKEN');
+        }
+
+        if ($this->debugCounters['pages_attempted'] > 0
+            && $this->debugCounters['pages'] === 0) {
+            Log::critical('CATEGORY FAILED COMPLETELY', [
+                'category' => $slug,
+                'attempted' => $this->debugCounters['pages_attempted'],
+            ]);
+
+            ParserState::current()->update([
+                'status' => ParserState::STATUS_PAUSED_NETWORK,
+                'last_stop' => now(),
+            ]);
+
+            throw new RuntimeException('CRITICAL: CATEGORY FAILED');
+        }
+
+        Log::warning('CATEGORY RESULT', [
+            'category' => $slug,
+            'pages_processed' => $this->debugCounters['pages'],
+            'pages_attempted' => $this->debugCounters['pages_attempted'],
+            'products_processed' => $this->debugCounters['products'],
+            'parser_job_id' => $this->job->id,
+        ]);
+
+        return $savedCount;
+    }
+
+    private function runSingleCategory(string $slug, ?Category $category = null): void
+    {
+        if (! $category) {
+            $category = Category::where('external_slug', $slug)->first();
+        }
+        if (! $category) {
+            return;
+        }
+
+        $this->updateAction("Категория: {$slug}");
+        $this->updateJob(['current_category_slug' => $slug]);
+
+        $savedCount = $this->parseCategoryPages($category, false);
+
+        $category->update([
             'products_count' => $savedCount,
             'last_parsed_at' => now(),
         ]);
+
+        $this->job->increment('parsed_categories');
+        $this->job->refresh();
 
         $this->log('info', "Категория {$slug}: сохранено {$savedCount} товаров");
     }
@@ -340,8 +705,9 @@ class DatabaseParserService
     /**
      * Save product from listing data. When $dispatchPhotosToQueue is true (queue pipeline),
      * photo records are created and DownloadPhotoJob is dispatched instead of downloading inline.
+     * Photo handling is gated by options.save_photos (SSOT).
      */
-    public function saveProductFromListing(array $pData, ?Category $category, bool $saveDetails, bool $savePhotos, bool $dispatchPhotosToQueue = false): bool
+    public function saveProductFromListing(array $pData, ?Category $category, bool $saveDetails, bool $dispatchPhotosToQueue = false): bool
     {
         try {
             $externalId = (string) ($pData['id'] ?? '');
@@ -352,7 +718,7 @@ class DatabaseParserService
                 try {
                     $detailData = $this->productParser->parse('/odejda/' . $externalId);
                     $pData = array_merge($pData, $detailData);
-                    usleep((int) (config('sadovod.request_delay_ms', 500) * 1000));
+                    usleep($this->requestDelayMicros());
                 } catch (\Throwable $e) {
                     $this->log('warn', "Не удалось получить детали товара {$externalId}: " . $e->getMessage(), [
                         'product_external_id' => $externalId,
@@ -361,11 +727,42 @@ class DatabaseParserService
                 }
             }
 
+            $title = trim((string) ($pData['title'] ?? ''));
+            $price = $pData['price'] ?? null;
+
+            $existingProduct = Product::where('external_id', $externalId)->first();
+            if ($existingProduct) {
+                if (mb_strlen($title) < 3) {
+                    $title = trim((string) ($existingProduct->title ?? ''));
+                }
+                if ($price === null || $price === '') {
+                    $price = $existingProduct->price;
+                }
+            }
+
+            $pData['title'] = $title;
+            $pData['price'] = $price;
+
+            if ($title === '') {
+                throw new RuntimeException('INVALID PRODUCT: NO TITLE');
+            }
+            if (! isset($price) || $price === null || $price === '') {
+                throw new RuntimeException('INVALID PRODUCT: NO PRICE');
+            }
+            if (mb_strlen($title) < 3) {
+                throw new RuntimeException('INVALID PRODUCT: SHORT TITLE');
+            }
+
             // Продавец: по slug с продукта — переиспользуем или парсим страницу /s/{slug}
             $seller = $this->getOrCreateSellerForProduct($pData['seller'] ?? []);
 
-            // Сохраняем продукт
+            // Сохраняем продукт (updateOrCreate по external_id внутри upsertFromParser)
             $product = Product::upsertFromParser($pData, $category?->id, $seller?->id);
+            $isNew = $product->wasRecentlyCreated;
+            Log::warning('PRODUCT UPSERT', [
+                'external_id' => $externalId,
+                'is_new' => $isNew,
+            ]);
 
             if ($seller) {
                 $seller->increment('products_count');
@@ -383,8 +780,16 @@ class DatabaseParserService
             // Always persist core filter attributes (color/size) even if rule-based extraction misses them.
             $this->syncCoreAttributes($product, $pData['characteristics'] ?? [], $category);
 
-            // Фото: inline download или постановка в очередь
-            if ($savePhotos && !empty($pData['photos'])) {
+            $savePhotosOpt = (bool) $this->requireOption($this->options, 'save_photos');
+            if (! $savePhotosOpt) {
+                $key = 'photo_block_logged_job_'.$this->job->id;
+                if (! Cache::get($key)) {
+                    Log::critical('PHOTO DOWNLOAD BLOCKED', [
+                        'parser_job_id' => $this->job->id,
+                    ]);
+                    Cache::put($key, true, 3600);
+                }
+            } elseif (! empty($pData['photos'])) {
                 if ($dispatchPhotosToQueue) {
                     $this->createPhotoRecordsOnly($product, $pData['photos'] ?? []);
                     DownloadPhotoJob::dispatch($product->id, $this->job->id);
@@ -393,14 +798,12 @@ class DatabaseParserService
                     $this->job->increment('photos_downloaded', $result['downloaded']);
                     $this->job->increment('photos_failed', $result['failed']);
                 }
-            } else {
-                $this->createPhotoRecordsOnly($product, $pData['photos'] ?? []);
             }
 
             $this->job->increment('saved_products');
             $this->job->increment('parsed_products');
             $this->updateProgress(null, 1, 0);
-            $broadcastEvery = max(1, (int) config('sadovod.product_broadcast_every', 20));
+            $broadcastEvery = $this->productBroadcastEvery();
             if (((int) $this->job->parsed_products % $broadcastEvery) === 0) {
                 $this->job->refresh();
                 event(new ProductParsed($this->job, [
@@ -416,6 +819,14 @@ class DatabaseParserService
                 'product_external_id' => $pData['id'] ?? null,
                 'job_id' => $this->job->id,
             ]);
+            if (isset($product) && $product instanceof Product) {
+                Product::markParseErrorIfRunning($product, $e);
+            } elseif (!empty($pData['id'])) {
+                $existing = Product::where('external_id', (string) $pData['id'])->first();
+                if ($existing) {
+                    Product::markParseErrorIfRunning($existing, $e);
+                }
+            }
             $this->job->increment('errors_count');
             $this->updateProgress($pData['url'] ?? null, 0, 1);
             $this->job->refresh();
@@ -514,7 +925,7 @@ class DatabaseParserService
         foreach ($photos as $index => $url) {
             $normalUrl = str_starts_with($url, 'http')
                 ? $url
-                : config('sadovod.base_url', 'https://sadovodbaza.ru') . '/' . ltrim($url, '/');
+                : $this->donorBaseUrl() . '/' . ltrim($url, '/');
 
             ProductPhoto::firstOrCreate(
                 ['product_id' => $product->id, 'original_url' => $normalUrl],
@@ -557,7 +968,7 @@ class DatabaseParserService
             if (!$data) {
                 try {
                     $this->updateAction("Продавец: {$slug}");
-                    usleep((int) (config('sadovod.request_delay_ms', 500) * 1000));
+                    usleep($this->requestDelayMicros());
                     $data = $this->sellerParser->parse('/s/' . $slug);
                     Cache::put($cacheKey, $data, 3600);
                 } catch (\Throwable $e) {
@@ -653,7 +1064,7 @@ class DatabaseParserService
 
         $avatarUrl = $sellerData['avatar'] ?? null;
         if ($avatarUrl && !str_starts_with($avatarUrl, 'http')) {
-            $avatarUrl = rtrim(config('sadovod.base_url', 'https://sadovodbaza.ru'), '/') . '/' . ltrim($avatarUrl, '/');
+            $avatarUrl = $this->donorBaseUrl() . '/' . ltrim($avatarUrl, '/');
         }
 
         return Seller::updateOrCreate(

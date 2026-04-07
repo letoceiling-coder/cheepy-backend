@@ -22,7 +22,12 @@ class DashboardController extends Controller
         $activeProducts = Product::where('status', 'active')->count();
         $hiddenProducts = Product::where('status', 'hidden')->count();
         $newToday = Product::whereDate('parsed_at', today())->count();
-        $withErrors = Product::where('status', 'error')->count();
+        $productsErrorAllTime = Product::where('status', 'error')->count();
+        $errorsTodayProducts = Product::where('status', 'error')
+            ->whereDate('status_changed_at', today())
+            ->count();
+        $errorsTodayParserLogs = ParserLog::where('level', 'error')->whereDate('logged_at', today())->count();
+        $errorsToday = $errorsTodayProducts + $errorsTodayParserLogs;
         $withPhotos = Product::where('photos_downloaded', true)->count();
         $pendingPhotos = Product::where('photos_count', '>', 0)->where('photos_downloaded', false)->count();
 
@@ -66,7 +71,9 @@ class DashboardController extends Controller
                 'active' => $activeProducts,
                 'hidden' => $hiddenProducts,
                 'new_today' => $newToday,
-                'errors' => $withErrors,
+                /** Same formula as /parser/diagnostics & /system/status — errors today, not lifetime error rows */
+                'errors' => $errorsToday,
+                'errors_all_time_products' => $productsErrorAllTime,
                 'with_photos' => $withPhotos,
                 'pending_photos' => $pendingPhotos,
             ],

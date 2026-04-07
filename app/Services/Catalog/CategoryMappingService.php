@@ -41,6 +41,7 @@ class CategoryMappingService
     {
         $mapping = CategoryMapping::create($data);
         event(new \App\Events\CatalogMappingCreated($mapping));
+
         return $mapping;
     }
 
@@ -52,6 +53,7 @@ class CategoryMappingService
     public function resolveCatalogCategoryId(int $donorCategoryId): ?int
     {
         $mapping = CategoryMapping::where('donor_category_id', $donorCategoryId)->first();
+
         return $mapping?->catalog_category_id;
     }
 
@@ -60,11 +62,13 @@ class CategoryMappingService
         $mapping = CategoryMapping::with('catalogCategory')
             ->where('donor_category_id', $donorCategoryId)
             ->first();
+
         return $mapping?->catalogCategory;
     }
 
     /**
      * Auto-mapping pipeline: insert or update non-manual mapping only.
+     * Caller must verify no manual mapping exists.
      */
     public function applyAutomaticMapping(
         int $donorCategoryId,

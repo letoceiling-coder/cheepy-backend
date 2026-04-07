@@ -1,0 +1,27 @@
+<?php
+
+namespace App\Providers;
+
+use App\Events\CatalogCategoryCreated;
+use App\Events\CatalogCategoryDeleted;
+use App\Events\CatalogCategoryUpdated;
+use App\Events\CatalogMappingCreated;
+use App\Listeners\LogCatalogCategoryCreated;
+use App\Listeners\LogCatalogCategoryDeleted;
+use App\Listeners\LogCatalogCategoryUpdated;
+use App\Listeners\LogCatalogMappingCreated;
+use Illuminate\Foundation\Support\Providers\EventServiceProvider as ServiceProvider;
+
+/**
+ * Add these $listen entries to your App\Providers\EventServiceProvider.
+ * Catalog Phase 1 — dual category system logging.
+ */
+class EventServiceProviderCatalogPhase1Example extends ServiceProvider
+{
+    protected $listen = [
+        CatalogCategoryCreated::class => [LogCatalogCategoryCreated::class],
+        CatalogCategoryUpdated::class => [LogCatalogCategoryUpdated::class],
+        CatalogCategoryDeleted::class => [LogCatalogCategoryDeleted::class],
+        CatalogMappingCreated::class => [LogCatalogMappingCreated::class],
+    ];
+}
