@@ -45,46 +45,62 @@ class DeployController extends Controller
             ], 500);
         }
 
-        $started = microtime(true);
-
-        try {
-            $result = Process::timeout(3600)
-                ->path(base_path())
-                ->run(['bash', $script]);
-        } catch (\Throwable $e) {
-            $duration = round(microtime(true) - $started, 3);
-            Log::error('Deploy process exception', [
-                'exception' => $e->getMessage(),
-                'ip' => $request->ip(),
-            ]);
+        $lockFile = storage_path('deploy.lock');
+        if (file_exists($lockFile)) {
+            Log::warning('Deploy rejected: lock held', ['ip' => $request->ip()]);
 
             return response()->json([
                 'status' => 'fail',
-                'duration' => $duration,
-                'exit_code' => -1,
-                'output' => $this->linesFromString($e->getMessage()),
-            ], 500);
+                'error' => 'DEPLOY ALREADY RUNNING',
+            ], 423);
         }
 
-        $duration = round(microtime(true) - $started, 3);
-        $exitCode = $result->exitCode();
-        $ok = $result->successful();
+        file_put_contents($lockFile, (string) getmypid());
 
-        $output = $this->mergeOutputLines($result->output(), $result->errorOutput());
+        $start = microtime(true);
 
-        Log::info('Deploy finished', [
-            'ip' => $request->ip(),
-            'duration' => $duration,
-            'exit_code' => $exitCode,
-            'successful' => $ok,
-        ]);
+        try {
+            try {
+                $result = Process::timeout(3600)
+                    ->path(base_path())
+                    ->run(['bash', $script]);
+            } catch (\Throwable $e) {
+                $duration = round(microtime(true) - $start, 2);
+                Log::error('Deploy process exception', [
+                    'exception' => $e->getMessage(),
+                    'ip' => $request->ip(),
+                ]);
 
-        return response()->json([
-            'status' => $ok ? 'ok' : 'fail',
-            'duration' => $duration,
-            'exit_code' => $exitCode,
-            'output' => $output,
-        ], $ok ? 200 : 500);
+                return response()->json([
+                    'status' => 'fail',
+                    'duration' => $duration,
+                    'exit_code' => -1,
+                    'output' => $this->linesFromString($e->getMessage()),
+                ], 500);
+            }
+
+            $duration = round(microtime(true) - $start, 2);
+            $exitCode = $result->exitCode();
+            $ok = $result->successful();
+
+            $output = $this->mergeOutputLines($result->output(), $result->errorOutput());
+
+            Log::info('Deploy finished', [
+                'ip' => $request->ip(),
+                'duration' => $duration,
+                'exit_code' => $exitCode,
+                'successful' => $ok,
+            ]);
+
+            return response()->json([
+                'status' => $ok ? 'ok' : 'fail',
+                'duration' => $duration,
+                'exit_code' => $exitCode,
+                'output' => $output,
+            ], $ok ? 200 : 500);
+        } finally {
+            @unlink($lockFile);
+        }
     }
 
     /**
