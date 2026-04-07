@@ -91,8 +91,8 @@ class HttpClient
             retryCount: $this->retryCount,
             delayMinMs: max(100, $this->delayMinMs),
             delayMaxMs: max($this->delayMinMs, $this->delayMaxMs),
-            proxyUrlOverride: $proxyUrlStr,
-            useProxyOverride: $useProxy,
+            proxyUrlFromOptions: $proxyUrlStr,
+            useProxyFromOptions: $useProxy,
         );
         $this->client = new Client([
             'base_uri' => $this->baseUrl,

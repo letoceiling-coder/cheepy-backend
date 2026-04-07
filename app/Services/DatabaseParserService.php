@@ -10,7 +10,6 @@ use App\Events\ProductParsed;
 use App\Models\Category;
 use App\Models\ParserJob;
 use App\Models\ParserProgress;
-use App\Models\ParserState;
 use App\Models\Product;
 use App\Models\ProductAttribute;
 use App\Models\ProductPhoto;
@@ -652,11 +651,6 @@ class DatabaseParserService
             Log::critical('CATEGORY FAILED COMPLETELY', [
                 'category' => $slug,
                 'attempted' => $this->debugCounters['pages_attempted'],
-            ]);
-
-            ParserState::current()->update([
-                'status' => ParserState::STATUS_PAUSED_NETWORK,
-                'last_stop' => now(),
             ]);
 
             throw new RuntimeException('CRITICAL: CATEGORY FAILED');

@@ -2,7 +2,7 @@
 
 namespace App\Services\Parser;
 
-use App\Models\ParserState;
+use App\Models\ParserSetting;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -32,17 +32,42 @@ class HttpClient
         private readonly int $retryCount = 3,
         private readonly int $delayMinMs = 1500,
         private readonly int $delayMaxMs = 3000,
-        private readonly ?string $proxyUrlOverride = null,
-        private readonly bool $useProxyOverride = false,
+        private readonly ?string $proxyUrlFromOptions = null,
+        private readonly bool $useProxyFromOptions = false,
     ) {
-        if ($this->proxyUrlOverride === null) {
-            throw new RuntimeException('CRITICAL: HTTP CLIENT USED WITHOUT JOB OPTIONS');
+    }
+
+    /**
+     * Effective proxy from job snapshot (options.runtime.http_client) merged with parser_settings.
+     *
+     * @return array{use_proxy: bool, proxy_url: string, url_from: string}
+     */
+    private function effectiveNetworkFromSettings(): array
+    {
+        $settings = ParserSetting::current();
+        $useProxy = $this->useProxyFromOptions || (bool) $settings->proxy_enabled;
+
+        $optUrl = trim((string) ($this->proxyUrlFromOptions ?? ''));
+        $dbUrl = trim((string) ($settings->proxy_url ?? ''));
+        $proxyUrl = $optUrl !== '' ? $optUrl : $dbUrl;
+        $urlFrom = $optUrl !== '' ? 'options' : ($dbUrl !== '' ? 'parser_settings' : 'none');
+
+        if ($useProxy && $proxyUrl === '') {
+            Log::warning('[NETWORK] proxy_enabled but proxy_url empty, using direct only');
+            $useProxy = false;
         }
+
+        return [
+            'use_proxy' => $useProxy,
+            'proxy_url' => $proxyUrl,
+            'url_from' => $urlFrom,
+        ];
     }
 
     /**
      * Donor fetch: random delay, cooldown every 100 requests, timeout clamped 10–15s.
-     * When proxy is enabled: 3 attempts — proxy, proxy retry, then direct (no global parser stop on proxy flake).
+     * When proxy enabled: proxy → proxy → direct; otherwise direct × 3.
+     * Does not pause parser or touch ParserState.
      *
      * @throws Throwable
      */
@@ -57,24 +82,20 @@ class HttpClient
             $this->requestCount = 0;
         }
 
-        $state = null;
-        try {
-            $state = ParserState::current();
-        } catch (Throwable $e) {
-            $state = null;
-        }
-        $parserRunning = $state?->isRunning() ?? false;
+        $net = $this->effectiveNetworkFromSettings();
+        $useProxy = $net['use_proxy'];
+        $proxyUrl = $net['proxy_url'];
 
-        // Donor may be unreachable from server IP without proxy — do not gate proxy on ParserState::running.
-        $viaProxy = $this->useProxyOverride && $this->proxyUrlOverride !== '';
         $effectiveTimeout = max(10, min(15, $this->timeoutSeconds));
 
         if (! $this->networkModeLogged) {
             $this->networkModeLogged = true;
             Log::warning('[NETWORK MODE]', [
-                'mode' => $viaProxy ? 'proxy_then_direct' : 'direct_only',
-                'sequence' => $viaProxy ? 'proxy,proxy_retry,direct' : 'direct,direct,direct',
-                'parser_running' => $parserRunning,
+                'proxy_enabled' => $useProxy,
+                'sequence' => $useProxy
+                    ? 'proxy → proxy → direct'
+                    : 'direct → direct → direct',
+                'proxy_url_source' => $net['url_from'],
             ]);
         }
 
@@ -82,28 +103,39 @@ class HttpClient
 
         for ($i = 0; $i < self::MAX_ATTEMPTS; $i++) {
             $attempt = $i + 1;
-            // 1) proxy  2) proxy retry  3) direct (stable fallback — не останавливаем парсер из‑за прокси)
-            $useProxy = $viaProxy && $attempt <= 2;
+            $mode = $useProxy
+                ? ($attempt <= 2 ? 'proxy' : 'direct')
+                : 'direct';
 
             try {
-                return $this->executeOnce($url, $headers, $effectiveTimeout, $useProxy);
+                $body = $this->executeOnce($url, $headers, $effectiveTimeout, $mode === 'proxy', $proxyUrl);
+                if ($body !== '') {
+                    return $body;
+                }
+                throw new RuntimeException('EMPTY_BODY');
             } catch (Throwable $e) {
                 $lastThrowable = $e;
-
+                Log::warning('HTTP ATTEMPT FAILED', [
+                    'mode' => $mode,
+                    'attempt' => $attempt,
+                    'proxy_used' => $mode === 'proxy',
+                    'url' => $url,
+                    'error' => $e->getMessage(),
+                ]);
                 if ($attempt < self::MAX_ATTEMPTS) {
-                    Log::warning('HTTP attempt failed', [
-                        'attempt' => $attempt,
-                        'next' => $attempt === 1 ? 'proxy_retry' : 'direct',
-                        'mode' => $useProxy ? 'proxy' : 'direct',
-                        'url' => $url,
-                        'error' => $e->getMessage(),
-                    ]);
                     sleep(2 * $attempt);
                 }
             }
         }
 
-        throw $lastThrowable ?? new RuntimeException('HTTP request failed after '.self::MAX_ATTEMPTS.' attempts');
+        Log::critical('NETWORK FAILED', [
+            'proxy_enabled' => $useProxy,
+            'proxy_url' => $proxyUrl !== '' ? $proxyUrl : '(empty)',
+            'attempts' => self::MAX_ATTEMPTS,
+            'last_error' => $lastThrowable?->getMessage(),
+        ]);
+
+        throw new RuntimeException('NETWORK FAILED AFTER RETRIES', 0, $lastThrowable ?? null);
     }
 
     private function executeOnce(
@@ -111,6 +143,7 @@ class HttpClient
         array $headers,
         int $timeoutSeconds,
         bool $useProxy,
+        string $proxyUrl,
     ): string {
         $options = [
             'timeout' => $timeoutSeconds,
@@ -119,8 +152,8 @@ class HttpClient
             ],
         ];
 
-        if ($useProxy && $this->proxyUrlOverride !== '') {
-            $options['proxy'] = $this->proxyUrlOverride;
+        if ($useProxy && $proxyUrl !== '') {
+            $options['proxy'] = $proxyUrl;
         }
 
         $response = Http::timeout($timeoutSeconds)
