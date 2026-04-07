@@ -65,7 +65,8 @@ class HttpClient
         }
         $parserRunning = $state?->isRunning() ?? false;
 
-        $viaProxy = $parserRunning && $this->useProxyOverride && $this->proxyUrlOverride !== '';
+        // Donor may be unreachable from server IP without proxy — do not gate proxy on ParserState::running.
+        $viaProxy = $this->useProxyOverride && $this->proxyUrlOverride !== '';
         $effectiveTimeout = max(10, min(15, $this->timeoutSeconds));
 
         if (! $this->networkModeLogged) {
@@ -73,6 +74,7 @@ class HttpClient
             Log::warning('[NETWORK MODE]', [
                 'mode' => $viaProxy ? 'proxy_then_direct' : 'direct_only',
                 'sequence' => $viaProxy ? 'proxy,proxy_retry,direct' : 'direct,direct,direct',
+                'parser_running' => $parserRunning,
             ]);
         }
 
@@ -84,7 +86,7 @@ class HttpClient
             $useProxy = $viaProxy && $attempt <= 2;
 
             try {
-                return $this->executeOnce($url, $headers, $effectiveTimeout, $useProxy, $parserRunning);
+                return $this->executeOnce($url, $headers, $effectiveTimeout, $useProxy);
             } catch (Throwable $e) {
                 $lastThrowable = $e;
 
@@ -109,7 +111,6 @@ class HttpClient
         array $headers,
         int $timeoutSeconds,
         bool $useProxy,
-        bool $parserRunning
     ): string {
         $options = [
             'timeout' => $timeoutSeconds,
@@ -118,7 +119,7 @@ class HttpClient
             ],
         ];
 
-        if ($useProxy && $parserRunning && $this->proxyUrlOverride !== '') {
+        if ($useProxy && $this->proxyUrlOverride !== '') {
             $options['proxy'] = $this->proxyUrlOverride;
         }
 

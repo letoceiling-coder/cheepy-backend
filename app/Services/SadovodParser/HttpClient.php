@@ -217,8 +217,12 @@ class HttpClient
 
             $lower = mb_strtolower($body);
             if (strlen($body) < 1000 || ! str_contains($lower, 'sadovodbaza')) {
-                ParserMetricsService::incrementBlocked();
-                $this->reactDonorBlocked('invalid_response', $path, $url, $body);
+                Log::warning('DONOR HTML preview (len/marker check relaxed)', [
+                    'len' => strlen($body),
+                    'path' => $path,
+                    'url' => $url,
+                    'body' => substr($body, 0, 500),
+                ]);
             }
 
             if ($this->detectBlock($body, $statusCode)) {

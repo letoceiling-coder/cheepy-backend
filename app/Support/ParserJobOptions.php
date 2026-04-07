@@ -187,7 +187,8 @@ class ParserJobOptions
             'retry_backoff_seconds' => $retryBackoff,
             'block_codes' => $blockCodes,
             'proxy_url' => $s->proxy_url !== null && $s->proxy_url !== '' ? (string) $s->proxy_url : '',
-            'use_proxy' => (bool) config('parser.use_proxy', false),
+            /** Must follow DB + config — config key is parser.proxy_enabled, not use_proxy (was always false). */
+            'use_proxy' => (bool) $s->proxy_enabled || (bool) config('parser.proxy_enabled', false),
         ];
     }
 }
