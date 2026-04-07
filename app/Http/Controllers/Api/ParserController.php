@@ -89,6 +89,8 @@ class ParserController extends Controller
             'workers_photos' => ['nullable', 'integer', 'min:1', 'max:20'],
             'proxy_enabled' => ['nullable', 'boolean'],
             'proxy_url' => ['nullable', 'string', 'max:255'],
+            'proxy_urls' => ['nullable', 'array'],
+            'proxy_urls.*' => ['nullable', 'string', 'max:512'],
             'queue_threshold' => ['nullable', 'integer', 'min:10', 'max:1000000'],
             'default_max_pages' => ['nullable', 'integer', 'min:0', 'max:10000'],
             'default_products_per_category' => ['nullable', 'integer', 'min:0', 'max:1000000'],
@@ -97,6 +99,13 @@ class ParserController extends Controller
             'default_category_ids.*' => ['integer', 'min:1'],
             'default_no_details' => ['nullable', 'boolean'],
         ]);
+
+        if (array_key_exists('proxy_urls', $validated) && is_array($validated['proxy_urls'])) {
+            $urls = array_values(array_filter(array_map('trim', $validated['proxy_urls'])));
+            if ($urls !== []) {
+                $validated['proxy_url'] = $urls[0];
+            }
+        }
 
         $settings = ParserSetting::current();
         $settings->update($validated);

@@ -33,6 +33,8 @@ class HttpClient
      */
     public function __construct(array $config = [])
     {
+        $config = $this->normalizeProxyConfig($config);
+
         $required = [
             'base_url',
             'verify_ssl',
@@ -46,6 +48,7 @@ class HttpClient
             'retry_backoff_seconds',
             'block_codes',
             'proxy_url',
+            'proxy_urls',
             'use_proxy',
             'request_delay_ms',
             'product_broadcast_every',
@@ -60,6 +63,9 @@ class HttpClient
         }
         if (! is_string($config['proxy_url'])) {
             throw new RuntimeException('CRITICAL: http_client.proxy_url must be string');
+        }
+        if (! is_array($config['proxy_urls'])) {
+            throw new RuntimeException('CRITICAL: http_client.proxy_urls must be array');
         }
 
         $this->baseUrl = (string) $config['base_url'];
@@ -84,14 +90,13 @@ class HttpClient
 
         $verify = (bool) $config['verify_ssl'];
         $timeout = (int) $config['timeout_seconds'];
-        $proxyUrlStr = $config['proxy_url'];
         $useProxy = (bool) $config['use_proxy'];
         $this->requestClient = new ParserHttpClient(
             timeoutSeconds: max(10, $timeout),
             retryCount: $this->retryCount,
             delayMinMs: max(100, $this->delayMinMs),
             delayMaxMs: max($this->delayMinMs, $this->delayMaxMs),
-            proxyUrlFromOptions: $proxyUrlStr,
+            proxyUrlsFromOptions: $config['proxy_urls'],
             useProxyFromOptions: $useProxy,
         );
         $this->client = new Client([
@@ -106,6 +111,26 @@ class HttpClient
                 'Upgrade-Insecure-Requests' => '1',
             ],
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    private function normalizeProxyConfig(array $config): array
+    {
+        if (! isset($config['proxy_urls']) || ! is_array($config['proxy_urls'])) {
+            $config['proxy_urls'] = [];
+        }
+        $config['proxy_urls'] = array_values(array_unique(array_filter(array_map(
+            static fn ($u) => trim((string) $u),
+            $config['proxy_urls']
+        ))));
+        if ($config['proxy_urls'] === [] && isset($config['proxy_url']) && is_string($config['proxy_url']) && trim($config['proxy_url']) !== '') {
+            $config['proxy_urls'] = [trim($config['proxy_url'])];
+        }
+
+        return $config;
     }
 
     private function getNextUserAgent(): string

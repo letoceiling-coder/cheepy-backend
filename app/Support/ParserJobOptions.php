@@ -172,6 +172,8 @@ class ParserJobOptions
             $blockCodes = [403, 429];
         }
 
+        $proxyList = self::normalizeProxyUrls($s);
+
         return [
             'base_url' => $sadovod['base_url'] ?? 'https://sadovodbaza.ru',
             'verify_ssl' => $sadovod['verify_ssl'] ?? true,
@@ -186,9 +188,25 @@ class ParserJobOptions
             'retry_count' => (int) ($parserRate['retry_count'] ?? 3),
             'retry_backoff_seconds' => $retryBackoff,
             'block_codes' => $blockCodes,
-            'proxy_url' => $s->proxy_url !== null && $s->proxy_url !== '' ? (string) $s->proxy_url : '',
+            /** Legacy single URL — first in list for old snapshots. */
+            'proxy_url' => $proxyList[0] ?? '',
+            'proxy_urls' => $proxyList,
             /** Must follow DB + config — config key is parser.proxy_enabled, not use_proxy (was always false). */
             'use_proxy' => (bool) $s->proxy_enabled || (bool) config('parser.proxy_enabled', false),
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function normalizeProxyUrls(ParserSetting $s): array
+    {
+        $urls = $s->proxy_urls;
+        if (is_array($urls) && $urls !== []) {
+            return array_values(array_unique(array_filter(array_map(static fn ($u) => trim((string) $u), $urls))));
+        }
+        $one = trim((string) ($s->proxy_url ?? ''));
+
+        return $one !== '' ? [$one] : [];
     }
 }

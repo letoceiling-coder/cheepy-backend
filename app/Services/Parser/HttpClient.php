@@ -3,6 +3,7 @@
 namespace App\Services\Parser;
 
 use App\Models\ParserSetting;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -11,6 +12,8 @@ use Throwable;
 class HttpClient
 {
     private const MAX_ATTEMPTS = 3;
+
+    private const BAD_PROXY_TTL_SECONDS = 60;
 
     private const REQUEST_COOLDOWN_THRESHOLD = 100;
 
@@ -27,47 +30,114 @@ class HttpClient
         'Mozilla/5.0 (Windows NT 10.0; WOW64)',
     ];
 
+    /**
+     * @param  list<string>  $proxyUrlsFromOptions  Snapshot from options.runtime.http_client.proxy_urls
+     */
     public function __construct(
         private readonly int $timeoutSeconds = 60,
         private readonly int $retryCount = 3,
         private readonly int $delayMinMs = 1500,
         private readonly int $delayMaxMs = 3000,
-        private readonly ?string $proxyUrlFromOptions = null,
+        private readonly array $proxyUrlsFromOptions = [],
         private readonly bool $useProxyFromOptions = false,
     ) {
     }
 
+    private function badProxyCacheKey(string $proxy): string
+    {
+        return 'bad_proxy:' . hash('sha256', $proxy);
+    }
+
+    private function markProxyBad(string $proxy): void
+    {
+        Cache::put($this->badProxyCacheKey($proxy), true, now()->addSeconds(self::BAD_PROXY_TTL_SECONDS));
+    }
+
+    private function isProxyBad(string $proxy): bool
+    {
+        return (bool) Cache::get($this->badProxyCacheKey($proxy), false);
+    }
+
     /**
-     * Effective proxy from job snapshot (options.runtime.http_client) merged with parser_settings.
-     *
-     * @return array{use_proxy: bool, proxy_url: string, url_from: string}
+     * @param  list<string>  $pool
      */
-    private function effectiveNetworkFromSettings(): array
+    private function pickRandomHealthyProxy(array $pool): ?string
+    {
+        $good = [];
+        foreach ($pool as $p) {
+            $p = trim((string) $p);
+            if ($p === '') {
+                continue;
+            }
+            if (! $this->isProxyBad($p)) {
+                $good[] = $p;
+            }
+        }
+        if ($good === []) {
+            return null;
+        }
+
+        return $good[array_rand($good)];
+    }
+
+    /**
+     * Options snapshot merged with parser_settings (DB wins for missing in snapshot).
+     *
+     * @return list<string>
+     */
+    private function mergedProxyPool(): array
+    {
+        $settings = ParserSetting::current();
+        $opt = $this->proxyUrlsFromOptions;
+        $db = is_array($settings->proxy_urls) ? $settings->proxy_urls : [];
+        $merged = array_merge(
+            is_array($opt) ? $opt : [],
+            is_array($db) ? $db : []
+        );
+        $merged = array_values(array_unique(array_filter(array_map(static fn ($u) => trim((string) $u), $merged))));
+        if ($merged === []) {
+            $single = trim((string) ($settings->proxy_url ?? ''));
+            if ($single !== '') {
+                $merged = [$single];
+            }
+        }
+
+        return $merged;
+    }
+
+    /**
+     * @return array{use_proxy: bool, proxy_pool: list<string>}
+     */
+    private function effectiveNetwork(): array
     {
         $settings = ParserSetting::current();
         $useProxy = $this->useProxyFromOptions || (bool) $settings->proxy_enabled;
-
-        $optUrl = trim((string) ($this->proxyUrlFromOptions ?? ''));
-        $dbUrl = trim((string) ($settings->proxy_url ?? ''));
-        $proxyUrl = $optUrl !== '' ? $optUrl : $dbUrl;
-        $urlFrom = $optUrl !== '' ? 'options' : ($dbUrl !== '' ? 'parser_settings' : 'none');
-
-        if ($useProxy && $proxyUrl === '') {
-            Log::warning('[NETWORK] proxy_enabled but proxy_url empty, using direct only');
+        $pool = $this->mergedProxyPool();
+        if ($useProxy && $pool === []) {
+            Log::warning('[NETWORK] proxy_enabled but proxy pool empty, using direct only');
             $useProxy = false;
         }
 
-        return [
-            'use_proxy' => $useProxy,
-            'proxy_url' => $proxyUrl,
-            'url_from' => $urlFrom,
-        ];
+        return ['use_proxy' => $useProxy, 'proxy_pool' => $pool];
+    }
+
+    private function shouldMarkProxyBad(Throwable $e): bool
+    {
+        $m = mb_strtolower($e->getMessage());
+
+        return str_contains($m, 'timed out')
+            || str_contains($m, 'connection timed out')
+            || str_contains($m, 'curl error 28')
+            || str_contains($m, 'operation timed out')
+            || str_contains($m, 'connection refused')
+            || str_contains($m, 'curl error 7')
+            || str_contains($m, 'could not connect')
+            || str_contains($m, 'connection reset');
     }
 
     /**
      * Donor fetch: random delay, cooldown every 100 requests, timeout clamped 10–15s.
-     * When proxy enabled: proxy → proxy → direct; otherwise direct × 3.
-     * Does not pause parser or touch ParserState.
+     * Random healthy proxy per attempt; bad proxies excluded 60s; fallback to direct if none healthy.
      *
      * @throws Throwable
      */
@@ -82,9 +152,9 @@ class HttpClient
             $this->requestCount = 0;
         }
 
-        $net = $this->effectiveNetworkFromSettings();
+        $net = $this->effectiveNetwork();
         $useProxy = $net['use_proxy'];
-        $proxyUrl = $net['proxy_url'];
+        $pool = $net['proxy_pool'];
 
         $effectiveTimeout = max(10, min(15, $this->timeoutSeconds));
 
@@ -92,10 +162,10 @@ class HttpClient
             $this->networkModeLogged = true;
             Log::warning('[NETWORK MODE]', [
                 'proxy_enabled' => $useProxy,
+                'proxy_pool_count' => count($pool),
                 'sequence' => $useProxy
-                    ? 'proxy → proxy → direct'
-                    : 'direct → direct → direct',
-                'proxy_url_source' => $net['url_from'],
+                    ? 'random healthy proxy per attempt (or direct if none alive)'
+                    : 'direct × 3',
             ]);
         }
 
@@ -103,22 +173,34 @@ class HttpClient
 
         for ($i = 0; $i < self::MAX_ATTEMPTS; $i++) {
             $attempt = $i + 1;
-            $mode = $useProxy
-                ? ($attempt <= 2 ? 'proxy' : 'direct')
-                : 'direct';
+            $pick = null;
+            if ($useProxy && $pool !== []) {
+                $pick = $this->pickRandomHealthyProxy($pool);
+            }
+            $directOnly = ! $useProxy || $pick === null;
+            $isFallback = $useProxy && $pick === null && $pool !== [];
+
+            Log::warning('PROXY USED', [
+                'proxy' => $directOnly ? 'direct' : $pick,
+                'is_fallback' => $isFallback,
+                'attempt' => $attempt,
+            ]);
 
             try {
-                $body = $this->executeOnce($url, $headers, $effectiveTimeout, $mode === 'proxy', $proxyUrl);
+                $body = $this->executeOnce($url, $headers, $effectiveTimeout, ! $directOnly, $pick ?? '');
                 if ($body !== '') {
                     return $body;
                 }
                 throw new RuntimeException('EMPTY_BODY');
             } catch (Throwable $e) {
                 $lastThrowable = $e;
+                if ($pick !== null && $this->shouldMarkProxyBad($e)) {
+                    $this->markProxyBad($pick);
+                }
                 Log::warning('HTTP ATTEMPT FAILED', [
-                    'mode' => $mode,
+                    'mode' => $directOnly ? 'direct' : 'proxy',
                     'attempt' => $attempt,
-                    'proxy_used' => $mode === 'proxy',
+                    'proxy_used' => $pick !== null,
                     'url' => $url,
                     'error' => $e->getMessage(),
                 ]);
@@ -130,7 +212,7 @@ class HttpClient
 
         Log::critical('NETWORK FAILED', [
             'proxy_enabled' => $useProxy,
-            'proxy_url' => $proxyUrl !== '' ? $proxyUrl : '(empty)',
+            'proxy_pool_count' => count($pool),
             'attempts' => self::MAX_ATTEMPTS,
             'last_error' => $lastThrowable?->getMessage(),
         ]);
