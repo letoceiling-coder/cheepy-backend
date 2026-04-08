@@ -358,9 +358,8 @@ class DatabaseParserService
             $categoriesToRun[] = $category;
         }
 
-        if (! empty($allowedCategories) && count($categoriesToRun) > 1) {
-            throw new RuntimeException('CRITICAL: CATEGORY FILTER IGNORED');
-        }
+        // Несколько выбранных категорий — нормальный сценарий: по одному ParseCategoryJob на категорию.
+        // (Старый throw «CATEGORY FILTER IGNORED» ошибочно запрещал >1 категории при непустом фильтре.)
 
         $total = count($categoriesToRun);
         $this->updateJob(['total_categories' => $total]);
@@ -433,9 +432,6 @@ class DatabaseParserService
         }
 
         $categories = $query->orderBy('sort_order')->get();
-        if (! empty($categoryFilter) && $categories->count() > 1) {
-            throw new RuntimeException('CRITICAL: CATEGORY FILTER IGNORED');
-        }
         $this->updateJob(['total_categories' => $categories->count()]);
 
         foreach ($categories as $category) {
