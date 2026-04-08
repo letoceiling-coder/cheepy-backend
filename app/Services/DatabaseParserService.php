@@ -511,12 +511,18 @@ class DatabaseParserService
             throw new RuntimeException('CRITICAL: MEMORY LIMIT');
         }
 
-        $productsPerPage = 24;
         $maxPagesRaw = $this->requireOption($this->options, 'max_pages');
         if ($maxPagesRaw === null) {
             throw new RuntimeException('CRITICAL: max_pages null');
         }
         $maxPages = (int) $maxPagesRaw;
+        // UI: «0 = по полю категории» — берём лимит страниц из категории, если в джобе не задан.
+        if ($maxPages <= 0) {
+            $perCat = (int) ($category->parser_max_pages ?? 0);
+            if ($perCat > 0) {
+                $maxPages = $perCat;
+            }
+        }
         $productLimit = (int) $this->requireOption($this->options, 'products_per_category');
         $saveDetails = ! ((bool) $this->requireOption($this->options, 'no_details'));
 
@@ -537,7 +543,9 @@ class DatabaseParserService
 
             try {
                 $this->debugCounters['pages_attempted']++;
-                $result = $this->catalogParser->parseCategory('/catalog/' . $slug, $page - 1, $productsPerPage);
+                // Одна HTTP-страница каталога за итерацию. Раньше вызывали parseCategory(..., 0, 24):
+                // третий аргумент там — maxPages, из-за этого за один проход тянули до 24 страниц донора.
+                $result = $this->catalogParser->parseCategoryPage('/catalog/' . $slug, $page);
                 $products = $result['products'] ?? [];
                 $hasMore = $result['has_more'] ?? false;
 
