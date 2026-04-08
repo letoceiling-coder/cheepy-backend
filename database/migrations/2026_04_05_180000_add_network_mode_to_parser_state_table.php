@@ -8,16 +8,15 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('auto_mapping_logs', function (Blueprint $table) {
-            $table->string('algorithm_version', 32)->default('v1')->after('reason');
+        Schema::table('parser_state', function (Blueprint $table) {
+            $table->string('network_mode', 16)->nullable()->after('status');
         });
-
     }
 
     public function down(): void
     {
-        Schema::table('auto_mapping_logs', function (Blueprint $table) {
-            $table->dropColumn('algorithm_version');
+        Schema::table('parser_state', function (Blueprint $table) {
+            $table->dropColumn('network_mode');
         });
     }
 };

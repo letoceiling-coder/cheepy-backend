@@ -189,16 +189,13 @@ class MappingSuggestionService
 
     private function legacyScore(DonorCategory $donor, CatalogCategory $catalog): int
     {
-        // 1. Exact slug match → 100
         if ($donor->slug === $catalog->slug) {
             return 100;
         }
 
-        // 2. Similarity on names (0–100)
         similar_text($donor->name, $catalog->name, $percent);
         $score = (int) round($percent);
 
-        // 3. Parent names match → +10 (cap at 100)
         $donorParentName = $donor->relationLoaded('parent') && $donor->parent
             ? $donor->parent->name
             : null;

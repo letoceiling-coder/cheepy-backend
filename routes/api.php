@@ -19,9 +19,15 @@ use App\Http\Controllers\Api\SaasSearchController;
 use App\Http\Controllers\Api\SystemProductController;
 use App\Http\Controllers\Api\SellerController;
 use App\Http\Controllers\Api\SettingController;
+use App\Http\Controllers\DeployController;
 use App\Http\Middleware\JwtMiddleware;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Route;
+
+// =====================================================================
+// INTERNAL DEPLOY — X-DEPLOY-KEY (not JWT; configure DEPLOY_KEY in .env)
+// =====================================================================
+Route::post('internal/deploy', [DeployController::class, 'deploy']);
 
 // =====================================================================
 // HEALTH — public, no auth (monitoring)

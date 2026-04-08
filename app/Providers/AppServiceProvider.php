@@ -14,6 +14,7 @@ use App\Listeners\LogCatalogMappingCreated;
 use App\Listeners\ReleaseParserLockOnFinished;
 use App\Listeners\ScheduleNextParserDaemon;
 use App\Models\DonorCategory;
+use App\Models\ParserSetting;
 use App\Models\Product;
 use App\Models\SystemProduct;
 use App\Models\SystemProductAttribute;
@@ -22,35 +23,31 @@ use App\Observers\ProductObserver;
 use App\Observers\SystemProductAttributeObserver;
 use App\Observers\SystemProductObserver;
 use App\Services\SadovodParser\HttpClient;
-use App\Services\SadovodParser\Parsers\MenuParser;
+use App\Support\ParserJobOptions;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 
+/**
+ * Production merge: keep existing listeners + DonorCategory::observe for auto-mapping jobs.
+ */
 class AppServiceProvider extends ServiceProvider
 {
-    /**
-     * Register any application services.
-     */
     public function register(): void
     {
-        $this->app->singleton(HttpClient::class, fn () => new HttpClient(config('sadovod', [])));
-        $this->app->singleton(MenuParser::class, function ($app) {
-            return new MenuParser(
-                $app->make(HttpClient::class),
-                config('sadovod', [])
-            );
+        $this->app->singleton(HttpClient::class, function () {
+            $cfg = ParserJobOptions::runtimePayload(ParserSetting::current())['http_client'];
+
+            return new HttpClient($cfg);
         });
     }
 
-    /**
-     * Bootstrap any application services.
-     */
     public function boot(): void
     {
         Event::listen(ParserFinished::class, ReleaseParserLockOnFinished::class);
         Event::listen(ParserFinished::class, ScheduleNextParserDaemon::class);
 
-        // Catalog Phase 1 — dual category logging
         Event::listen(CatalogCategoryCreated::class, LogCatalogCategoryCreated::class);
         Event::listen(CatalogCategoryUpdated::class, LogCatalogCategoryUpdated::class);
         Event::listen(CatalogCategoryDeleted::class, LogCatalogCategoryDeleted::class);
@@ -60,5 +57,30 @@ class AppServiceProvider extends ServiceProvider
         Product::observe(ProductObserver::class);
         SystemProduct::observe(SystemProductObserver::class);
         SystemProductAttribute::observe(SystemProductAttributeObserver::class);
+
+        if (filter_var(env('AUDIT_PRODUCT_SQL_STATUS_ERROR', true), FILTER_VALIDATE_BOOL)) {
+            DB::listen(function ($query) {
+                $sql = $query->sql;
+                $trim = strtolower(ltrim($sql));
+                if (str_starts_with($trim, 'select')) {
+                    return;
+                }
+                if (!str_contains(strtolower($sql), 'products')) {
+                    return;
+                }
+                $hasErrorToken = str_contains(strtolower($sql), 'error')
+                    || in_array('error', array_map(static fn ($b) => is_string($b) ? strtolower($b) : $b, $query->bindings), true);
+                if (!$hasErrorToken) {
+                    return;
+                }
+
+                Log::critical('SQL ERROR WRITE DETECTED', [
+                    'sql' => $sql,
+                    'bindings' => $query->bindings,
+                    'time_ms' => $query->time,
+                    'trace' => array_slice(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 10), 0, 10),
+                ]);
+            });
+        }
     }
 }

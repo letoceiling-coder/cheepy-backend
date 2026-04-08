@@ -144,6 +144,7 @@ class CategoryMappingService
 
     /**
      * Auto-mapping pipeline: insert or update non-manual mapping only.
+     * Caller must verify no manual mapping exists.
      */
     public function applyAutomaticMapping(
         int $donorCategoryId,

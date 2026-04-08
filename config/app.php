@@ -125,4 +125,12 @@ return [
         'store' => env('APP_MAINTENANCE_STORE', 'database'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Deploy API (POST /api/internal/deploy, header X-DEPLOY-KEY)
+    |--------------------------------------------------------------------------
+    */
+
+    'deploy_key' => env('DEPLOY_KEY'),
+
 ];

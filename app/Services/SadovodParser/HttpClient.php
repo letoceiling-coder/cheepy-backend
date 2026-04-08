@@ -2,20 +2,18 @@
 
 namespace App\Services\SadovodParser;
 
-use App\Models\ParserSetting;
-use App\Models\ParserState;
-use App\Services\Parser\ParserLogger;
 use App\Services\Parser\HttpClient as ParserHttpClient;
 use App\Services\ParserMetricsService;
 use GuzzleHttp\Client;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
+use Throwable;
 use Symfony\Component\DomCrawler\Crawler;
 
 class HttpClient
 {
     private const NETWORK_TIMEOUT_STREAK_KEY = 'parser:network_timeout_streak';
-    private const NETWORK_TIMEOUT_THRESHOLD = 5;
     private Client $client;
     private string $baseUrl;
     private array $userAgents;
@@ -30,33 +28,76 @@ class HttpClient
     private ?float $lastRequestAt = null;
     private ParserHttpClient $requestClient;
 
+    /**
+     * @param  array<string, mixed>  $config  Frozen snapshot from parser_jobs.options.runtime.http_client
+     */
     public function __construct(array $config = [])
     {
-        $parserSettings = ParserSetting::current();
-        $this->baseUrl = $config['base_url'] ?? config('sadovod.base_url', 'https://sadovodbaza.ru');
-        $this->delayMinMs = (int) ($parserSettings->request_delay_min ?? ($config['delay_min_ms'] ?? config('parser_rate.delay_min_ms', 800)));
-        $this->delayMaxMs = (int) ($parserSettings->request_delay_max ?? ($config['delay_max_ms'] ?? config('parser_rate.delay_max_ms', 2000)));
-        $this->maxRpm = config('parser_rate.max_requests_per_minute', 300);
-        $maxRps = config('parser_rate.max_requests_per_second');
-        $this->retryCount = config('parser_rate.retry_count', 3);
-        $this->retryBackoff = config('parser_rate.retry_backoff_seconds', [2, 5, 10]);
-        $this->blockCodes = config('parser_rate.block_codes', [403, 429]);
-        $this->minRequestInterval = $maxRps > 0
-            ? (1.0 / $maxRps)
+        $config = $this->normalizeProxyConfig($config);
+
+        $required = [
+            'base_url',
+            'verify_ssl',
+            'delay_min_ms',
+            'delay_max_ms',
+            'timeout_seconds',
+            'user_agents',
+            'max_requests_per_minute',
+            'max_requests_per_second',
+            'retry_count',
+            'retry_backoff_seconds',
+            'block_codes',
+            'proxy_url',
+            'proxy_urls',
+            'use_proxy',
+            'request_delay_ms',
+            'product_broadcast_every',
+        ];
+        foreach ($required as $key) {
+            if (! array_key_exists($key, $config)) {
+                throw new RuntimeException('CRITICAL: http_client.'.$key.' missing');
+            }
+        }
+        if (! is_array($config['user_agents']) || $config['user_agents'] === []) {
+            throw new RuntimeException('CRITICAL: http_client.user_agents invalid');
+        }
+        if (! is_string($config['proxy_url'])) {
+            throw new RuntimeException('CRITICAL: http_client.proxy_url must be string');
+        }
+        if (! is_array($config['proxy_urls'])) {
+            throw new RuntimeException('CRITICAL: http_client.proxy_urls must be array');
+        }
+
+        $this->baseUrl = (string) $config['base_url'];
+        $this->delayMinMs = (int) $config['delay_min_ms'];
+        $this->delayMaxMs = (int) $config['delay_max_ms'];
+        $this->maxRpm = (int) $config['max_requests_per_minute'];
+        $maxRps = $config['max_requests_per_second'];
+        $this->retryCount = (int) $config['retry_count'];
+        $this->retryBackoff = $config['retry_backoff_seconds'];
+        if (! is_array($this->retryBackoff)) {
+            throw new RuntimeException('CRITICAL: http_client.retry_backoff_seconds invalid');
+        }
+        $this->blockCodes = $config['block_codes'];
+        if (! is_array($this->blockCodes)) {
+            throw new RuntimeException('CRITICAL: http_client.block_codes invalid');
+        }
+        $this->minRequestInterval = is_numeric($maxRps) && (float) $maxRps > 0
+            ? (1.0 / (float) $maxRps)
             : (60.0 / max(1, $this->maxRpm));
 
-        $agents = config('parser_user_agents.agents', []);
-        $this->userAgents = !empty($agents)
-            ? $agents
-            : [$config['user_agent'] ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'];
+        $this->userAgents = $config['user_agents'];
 
-        $verify = $config['verify_ssl'] ?? config('sadovod.verify_ssl', true);
-        $timeout = (int) ($parserSettings->timeout_seconds ?? 60);
+        $verify = (bool) $config['verify_ssl'];
+        $timeout = (int) $config['timeout_seconds'];
+        $useProxy = (bool) $config['use_proxy'];
         $this->requestClient = new ParserHttpClient(
             timeoutSeconds: max(10, $timeout),
             retryCount: $this->retryCount,
             delayMinMs: max(100, $this->delayMinMs),
-            delayMaxMs: max($this->delayMinMs, $this->delayMaxMs)
+            delayMaxMs: max($this->delayMinMs, $this->delayMaxMs),
+            proxyUrlsFromOptions: $config['proxy_urls'],
+            useProxyFromOptions: $useProxy,
         );
         $this->client = new Client([
             'base_uri' => $this->baseUrl,
@@ -72,17 +113,31 @@ class HttpClient
         ]);
     }
 
+    /**
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    private function normalizeProxyConfig(array $config): array
+    {
+        if (! isset($config['proxy_urls']) || ! is_array($config['proxy_urls'])) {
+            $config['proxy_urls'] = [];
+        }
+        $config['proxy_urls'] = array_values(array_unique(array_filter(array_map(
+            static fn ($u) => trim((string) $u),
+            $config['proxy_urls']
+        ))));
+        if ($config['proxy_urls'] === [] && isset($config['proxy_url']) && is_string($config['proxy_url']) && trim($config['proxy_url']) !== '') {
+            $config['proxy_urls'] = [trim($config['proxy_url'])];
+        }
+
+        return $config;
+    }
+
     private function getNextUserAgent(): string
     {
         $ua = $this->userAgents[$this->agentIndex % count($this->userAgents)];
         $this->agentIndex++;
         return $ua;
-    }
-
-    private function applyDelay(): void
-    {
-        $delayMs = random_int($this->delayMinMs, $this->delayMaxMs);
-        usleep($delayMs * 1000);
     }
 
     private function applyRateLimit(): void
@@ -102,6 +157,31 @@ class HttpClient
      * Do NOT treat HTTP 200 as block based on generic words like "cloudflare" or "block"
      * that can appear in normal site HTML.
      */
+    /**
+     * Логируем блокировку/невалидный ответ; глобально парсер не ставим на паузу (сеть может восстановиться).
+     */
+    private function reactDonorBlocked(string $reason, string $path, string $url, string $bodyPreview = ''): void
+    {
+        Log::critical('DONOR BLOCKED', [
+            'reason' => $reason,
+            'path' => $path,
+            'url' => $url,
+            'preview' => $bodyPreview !== '' ? mb_substr($bodyPreview, 0, 500) : null,
+        ]);
+
+        throw new RuntimeException('DONOR BLOCKED');
+    }
+
+    private function isTimeoutMessage(string $msg): bool
+    {
+        $m = mb_strtolower($msg);
+
+        return str_contains($m, 'timed out')
+            || str_contains($m, 'connection timed out')
+            || str_contains($m, 'curl error 28')
+            || str_contains($m, 'operation timed out');
+    }
+
     private function detectBlock(string $html, int $statusCode): bool
     {
         if (in_array($statusCode, $this->blockCodes, true)) {
@@ -148,11 +228,11 @@ class HttpClient
     public function get(string $path, ?int $timeoutSeconds = null, ?int $retries = null): string
     {
         $this->applyRateLimit();
-        $this->applyDelay();
+
+        $url = $this->getAbsoluteUrl($path);
 
         try {
             $ua = $this->getNextUserAgent();
-            $url = $this->getAbsoluteUrl($path);
             $body = $this->requestClient->get($url, [
                 'User-Agent' => $ua,
                 'Accept' => 'text/html,application/xhtml+xml',
@@ -160,10 +240,19 @@ class HttpClient
             ]);
             $statusCode = 200;
 
+            $lower = mb_strtolower($body);
+            if (strlen($body) < 1000 || ! str_contains($lower, 'sadovodbaza')) {
+                Log::warning('DONOR HTML preview (len/marker check relaxed)', [
+                    'len' => strlen($body),
+                    'path' => $path,
+                    'url' => $url,
+                    'body' => substr($body, 0, 500),
+                ]);
+            }
+
             if ($this->detectBlock($body, $statusCode)) {
                 ParserMetricsService::incrementBlocked();
-                Log::warning('Parser: block detected', ['path' => $path, 'status' => $statusCode, 'preview' => substr($body, 0, 500)]);
-                throw new \RuntimeException("Block detected: HTTP {$statusCode}");
+                $this->reactDonorBlocked('detect_block', $path, $url, $body);
             }
 
             if ($path === '/' || $path === '') {
@@ -172,15 +261,26 @@ class HttpClient
             Cache::put(self::NETWORK_TIMEOUT_STREAK_KEY, 0, now()->addMinutes(30));
             $this->lastRequestAt = microtime(true);
             ParserMetricsService::incrementRequests();
+
             return $body;
-        } catch (\Throwable $e) {
-            $msg = $e->getMessage();
-            if (str_contains($msg, 'timed out') || str_contains($msg, 'Connection timed out') || str_contains($msg, 'cURL error 28')) {
-                Log::warning('Parser timeout', ['url' => $this->getAbsoluteUrl($path)]);
-                $this->registerNetworkTimeout($this->getAbsoluteUrl($path));
-            } else {
-                Cache::put(self::NETWORK_TIMEOUT_STREAK_KEY, 0, now()->addMinutes(30));
+        } catch (Throwable $e) {
+            if ($e->getMessage() === 'DONOR BLOCKED') {
+                throw $e;
             }
+
+            $msg = $e->getMessage();
+            if (str_starts_with($msg, 'HTTP_NON_200:')) {
+                ParserMetricsService::incrementBlocked();
+                $this->reactDonorBlocked('invalid_response', $path, $url, '');
+            }
+
+            if ($this->isTimeoutMessage($msg)) {
+                Log::warning('Parser timeout (after retries)', ['url' => $url]);
+                ParserMetricsService::incrementRetries();
+                $this->reactDonorBlocked('timeout', $path, $url, '');
+            }
+
+            Cache::put(self::NETWORK_TIMEOUT_STREAK_KEY, 0, now()->addMinutes(30));
             ParserMetricsService::incrementRetries();
             throw $e;
         }
@@ -210,29 +310,5 @@ class HttpClient
     public function getBaseUrl(): string
     {
         return $this->baseUrl;
-    }
-
-    private function registerNetworkTimeout(string $url): void
-    {
-        $streak = (int) Cache::get(self::NETWORK_TIMEOUT_STREAK_KEY, 0) + 1;
-        Cache::put(self::NETWORK_TIMEOUT_STREAK_KEY, $streak, now()->addMinutes(30));
-
-        ParserLogger::write('network_error', 'Parser timeout streak incremented', [
-            'url' => $url,
-            'attempt' => $streak,
-        ]);
-
-        if ($streak < self::NETWORK_TIMEOUT_THRESHOLD) {
-            return;
-        }
-
-        $state = ParserState::current();
-        if ($state->status !== ParserState::STATUS_PAUSED_NETWORK) {
-            $state->update(['status' => ParserState::STATUS_PAUSED_NETWORK]);
-            ParserLogger::write('network_error', 'Parser switched to PAUSED_NETWORK after timeout streak', [
-                'url' => $url,
-                'attempt' => $streak,
-            ]);
-        }
     }
 }
