@@ -6,40 +6,27 @@ use App\Enums\AutoMappingDecision;
 use App\Models\AutoMappingLog;
 use App\Models\CategoryMapping;
 use App\Models\DonorCategory;
+use App\Services\AI\AiMetricsService;
+use App\Services\AI\AiQualityService;
 use App\Support\AutoMappingCommandContext;
 use Illuminate\Support\Facades\DB;
 
 class AutoMappingService
 {
-    public const ALGORITHM_VERSION = 'v1';
-
-    /** Confidence delta at or above this vs last log → not a duplicate. */
-    public const CONFIDENCE_SIGNIFICANT_DELTA = 10;
-
     public function __construct(
         private MappingSuggestionService $suggestionService,
         private CategoryMappingService $mappingService,
+        private AiQualityService $qualityService,
+        private AiMetricsService $metricsService,
+        private ?AutoMappingCommandContext $commandContext = null,
     ) {}
-
-    /**
-     * Log when a user saves a manual mapping (CRM POST category-mapping with manual / remap).
-     */
-    public function logManualOverride(int $donorCategoryId, int $catalogCategoryId, int $confidence): void
-    {
-        $this->writeLog(
-            $donorCategoryId,
-            $catalogCategoryId,
-            $confidence,
-            AutoMappingDecision::ManualOverride,
-            'user_changed_mapping',
-            false
-        );
-    }
 
     public function process(int $donorCategoryId, bool $ignoreIdempotency = false): void
     {
-        if (app()->bound(AutoMappingCommandContext::class)) {
-            app(AutoMappingCommandContext::class)->reprocessedCount++;
+        $algorithmVersion = $this->pickAlgorithmVersion($donorCategoryId);
+
+        if ($this->commandContext !== null) {
+            $this->commandContext->reprocessedCount++;
         }
 
         $donor = DonorCategory::query()->find($donorCategoryId);
@@ -50,7 +37,13 @@ class AutoMappingService
                 0,
                 AutoMappingDecision::Rejected,
                 'donor_category_not_found',
-                $ignoreIdempotency
+                $ignoreIdempotency,
+                null,
+                null,
+                null,
+                null,
+                'donor_category_not_found',
+                $algorithmVersion
             );
 
             return;
@@ -64,13 +57,19 @@ class AutoMappingService
                 (int) ($existing->confidence ?? 0),
                 AutoMappingDecision::Rejected,
                 'manual_mapping_preserved',
-                $ignoreIdempotency
+                $ignoreIdempotency,
+                null,
+                null,
+                null,
+                null,
+                'manual_mapping_preserved',
+                $algorithmVersion
             );
 
             return;
         }
 
-        $suggestion = $this->suggestionService->suggestForDonorCategory($donor);
+        $suggestion = $this->suggestionService->suggestForDonorCategory($donor, $algorithmVersion);
         if ($suggestion === null) {
             $this->writeLog(
                 $donorCategoryId,
@@ -78,7 +77,13 @@ class AutoMappingService
                 0,
                 AutoMappingDecision::Rejected,
                 'no_catalog_match',
-                $ignoreIdempotency
+                $ignoreIdempotency,
+                null,
+                null,
+                null,
+                null,
+                'no_catalog_match',
+                $algorithmVersion
             );
 
             return;
@@ -86,6 +91,13 @@ class AutoMappingService
 
         $catalogId = (int) $suggestion['catalog_category_id'];
         $confidence = (int) $suggestion['confidence'];
+        $aiScore = isset($suggestion['ai_score']) ? (float) $suggestion['ai_score'] : null;
+        $legacyScore = isset($suggestion['legacy_score']) ? (float) $suggestion['legacy_score'] : null;
+        $finalScore = isset($suggestion['final_score']) ? (float) $suggestion['final_score'] : (float) $confidence;
+        $boostApplied = isset($suggestion['boost_applied']) ? (float) $suggestion['boost_applied'] : null;
+        $decisionReason = isset($suggestion['decision_reason']) ? (string) $suggestion['decision_reason'] : null;
+
+        $this->qualityService->recordPrediction($donorCategoryId, $catalogId, $confidence, $algorithmVersion);
 
         $decision = $this->decide($confidence);
         $reason = null;
@@ -94,7 +106,21 @@ class AutoMappingService
             DB::transaction(function () use ($donorCategoryId, $catalogId, $confidence, $existing): void {
                 $this->mappingService->applyAutomaticMapping($donorCategoryId, $catalogId, $confidence, $existing);
             });
-            $this->writeLog($donorCategoryId, $catalogId, $confidence, AutoMappingDecision::AutoApplied, null, $ignoreIdempotency);
+            $this->metricsService->recordAutoApplied((float) $confidence, $algorithmVersion);
+            $this->writeLog(
+                $donorCategoryId,
+                $catalogId,
+                $confidence,
+                AutoMappingDecision::AutoApplied,
+                null,
+                $ignoreIdempotency,
+                $aiScore,
+                $legacyScore,
+                $finalScore,
+                $boostApplied,
+                $decisionReason ?? 'auto_applied_by_confidence_threshold',
+                $algorithmVersion
+            );
 
             return;
         }
@@ -105,7 +131,20 @@ class AutoMappingService
             $reason = 'confidence_below_minimum';
         }
 
-        $this->writeLog($donorCategoryId, $catalogId, $confidence, $decision, $reason, $ignoreIdempotency);
+        $this->writeLog(
+            $donorCategoryId,
+            $catalogId,
+            $confidence,
+            $decision,
+            $reason,
+            $ignoreIdempotency,
+            $aiScore,
+            $legacyScore,
+            $finalScore,
+            $boostApplied,
+            $decisionReason ?? $reason,
+            $algorithmVersion
+        );
     }
 
     private function decide(int $confidence): AutoMappingDecision
@@ -127,10 +166,17 @@ class AutoMappingService
         AutoMappingDecision $decision,
         ?string $reason,
         bool $ignoreIdempotency,
+        ?float $aiScore = null,
+        ?float $legacyScore = null,
+        ?float $finalScore = null,
+        ?float $boostApplied = null,
+        ?string $decisionReason = null,
+        ?string $algorithmVersion = null,
     ): void {
-        if (! $ignoreIdempotency && $this->isDuplicateOfLastLog($donorCategoryId, $suggestedCatalogId, $confidence, $decision)) {
-            if (app()->bound(AutoMappingCommandContext::class)) {
-                app(AutoMappingCommandContext::class)->skippedDuplicateLogs++;
+        $algorithmVersion ??= AutoMappingConfig::VERSION;
+        if (! $ignoreIdempotency && $this->isDuplicateOfLastLog($donorCategoryId, $suggestedCatalogId, $confidence, $decision, $algorithmVersion)) {
+            if ($this->commandContext !== null) {
+                $this->commandContext->skippedDuplicateLogs++;
             }
 
             return;
@@ -140,14 +186,19 @@ class AutoMappingService
             'donor_category_id' => $donorCategoryId,
             'suggested_catalog_category_id' => $suggestedCatalogId,
             'confidence' => $confidence,
+            'ai_score' => $aiScore,
+            'legacy_score' => $legacyScore,
+            'final_score' => $finalScore,
+            'boost_applied' => $boostApplied,
             'decision' => $decision,
             'reason' => $reason,
-            'algorithm_version' => self::ALGORITHM_VERSION,
+            'decision_reason' => $decisionReason ?? $reason,
+            'algorithm_version' => $algorithmVersion,
             'created_at' => now(),
         ]);
 
-        if (app()->bound(AutoMappingCommandContext::class)) {
-            app(AutoMappingCommandContext::class)->logsWrittenCount++;
+        if ($this->commandContext !== null) {
+            $this->commandContext->logsWrittenCount++;
         }
     }
 
@@ -156,6 +207,7 @@ class AutoMappingService
         ?int $suggestedCatalogId,
         int $confidence,
         AutoMappingDecision $decision,
+        string $algorithmVersion,
     ): bool {
         $last = AutoMappingLog::query()
             ->where('donor_category_id', $donorCategoryId)
@@ -166,8 +218,8 @@ class AutoMappingService
             return false;
         }
 
-        $lastAlgo = (string) ($last->algorithm_version ?? 'v1');
-        if ($lastAlgo !== self::ALGORITHM_VERSION) {
+        $lastAlgo = (string) ($last->algorithm_version ?? AutoMappingConfig::VERSION);
+        if ($lastAlgo !== $algorithmVersion) {
             return false;
         }
 
@@ -184,10 +236,17 @@ class AutoMappingService
             return false;
         }
 
-        if (abs((int) $last->confidence - $confidence) >= self::CONFIDENCE_SIGNIFICANT_DELTA) {
+        if (abs((int) $last->confidence - $confidence) >= AutoMappingConfig::CONFIDENCE_SIGNIFICANT_DELTA) {
             return false;
         }
 
         return true;
+    }
+
+    private function pickAlgorithmVersion(int $donorCategoryId): string
+    {
+        return (abs(crc32((string) $donorCategoryId)) % 2) === 0
+            ? AutoMappingConfig::V1
+            : AutoMappingConfig::V2;
     }
 }

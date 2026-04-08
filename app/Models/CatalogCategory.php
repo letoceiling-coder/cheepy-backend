@@ -18,11 +18,13 @@ class CatalogCategory extends Model
         'sort_order',
         'icon',
         'is_active',
+        'embedding',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
         'sort_order' => 'integer',
+        'embedding' => 'array',
     ];
 
     public function parent(): BelongsTo

@@ -10,4 +10,5 @@ return [
     'sber' => [
         'currency' => env('PAYMENTS_SBER_CURRENCY', 'rub'),
     ],
+    'atol_default_email' => env('ATOL_DEFAULT_EMAIL', 'client@example.com'),
 ];

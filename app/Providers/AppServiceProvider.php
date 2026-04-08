@@ -14,7 +14,13 @@ use App\Listeners\LogCatalogMappingCreated;
 use App\Listeners\ReleaseParserLockOnFinished;
 use App\Listeners\ScheduleNextParserDaemon;
 use App\Models\DonorCategory;
+use App\Models\Product;
+use App\Models\SystemProduct;
+use App\Models\SystemProductAttribute;
 use App\Observers\DonorCategoryObserver;
+use App\Observers\ProductObserver;
+use App\Observers\SystemProductAttributeObserver;
+use App\Observers\SystemProductObserver;
 use App\Services\SadovodParser\HttpClient;
 use App\Services\SadovodParser\Parsers\MenuParser;
 use Illuminate\Support\Facades\Event;
@@ -51,5 +57,8 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(CatalogMappingCreated::class, LogCatalogMappingCreated::class);
 
         DonorCategory::observe(DonorCategoryObserver::class);
+        Product::observe(ProductObserver::class);
+        SystemProduct::observe(SystemProductObserver::class);
+        SystemProductAttribute::observe(SystemProductAttributeObserver::class);
     }
 }

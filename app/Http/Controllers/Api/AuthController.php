@@ -16,7 +16,8 @@ class AuthController extends Controller
 
     public function __construct()
     {
-        $this->secret = config('jwt.secret') ?: 'fallback-' . config('app.key');
+        // Must match verifyToken() / JwtMiddleware decoding secret.
+        $this->secret = (string) (config('jwt.secret') ?: config('app.key'));
     }
 
     public function login(Request $request): JsonResponse

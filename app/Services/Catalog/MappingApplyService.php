@@ -8,6 +8,10 @@ class MappingApplyService
 {
     private const MIN_SCORE = 95;
 
+    public function __construct(
+        private MappingSuggestionService $suggestionService,
+    ) {}
+
     /**
      * Apply high-confidence suggestions to category_mapping.
      * Only score >= 95; does not overwrite existing mappings; does not delete.
@@ -17,8 +21,7 @@ class MappingApplyService
      */
     public function applyAuto(int $limit = 500): array
     {
-        $suggestionService = app(MappingSuggestionService::class);
-        $suggestions = $suggestionService->suggest($limit);
+        $suggestions = $this->suggestionService->suggest($limit);
 
         $candidates = array_filter($suggestions, fn (array $s) => $s['score'] >= self::MIN_SCORE);
         $total = count($candidates);
