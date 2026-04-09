@@ -124,6 +124,13 @@ class ParserController extends Controller
      */
     public function start(Request $request): JsonResponse
     {
+        // Manual one-run start must not keep daemon mode enabled; otherwise
+        // ScheduleNextParserDaemon may enqueue a new full run after ParserFinished.
+        ParserState::current()->update([
+            'status' => ParserState::STATUS_STOPPED,
+            'last_stop' => now(),
+        ]);
+
         $running = ParserJob::whereIn('status', ['running', 'pending'])->first();
         if ($running) {
             return response()->json([
