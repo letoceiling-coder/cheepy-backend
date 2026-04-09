@@ -75,4 +75,37 @@ class ParserJob extends Model
     {
         return $this->hasMany(ParserLog::class, 'job_id');
     }
+
+    /**
+     * Stable payload for broadcast events consumed by admin UI.
+     *
+     * @return array<string, mixed>
+     */
+    public function formatForBroadcast(): array
+    {
+        $progress = is_array($this->progress) ? $this->progress : [];
+
+        return [
+            'id' => $this->id,
+            'type' => (string) $this->type,
+            'status' => (string) $this->status,
+            'progress' => $progress,
+            'progress_percent' => (int) ($this->progress_percent ?? 0),
+            'parsed_categories' => (int) ($this->parsed_categories ?? 0),
+            'total_categories' => (int) ($this->total_categories ?? 0),
+            'parsed_products' => (int) ($this->parsed_products ?? 0),
+            'saved_products' => (int) ($this->saved_products ?? 0),
+            'errors_count' => (int) ($this->errors_count ?? 0),
+            'photos_downloaded' => (int) ($this->photos_downloaded ?? 0),
+            'photos_failed' => (int) ($this->photos_failed ?? 0),
+            'current_action' => $this->current_action,
+            'current_page' => (int) ($this->current_page ?? 0),
+            'total_pages' => (int) ($this->total_pages ?? 0),
+            'current_category_slug' => $this->current_category_slug,
+            'started_at' => $this->started_at?->toIso8601String(),
+            'finished_at' => $this->finished_at?->toIso8601String(),
+            'error_message' => $this->error_message,
+            'updated_at' => $this->updated_at?->toIso8601String(),
+        ];
+    }
 }

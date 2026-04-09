@@ -15,6 +15,7 @@ use App\Jobs\RunParserJob;
 use App\Services\Parser\ParserLogger;
 use App\Services\DatabaseParserService;
 use App\Support\ParserJobOptions;
+use App\Support\ParserProxyState;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
@@ -36,12 +37,17 @@ class ParserController extends Controller
     public function state(Request $request): JsonResponse
     {
         $ps = ParserState::current();
+        $proxyState = ParserProxyState::snapshot();
         return response()->json([
             'status' => $ps->status,
             'network_mode' => $ps->network_mode,
             'locked' => $ps->locked,
             'last_start' => $ps->last_start?->toIso8601String(),
             'last_stop' => $ps->last_stop?->toIso8601String(),
+            'proxy_blocked' => $proxyState['blocked'],
+            'proxy_blocked_until' => $proxyState['blocked_until'],
+            'proxy_block_reason' => $proxyState['reason'],
+            'proxy_last_action' => $proxyState['last_action'],
             'updated_at' => $ps->updated_at->toIso8601String(),
         ]);
     }
@@ -547,6 +553,7 @@ class ParserController extends Controller
         $warning = $this->detectParserWarning($running, $queueParser + $queuePhotos);
 
         $parserState = ParserState::current();
+        $proxyState = ParserProxyState::snapshot();
         return response()->json([
             'is_running'          => $running !== null,
             'daemon_enabled'      => $parserState->status === ParserState::STATUS_RUNNING,
@@ -557,6 +564,10 @@ class ParserController extends Controller
             'queue_parser_size'   => $queueParser,
             'queue_photos_size'   => $queuePhotos,
             'queue_total_size'    => $queueParser + $queuePhotos,
+            'proxy_blocked'       => $proxyState['blocked'],
+            'proxy_blocked_until' => $proxyState['blocked_until'],
+            'proxy_block_reason'  => $proxyState['reason'],
+            'proxy_last_action'   => $proxyState['last_action'],
             'warning'             => $warning,
         ]);
     }
@@ -630,6 +641,7 @@ class ParserController extends Controller
         $proxyProbe = $this->checkProxyAvailability(true);
         $proxyOk = $proxyProbe['proxy_ok'];
         $parserState = ParserState::current();
+        $proxyState = ParserProxyState::snapshot();
         $donorOk = $this->checkDonorAvailability(
             $parserState->isRunning() && $parserState->network_mode === 'proxy'
         );
@@ -673,6 +685,12 @@ class ParserController extends Controller
             'warning' => $this->detectParserWarning($running, $queueParser + $queueDefault + $queuePhotos),
             'proxy_status' => $proxyOk ? 'ok' : 'failed',
             'proxy_probe_reason' => $proxyProbe['reason'] ?? null,
+            'proxy_blocked' => $proxyState['blocked'],
+            'proxy_blocked_until' => $proxyState['blocked_until'],
+            'proxy_block_reason' => $proxyState['reason'],
+            'proxy_block_streak' => $proxyState['streak'],
+            'proxy_last_action' => $proxyState['last_action'],
+            'proxy_last_url' => $proxyState['last_url'],
             'sadovodbaza_status' => $donorOk ? 'ok' : 'failed',
             'metrics' => $metrics,
         ]);
@@ -706,6 +724,7 @@ class ParserController extends Controller
 
         $proxyProbe = $this->checkProxyAvailability(true);
         $proxyOk = $proxyProbe['proxy_ok'];
+        $proxyState = ParserProxyState::snapshot();
         $donorOk = $this->checkDonorAvailability(
             $parserState->isRunning() && $parserState->network_mode === 'proxy'
         );
@@ -721,6 +740,10 @@ class ParserController extends Controller
             'workers' => $workersRunning,
             'proxy_status' => $proxyOk ? 'ok' : 'failed',
             'proxy_probe_reason' => $proxyProbe['reason'] ?? null,
+            'proxy_blocked' => $proxyState['blocked'],
+            'proxy_blocked_until' => $proxyState['blocked_until'],
+            'proxy_block_reason' => $proxyState['reason'],
+            'proxy_last_action' => $proxyState['last_action'],
             'sadovodbaza_status' => $donorOk ? 'ok' : 'failed',
             'timestamp' => now()->toIso8601String(),
         ]);
@@ -936,6 +959,10 @@ class ParserController extends Controller
      */
     private function checkProxyAvailability(bool $forcePrecheckWhenStopped = false): array
     {
+        if (ParserProxyState::isBlocked()) {
+            return ['proxy_ok' => false, 'reason' => 'proxy_blocked_cooldown_active'];
+        }
+
         if (!$forcePrecheckWhenStopped && !$this->isParserActive()) {
             return ['proxy_ok' => false, 'reason' => 'parser_inactive_skipped', 'skipped' => true];
         }
@@ -959,6 +986,9 @@ class ParserController extends Controller
                 return ['proxy_ok' => true, 'reason' => 'ok'];
             } catch (\Throwable $e) {
                 $lastReason = $this->classifyNetworkError($e);
+                if (str_contains($e->getMessage(), '429')) {
+                    ParserProxyState::mark429('https://sadovodbaza.ru');
+                }
                 if ($attempt < 3) {
                     usleep($attempt * 500000);
                     continue;

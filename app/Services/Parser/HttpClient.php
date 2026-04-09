@@ -3,6 +3,7 @@
 namespace App\Services\Parser;
 
 use App\Models\ParserSetting;
+use App\Support\ParserProxyState;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -156,6 +157,16 @@ class HttpClient
         $useProxy = $net['use_proxy'];
         $pool = $net['proxy_pool'];
 
+        if ($useProxy && ParserProxyState::isBlocked()) {
+            $blockedUntil = ParserProxyState::blockedUntilIso();
+            Log::warning('PROXY COOLDOWN ACTIVE', [
+                'url' => $url,
+                'blocked_until' => $blockedUntil,
+                'reason' => ParserProxyState::reason(),
+            ]);
+            throw new RuntimeException('PROXY_BLOCKED_COOLDOWN_ACTIVE');
+        }
+
         $effectiveTimeout = max(10, min(15, $this->timeoutSeconds));
 
         if (! $this->networkModeLogged) {
@@ -189,11 +200,16 @@ class HttpClient
             try {
                 $body = $this->executeOnce($url, $headers, $effectiveTimeout, ! $directOnly, $pick ?? '');
                 if ($body !== '') {
+                    ParserProxyState::clearOnHealthyResponse();
                     return $body;
                 }
                 throw new RuntimeException('EMPTY_BODY');
             } catch (Throwable $e) {
                 $lastThrowable = $e;
+                $errorMsg = $e->getMessage();
+                if (! $directOnly && str_starts_with($errorMsg, 'HTTP_NON_200:429')) {
+                    ParserProxyState::mark429($url);
+                }
                 if ($pick !== null && $this->shouldMarkProxyBad($e)) {
                     $this->markProxyBad($pick);
                 }
