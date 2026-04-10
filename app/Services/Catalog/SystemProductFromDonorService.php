@@ -11,6 +11,7 @@ use App\Models\ProductSource;
 use App\Models\SystemProduct;
 use App\Models\SystemProductAttribute;
 use App\Models\SystemProductPhoto;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Creates system_product from donor product. Copies name, description, price, seller,
@@ -22,30 +23,32 @@ class SystemProductFromDonorService
         Product $donor,
         string $status = SystemProduct::STATUS_DRAFT
     ): SystemProduct {
-        $catalogCategoryId = $this->resolveCatalogCategoryId($donor->category_id);
+        return DB::transaction(function () use ($donor, $status) {
+            $catalogCategoryId = $this->resolveCatalogCategoryId($donor->category_id);
 
-        $sp = SystemProduct::create([
-            'name' => $donor->title ?? 'Untitled',
-            'description' => $donor->description,
-            'price' => $donor->price,
-            'price_raw' => $donor->price_raw,
-            'status' => $status,
-            'seller_id' => $donor->seller_id,
-            'category_id' => $catalogCategoryId,
-            'brand_id' => $donor->brand_id,
-        ]);
+            $sp = SystemProduct::create([
+                'name' => $donor->title ?? 'Untitled',
+                'description' => $donor->description,
+                'price' => $donor->price,
+                'price_raw' => $donor->price_raw,
+                'status' => $status,
+                'seller_id' => $donor->seller_id,
+                'category_id' => $catalogCategoryId,
+                'brand_id' => $donor->brand_id,
+            ]);
 
-        ProductSource::create([
-            'system_product_id' => $sp->id,
-            'donor_product_id' => $donor->id,
-            'source' => ProductSource::SOURCE_PARSER,
-            'donor_updated_at' => $donor->updated_at,
-        ]);
+            ProductSource::create([
+                'system_product_id' => $sp->id,
+                'donor_product_id' => $donor->id,
+                'source' => ProductSource::SOURCE_PARSER,
+                'donor_updated_at' => $donor->updated_at,
+            ]);
 
-        $this->copyAttributes($donor, $sp);
-        $this->copyPhotos($donor, $sp);
+            $this->copyAttributes($donor, $sp);
+            $this->copyPhotos($donor, $sp);
 
-        return $sp->load(['productSources.donorProduct', 'attributes', 'photos', 'seller', 'category', 'brand']);
+            return $sp->load(['productSources.donorProduct', 'attributes', 'photos', 'seller', 'category', 'brand']);
+        });
     }
 
     private function resolveCatalogCategoryId(?int $parserCategoryId): ?int
@@ -70,10 +73,17 @@ class SystemProductFromDonorService
 
         $attrs = ProductAttribute::where('product_id', $donor->id)->get();
 
+        $seen = [];
         foreach ($attrs as $a) {
             $raw = mb_substr((string) $a->attr_value, 0, 500);
             $attrValue = strtolower(trim($raw));
             $attrName = strtolower(trim((string) $a->attr_name));
+            $dedupeKey = $attrName."\0".$attrValue;
+            if (isset($seen[$dedupeKey])) {
+                continue;
+            }
+            $seen[$dedupeKey] = true;
+
             $attrType = $this->detectAttrType($attrValue);
 
             $payload = [
