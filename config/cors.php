@@ -8,6 +8,7 @@ return [
 
     'allowed_origins' => [
         'https://siteaacess.store',
+        'https://www.siteaacess.store',
         'http://cheepy.loc'
     ],
 
