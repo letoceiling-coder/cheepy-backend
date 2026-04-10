@@ -10,8 +10,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 
 /**
- * Макет главной для CRM: блоки и порядок как на витрине (database/data/homepage_layout_spec.json).
- * Идемпотентно обновляет блоки последней версии страницы system:homepage.
+ * Макет главной для CRM (database/data/homepage_layout_spec.json).
+ * Первый запуск создаёт system:homepage. Повторный — пропуск, если не задано CMS_SEED_OVERWRITE_HOMEPAGE=true.
  */
 class CmsBuiltinPagesSeeder extends Seeder
 {
@@ -31,28 +31,36 @@ class CmsBuiltinPagesSeeder extends Seeder
             return;
         }
 
-        if (CmsPage::query()->where('page_key', 'system:homepage')->exists()) {
-            $this->command->info('CmsBuiltinPagesSeeder: пропуск — страница system:homepage уже есть (удалите её в БД, чтобы залить макет снова)');
+        $overwrite = filter_var((string) env('CMS_SEED_OVERWRITE_HOMEPAGE', ''), FILTER_VALIDATE_BOOL);
+        $exists = CmsPage::query()->where('page_key', 'system:homepage')->exists();
+
+        if ($exists && ! $overwrite) {
+            $this->command->info('CmsBuiltinPagesSeeder: пропуск — system:homepage уже есть. Обновить блоки: CMS_SEED_OVERWRITE_HOMEPAGE=true php artisan db:seed --class=CmsBuiltinPagesSeeder --force');
 
             return;
         }
 
         DB::transaction(function () use ($rows) {
-            $page = CmsPage::query()->create([
-                'page_key' => 'system:homepage',
-                'page_type' => 'system',
-                'path_prefix' => 'p',
-                'slug' => 'homepage',
-                'title' => 'Главная страница (макет)',
-                'is_active' => true,
-                'status' => CmsPage::STATUS_DRAFT,
-                'published_version_id' => null,
-            ]);
+            $page = CmsPage::query()->firstOrCreate(
+                ['page_key' => 'system:homepage'],
+                [
+                    'page_type' => 'system',
+                    'path_prefix' => 'p',
+                    'slug' => 'homepage',
+                    'title' => 'Главная страница (макет)',
+                    'is_active' => true,
+                    'status' => CmsPage::STATUS_DRAFT,
+                    'published_version_id' => null,
+                ]
+            );
 
-            $version = $page->versions()->create([
-                'version_number' => 1,
-                'status' => 'draft',
-            ]);
+            $version = $page->versions()->orderByDesc('version_number')->first();
+            if (! $version) {
+                $version = $page->versions()->create([
+                    'version_number' => 1,
+                    'status' => 'draft',
+                ]);
+            }
 
             CmsPageBlock::query()->where('cms_page_version_id', $version->id)->delete();
 
