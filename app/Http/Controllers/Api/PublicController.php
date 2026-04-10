@@ -19,7 +19,7 @@ class PublicController extends Controller
 {
     private function useSystemProductCatalog(): bool
     {
-        return filter_var(env('PUBLIC_CATALOG_USE_SYSTEM_PRODUCTS', false), FILTER_VALIDATE_BOOL);
+        return filter_var(config('cheepy_catalog.public_use_system_products'), FILTER_VALIDATE_BOOL);
     }
 
     /**

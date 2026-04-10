@@ -22,7 +22,7 @@ class ProductObserver
     {
         $this->awarenessService->onDonorProductUpdated($product);
 
-        if (! filter_var(env('CATALOG_AUTO_INGEST_FROM_PARSER', true), FILTER_VALIDATE_BOOL)) {
+        if (! filter_var(config('cheepy_catalog.auto_ingest_from_parser'), FILTER_VALIDATE_BOOL)) {
             return;
         }
 
