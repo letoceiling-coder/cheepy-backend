@@ -636,4 +636,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
 
     // Admin System Products — CRM (system_products)
     require base_path('routes/admin_system_products.php');
+
+    // CRM Media Library
+    require base_path('routes/admin_media.php');
 });

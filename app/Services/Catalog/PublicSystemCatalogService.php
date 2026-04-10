@@ -51,7 +51,7 @@ class PublicSystemCatalogService
             ->where('category_id', $category->id)
             ->with([
                 'seller:id,name,slug,pavilion',
-                'photos',
+                'photos' => $this->enabledPhotos(),
                 'category:id,name,slug',
                 'productSources.donorProduct:id,external_id',
             ]);
@@ -116,7 +116,7 @@ class PublicSystemCatalogService
             'seller',
             'brand:id,name,slug,logo_url',
             'attributes',
-            'photos' => fn ($q) => $q->orderBy('sort_order'),
+            'photos' => $this->enabledPhotos(),
             'productSources.donorProduct:id,external_id,title,source_url',
         ]);
 
@@ -126,7 +126,7 @@ class PublicSystemCatalogService
                 ->published()
                 ->where('seller_id', $sp->seller_id)
                 ->where('id', '!=', $sp->id)
-                ->with(['photos' => fn ($q) => $q->orderBy('sort_order'), 'productSources.donorProduct:id,external_id'])
+                ->with(['photos' => $this->enabledPhotos(), 'productSources.donorProduct:id,external_id'])
                 ->limit(12)
                 ->get()
                 ->map(fn (SystemProduct $p) => $this->formatSystemProductCard($p));
@@ -191,7 +191,7 @@ class PublicSystemCatalogService
                 $query->where('name', 'like', "%{$q}%")
                     ->orWhere('description', 'like', "%{$q}%");
             })
-            ->with(['category:id,name,slug', 'seller:id,name,slug', 'photos' => fn ($q2) => $q2->orderBy('sort_order'), 'productSources.donorProduct:id,external_id'])
+            ->with(['category:id,name,slug', 'seller:id,name,slug', 'photos' => $this->enabledPhotos(), 'productSources.donorProduct:id,external_id'])
             ->paginate($request->input('per_page', 20));
 
         return response()->json([
@@ -211,10 +211,10 @@ class PublicSystemCatalogService
         $limit = min((int) $request->input('limit', 24), 60);
         $products = SystemProduct::query()
             ->published()
-            ->whereHas('photos')
+            ->whereHas('photos', fn ($q) => $q->where('is_enabled', true))
             ->inRandomOrder()
             ->limit($limit)
-            ->with(['seller:id,name,slug', 'photos' => fn ($q) => $q->orderBy('sort_order'), 'productSources.donorProduct:id,external_id'])
+            ->with(['seller:id,name,slug', 'photos' => $this->enabledPhotos(), 'productSources.donorProduct:id,external_id'])
             ->get();
 
         return response()->json(['data' => $products->map(fn (SystemProduct $sp) => $this->formatSystemProductCard($sp))]);
@@ -279,6 +279,14 @@ class PublicSystemCatalogService
         }
 
         return $out;
+    }
+
+    /**
+     * @return \Closure(\Illuminate\Database\Eloquent\Relations\Relation): void
+     */
+    private function enabledPhotos(): \Closure
+    {
+        return fn ($q) => $q->where('is_enabled', true)->orderBy('sort_order');
     }
 
     private function publicId(SystemProduct $sp): string

@@ -6,9 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\ProductSource;
 use App\Models\SystemProduct;
+use App\Models\SystemProductAttribute;
+use App\Models\SystemProductPhoto;
 use App\Services\Catalog\SystemProductFromDonorService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 /**
  * System products — editable layer. Admin works here.
@@ -74,7 +78,7 @@ class SystemProductController extends Controller
             'category',
             'brand',
             'attributes',
-            'photos',
+            'photos' => fn ($q) => $q->orderBy('sort_order'),
         ])->findOrFail($id);
 
         return response()->json($this->formatSystemProductFull($sp));
@@ -144,6 +148,179 @@ class SystemProductController extends Controller
 
         $sp->load('productSources.donorProduct');
         return response()->json($this->formatSystemProductFull($sp->fresh()));
+    }
+
+    /**
+     * PATCH /api/v1/admin/system-products/{id}/crm-attributes
+     * Замена атрибутов каталога CRM (не трогает парсер / products).
+     */
+    public function syncCrmAttributes(Request $request, int $id): JsonResponse
+    {
+        $sp = SystemProduct::findOrFail($id);
+
+        $data = $request->validate([
+            'attributes' => 'present|array',
+            'attributes.*.attr_name' => 'required|string|max:200',
+            'attributes.*.attr_value' => 'nullable|string|max:4000',
+        ]);
+
+        DB::transaction(function () use ($sp, $data) {
+            SystemProductAttribute::where('system_product_id', $sp->id)->delete();
+
+            $seen = [];
+            foreach ($data['attributes'] as $row) {
+                $raw = mb_substr((string) ($row['attr_value'] ?? ''), 0, 500);
+                $attrValue = strtolower(trim($raw));
+                $attrName = strtolower(trim((string) $row['attr_name']));
+                $key = $attrName."\0".$attrValue;
+                if ($attrName === '' || isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = true;
+
+                $attrType = $this->detectCrmAttrType($attrValue);
+                $payload = [
+                    'system_product_id' => $sp->id,
+                    'attr_name' => $attrName,
+                    'attr_value' => $attrValue,
+                    'attr_value_original' => $raw,
+                    'attr_type' => $attrType,
+                ];
+                if ($attrType === SystemProductAttribute::TYPE_INT) {
+                    $payload['value_int'] = $this->parseCrmInt($attrValue);
+                } elseif ($attrType === SystemProductAttribute::TYPE_FLOAT) {
+                    $payload['value_float'] = $this->parseCrmFloat($attrValue);
+                }
+                SystemProductAttribute::create($payload);
+            }
+        });
+
+        return response()->json($this->formatSystemProductFull($sp->fresh()->load([
+            'productSources.donorProduct',
+            'seller',
+            'category',
+            'brand',
+            'attributes',
+            'photos',
+        ])));
+    }
+
+    /**
+     * PATCH /api/v1/admin/system-products/{id}/crm-photos
+     * Полный снимок фото карточки CRM (порядок, вкл/выкл, главное). Парсер не меняется.
+     */
+    public function syncCrmPhotos(Request $request, int $id): JsonResponse
+    {
+        $sp = SystemProduct::findOrFail($id);
+
+        $data = $request->validate([
+            'photos' => 'present|array',
+            'photos.*.id' => 'nullable|integer',
+            'photos.*.url' => 'required|string|max:1000',
+            'photos.*.sort_order' => 'required|integer|min:0|max:9999',
+            'photos.*.is_primary' => 'sometimes|boolean',
+            'photos.*.is_enabled' => 'sometimes|boolean',
+            'photos.*.media_file_id' => 'nullable|integer|exists:crm_media_files,id',
+        ]);
+
+        foreach ($data['photos'] as $i => $row) {
+            $url = trim((string) $row['url']);
+            if ($url !== '' && ! preg_match('#^https?://#i', $url)) {
+                throw ValidationException::withMessages([
+                    "photos.$i.url" => ['URL фото должен начинаться с http(s)://'],
+                ]);
+            }
+        }
+
+        DB::transaction(function () use ($sp, $data) {
+            $kept = [];
+            foreach ($data['photos'] as $row) {
+                $url = trim((string) $row['url']);
+                if ($url === '') {
+                    continue;
+                }
+
+                if (! empty($row['id'])) {
+                    $photo = SystemProductPhoto::where('system_product_id', $sp->id)
+                        ->whereKey((int) $row['id'])
+                        ->first();
+                    if (! $photo) {
+                        continue;
+                    }
+                    $photo->update([
+                        'url' => $url,
+                        'sort_order' => (int) $row['sort_order'],
+                        'is_primary' => (bool) ($row['is_primary'] ?? false),
+                        'is_enabled' => (bool) ($row['is_enabled'] ?? true),
+                        'media_file_id' => $row['media_file_id'] ?? null,
+                    ]);
+                    $kept[] = $photo->id;
+                } else {
+                    $photo = SystemProductPhoto::create([
+                        'system_product_id' => $sp->id,
+                        'url' => $url,
+                        'sort_order' => (int) $row['sort_order'],
+                        'is_primary' => (bool) ($row['is_primary'] ?? false),
+                        'is_enabled' => (bool) ($row['is_enabled'] ?? true),
+                        'media_file_id' => $row['media_file_id'] ?? null,
+                    ]);
+                    $kept[] = $photo->id;
+                }
+            }
+
+            SystemProductPhoto::where('system_product_id', $sp->id)
+                ->whereNotIn('id', $kept)
+                ->delete();
+        });
+
+        return response()->json($this->formatSystemProductFull($sp->fresh()->load([
+            'productSources.donorProduct',
+            'seller',
+            'category',
+            'brand',
+            'attributes',
+            'photos',
+        ])));
+    }
+
+    private function detectCrmAttrType(string $value): string
+    {
+        $normalized = trim(preg_replace('/\s+/', ' ', str_replace(',', '.', $value)));
+        if ($normalized === '') {
+            return SystemProductAttribute::TYPE_TEXT;
+        }
+        if (preg_match('/^-?\d+$/', $normalized)) {
+            return SystemProductAttribute::TYPE_INT;
+        }
+        if (is_numeric($normalized)) {
+            return SystemProductAttribute::TYPE_FLOAT;
+        }
+
+        return SystemProductAttribute::TYPE_TEXT;
+    }
+
+    private function parseCrmInt(?string $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (preg_match('/^-?\d+/', $value, $m)) {
+            return (int) $m[0];
+        }
+
+        return null;
+    }
+
+    private function parseCrmFloat(?string $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (preg_match('/-?\d+(?:[.,]\d+)?/', $value, $m)) {
+            return (float) str_replace(',', '.', $m[0]);
+        }
+
+        return null;
     }
 
     /**
@@ -234,10 +411,13 @@ class SystemProductController extends Controller
             'value_int' => $a->value_int,
             'value_float' => $a->value_float,
         ])->toArray();
-        $base['photos'] = $sp->photos->map(fn ($p) => [
+        $base['photos'] = $sp->photos->sortBy('sort_order')->values()->map(fn ($p) => [
+            'id' => $p->id,
             'url' => $p->url,
             'is_primary' => $p->is_primary,
             'sort_order' => $p->sort_order,
+            'is_enabled' => (bool) ($p->is_enabled ?? true),
+            'media_file_id' => $p->media_file_id,
         ])->toArray();
 
         $base['donor_sources'] = $sp->productSources->map(function ($ps) {
