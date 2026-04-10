@@ -54,7 +54,7 @@ class SystemProductController extends Controller
 
         $sortBy = $request->input('sort_by', 'created_at');
         $sortDir = $request->input('sort_dir', 'desc');
-        $allowed = ['created_at', 'updated_at', 'name', 'status', 'price_raw'];
+        $allowed = ['created_at', 'updated_at', 'name', 'status', 'price_raw', 'list_position'];
         if (in_array($sortBy, $allowed)) {
             $query->orderBy($sortBy, $sortDir);
         }
@@ -149,6 +149,7 @@ class SystemProductController extends Controller
             'seller_id' => 'sometimes|nullable|integer|exists:sellers,id',
             'category_id' => 'sometimes|nullable|integer|exists:catalog_categories,id',
             'brand_id' => 'sometimes|nullable|integer|exists:brands,id',
+            'list_position' => 'sometimes|nullable|integer|min:0|max:2147483647',
         ]);
 
         $sp->update($data);
@@ -401,6 +402,7 @@ class SystemProductController extends Controller
             'seller_id' => $sp->seller_id,
             'category_id' => $sp->category_id,
             'brand_id' => $sp->brand_id,
+            'list_position' => (int) ($sp->list_position ?? 0),
             'thumbnail_url' => $this->thumbnailUrlForSystemProduct($sp),
             'seller' => $sp->seller?->only(['id', 'name', 'slug']),
             'category' => $sp->category?->only(['id', 'name', 'slug']),

@@ -29,10 +29,12 @@ class SystemProduct extends Model
         'seller_id',
         'category_id',
         'brand_id',
+        'list_position',
     ];
 
     protected $casts = [
         'price_raw' => 'integer',
+        'list_position' => 'integer',
     ];
 
     public function category(): BelongsTo

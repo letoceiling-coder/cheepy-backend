@@ -81,9 +81,15 @@ class PublicSystemCatalogService
             });
         }
 
-        $sortMap = ['price_asc' => ['price_raw', 'asc'], 'price_desc' => ['price_raw', 'desc'], 'new' => ['created_at', 'desc']];
+        $sortMap = [
+            'price_asc' => ['price_raw', 'asc'],
+            'price_desc' => ['price_raw', 'desc'],
+            'new' => ['created_at', 'desc'],
+            /** Ручной порядок из CRM (list_position): меньше — выше в списке. */
+            'position' => ['list_position', 'asc'],
+        ];
         [$sortCol, $sortDir] = $sortMap[$request->input('sort_by', 'new')] ?? ['created_at', 'desc'];
-        $query->orderBy($sortCol, $sortDir);
+        $query->orderBy($sortCol, $sortDir)->orderBy('id', 'desc');
 
         $perPage = min((int) $request->input('per_page', 24), 60);
         $page = $query->paginate($perPage);
@@ -312,6 +318,7 @@ class PublicSystemCatalogService
             'price' => $sp->price,
             'thumbnail' => $thumb,
             'photos_count' => count($urls),
+            'list_position' => (int) ($sp->list_position ?? 0),
             'category' => $sp->category ? ['name' => $sp->category->name, 'slug' => $sp->category->slug] : null,
             'seller' => $sp->seller ? ['name' => $sp->seller->name, 'slug' => $sp->seller->slug] : null,
         ];
@@ -325,6 +332,7 @@ class PublicSystemCatalogService
             'id' => $this->publicId($sp),
             'title' => $sp->name,
             'price' => $sp->price,
+            'list_position' => (int) ($sp->list_position ?? 0),
             'description' => $sp->description,
             'photos' => $urls,
             'photos_detail' => $sp->photos->map(fn ($ph) => [
