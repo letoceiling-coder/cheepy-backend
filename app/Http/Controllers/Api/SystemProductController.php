@@ -29,7 +29,8 @@ class SystemProductController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = SystemProduct::with([
-            'productSources.donorProduct:id,title,external_id,price,photos_count',
+            'photos' => fn ($q) => $q->orderByDesc('is_primary')->orderBy('sort_order')->limit(5),
+            'productSources.donorProduct:id,title,external_id,price,photos_count,photos',
             'seller:id,name,slug',
             'category:id,name,slug',
             'brand:id,name,slug',
@@ -394,6 +395,7 @@ class SystemProductController extends Controller
             'seller_id' => $sp->seller_id,
             'category_id' => $sp->category_id,
             'brand_id' => $sp->brand_id,
+            'thumbnail_url' => $this->thumbnailUrlForSystemProduct($sp),
             'seller' => $sp->seller?->only(['id', 'name', 'slug']),
             'category' => $sp->category?->only(['id', 'name', 'slug']),
             'brand' => $sp->brand?->only(['id', 'name', 'slug']),
@@ -401,6 +403,38 @@ class SystemProductController extends Controller
             'created_at' => $sp->created_at->toIso8601String(),
             'updated_at' => $sp->updated_at->toIso8601String(),
         ];
+    }
+
+    /**
+     * Превью для списка: сначала CRM-фото (включено), иначе первое фото донора из JSON.
+     */
+    private function thumbnailUrlForSystemProduct(SystemProduct $sp): ?string
+    {
+        if ($sp->relationLoaded('photos') && $sp->photos->isNotEmpty()) {
+            $enabled = $sp->photos->filter(fn ($p) => (bool) ($p->is_enabled ?? true));
+            $list = $enabled->isNotEmpty() ? $enabled : $sp->photos;
+            $cand = $list->sort(function ($a, $b) {
+                $ap = $a->is_primary ? 1 : 0;
+                $bp = $b->is_primary ? 1 : 0;
+                if ($ap !== $bp) {
+                    return $bp <=> $ap;
+                }
+
+                return ($a->sort_order ?? 0) <=> ($b->sort_order ?? 0);
+            })->first();
+            if ($cand && ! empty(trim((string) $cand->url))) {
+                return $cand->url;
+            }
+        }
+
+        $donor = $sp->productSources->first()?->donorProduct;
+        if ($donor && is_array($donor->photos) && count($donor->photos) > 0) {
+            $first = $donor->photos[0];
+
+            return is_string($first) ? $first : null;
+        }
+
+        return null;
     }
 
     private function formatSystemProductFull(SystemProduct $sp): array
