@@ -45,6 +45,12 @@ class SystemProductController extends Controller
         if ($status = $request->input('status')) {
             $query->where('status', $status);
         }
+        if ($request->filled('category_id')) {
+            $query->where('category_id', (int) $request->input('category_id'));
+        }
+        if ($request->filled('seller_id')) {
+            $query->where('seller_id', (int) $request->input('seller_id'));
+        }
 
         $sortBy = $request->input('sort_by', 'created_at');
         $sortDir = $request->input('sort_dir', 'desc');
