@@ -1,0 +1,314 @@
+[
+  {
+    "type": "HeroSlider"
+  },
+  {
+    "type": "CategoryCircleSlider"
+  },
+  {
+    "type": "CategorySliderSection"
+  },
+  {
+    "type": "LightCategoryNav"
+  },
+  {
+    "type": "FeaturedCategories"
+  },
+  {
+    "type": "PopularCategories"
+  },
+  {
+    "type": "MarketplaceAdvantages"
+  },
+  {
+    "type": "HeroProductPromo"
+  },
+  {
+    "type": "HotDeals"
+  },
+  {
+    "type": "ProductGrid",
+    "settings": {
+      "title": "ГОРЯЧИЕ ПРЕДЛОЖЕНИЯ",
+      "initialCount": 6
+    }
+  },
+  {
+    "type": "RandomModelShowcase"
+  },
+  {
+    "type": "LargeProductSlider"
+  },
+  {
+    "type": "DailyDeals"
+  },
+  {
+    "type": "DealsCountdown"
+  },
+  {
+    "type": "FlashSale"
+  },
+  {
+    "type": "LimitedEdition"
+  },
+  {
+    "type": "DiscountPromoBanner"
+  },
+  {
+    "type": "SplitProductBanner"
+  },
+  {
+    "type": "SpecialOffers"
+  },
+  {
+    "type": "TrendingFashionShowcase"
+  },
+  {
+    "type": "TrendingGrid"
+  },
+  {
+    "type": "CategoryTabs"
+  },
+  {
+    "type": "ProductFinderQuiz"
+  },
+  {
+    "type": "ProductGrid",
+    "settings": {
+      "title": "ПОПУЛЯРНОЕ В КАТЕГОРИИ",
+      "initialCount": 6
+    }
+  },
+  {
+    "type": "TopRatedProducts"
+  },
+  {
+    "type": "CinematicHero"
+  },
+  {
+    "type": "HeroWithSlider"
+  },
+  {
+    "type": "PromoBanner"
+  },
+  {
+    "type": "FullWidthPromoBanner"
+  },
+  {
+    "type": "CategoryBanners"
+  },
+  {
+    "type": "FeaturedCollection"
+  },
+  {
+    "type": "Bestsellers"
+  },
+  {
+    "type": "NewCollectionModels"
+  },
+  {
+    "type": "NewArrivals"
+  },
+  {
+    "type": "LookbookSlider"
+  },
+  {
+    "type": "ProductShowcase"
+  },
+  {
+    "type": "BundleDeals"
+  },
+  {
+    "type": "MultiProductBanner"
+  },
+  {
+    "type": "CategoryCtaBanner"
+  },
+  {
+    "type": "ProductGrid",
+    "settings": {
+      "title": "НОВОЕ ПОСТУПЛЕНИЕ",
+      "initialCount": 12
+    }
+  },
+  {
+    "type": "SplitHero"
+  },
+  {
+    "type": "ProductCollection"
+  },
+  {
+    "type": "LightningDealQuiz"
+  },
+  {
+    "type": "AnimatedStats"
+  },
+  {
+    "type": "TrendingProducts"
+  },
+  {
+    "type": "InteractiveProductCards"
+  },
+  {
+    "type": "MinimalProductGrid"
+  },
+  {
+    "type": "ProductHoverGrid"
+  },
+  {
+    "type": "RecentlyViewed"
+  },
+  {
+    "type": "LifestyleGallery"
+  },
+  {
+    "type": "CategoryMosaic"
+  },
+  {
+    "type": "CategoriesMosaic"
+  },
+  {
+    "type": "ProductDiscovery"
+  },
+  {
+    "type": "StyleMatchQuiz"
+  },
+  {
+    "type": "SplitVideoFeature"
+  },
+  {
+    "type": "VideoProductCard"
+  },
+  {
+    "type": "VideoGallery"
+  },
+  {
+    "type": "MiniVideoGallery"
+  },
+  {
+    "type": "ProductDemoCards"
+  },
+  {
+    "type": "VideoCampaign"
+  },
+  {
+    "type": "LifestyleVideoStrip"
+  },
+  {
+    "type": "DiscoveryMixedGrid"
+  },
+  {
+    "type": "ShopTheLookGallery"
+  },
+  {
+    "type": "MediaProductSlider"
+  },
+  {
+    "type": "VideoProductStory"
+  },
+  {
+    "type": "CombinedMediaBanner"
+  },
+  {
+    "type": "PromoVideoBanner"
+  },
+  {
+    "type": "VideoHeroBanner"
+  },
+  {
+    "type": "SplitVideoBanner"
+  },
+  {
+    "type": "VideoDemoBanner"
+  },
+  {
+    "type": "VideoCarouselBanner"
+  },
+  {
+    "type": "CinematicVideoBanner"
+  },
+  {
+    "type": "TiltProductCards"
+  },
+  {
+    "type": "InteractiveLookbook"
+  },
+  {
+    "type": "ProductRotationShowcase"
+  },
+  {
+    "type": "ProductConfigurator"
+  },
+  {
+    "type": "ProductComparison"
+  },
+  {
+    "type": "LookOfTheDay"
+  },
+  {
+    "type": "SellerSpotlight"
+  },
+  {
+    "type": "SellerComparison"
+  },
+  {
+    "type": "InfluencerPicks"
+  },
+  {
+    "type": "SocialFeed"
+  },
+  {
+    "type": "CommunityFavorites"
+  },
+  {
+    "type": "AiRecommendations"
+  },
+  {
+    "type": "TestimonialsCarousel"
+  },
+  {
+    "type": "FeatureTimeline"
+  },
+  {
+    "type": "CustomerReviews"
+  },
+  {
+    "type": "BrandShowcase"
+  },
+  {
+    "type": "CompactCategories"
+  },
+  {
+    "type": "IconCategories"
+  },
+  {
+    "type": "BrandStrip"
+  },
+  {
+    "type": "GridCategories"
+  },
+  {
+    "type": "SellersSection"
+  },
+  {
+    "type": "DealDiscoveryQuiz"
+  },
+  {
+    "type": "GiftFinderQuiz"
+  },
+  {
+    "type": "FaqAccordion"
+  },
+  {
+    "type": "NewsletterBlock"
+  },
+  {
+    "type": "MarketplaceCta"
+  },
+  {
+    "type": "InformBlock"
+  },
+  {
+    "type": "MapSection"
+  }
+]
