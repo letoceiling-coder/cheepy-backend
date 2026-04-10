@@ -40,4 +40,9 @@ class CatalogCategory extends Model
     {
         return $this->hasMany(CategoryMapping::class, 'catalog_category_id');
     }
+
+    public function systemProducts(): HasMany
+    {
+        return $this->hasMany(SystemProduct::class, 'category_id');
+    }
 }

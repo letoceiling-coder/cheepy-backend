@@ -8,6 +8,16 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class SystemProduct extends Model
 {
+    public const STATUS_DRAFT = 'draft';
+
+    public const STATUS_PENDING = 'pending';
+
+    public const STATUS_APPROVED = 'approved';
+
+    public const STATUS_PUBLISHED = 'published';
+
+    public const STATUS_NEEDS_REVIEW = 'needs_review';
+
     protected $table = 'system_products';
 
     protected $fillable = [
@@ -43,5 +53,20 @@ class SystemProduct extends Model
     public function productSources(): HasMany
     {
         return $this->hasMany(\App\Models\ProductSource::class, 'system_product_id');
+    }
+
+    public function attributes(): HasMany
+    {
+        return $this->hasMany(\App\Models\SystemProductAttribute::class, 'system_product_id');
+    }
+
+    public function photos(): HasMany
+    {
+        return $this->hasMany(\App\Models\SystemProductPhoto::class, 'system_product_id')->orderBy('sort_order');
+    }
+
+    public function scopePublished($query)
+    {
+        return $query->where('status', self::STATUS_PUBLISHED);
     }
 }

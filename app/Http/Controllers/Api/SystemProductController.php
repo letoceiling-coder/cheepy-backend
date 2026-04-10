@@ -123,7 +123,8 @@ class SystemProductController extends Controller
     }
 
     /**
-     * PATCH /api/v1/system-products/{id}
+     * PATCH /api/v1/admin/system-products/{id}
+     * Редактор каталога (витринные поля). Смена workflow-статуса — только {@see moderate}.
      */
     public function update(Request $request, int $id): JsonResponse
     {
@@ -134,13 +135,30 @@ class SystemProductController extends Controller
             'description' => 'sometimes|nullable|string',
             'price' => 'sometimes|nullable|string|max:100',
             'price_raw' => 'sometimes|nullable|integer|min:0',
-            'status' => 'sometimes|string|in:draft,pending,approved,published,needs_review',
             'seller_id' => 'sometimes|nullable|integer|exists:sellers,id',
             'category_id' => 'sometimes|nullable|integer|exists:catalog_categories,id',
             'brand_id' => 'sometimes|nullable|integer|exists:brands,id',
         ]);
 
         $sp->update($data);
+
+        $sp->load('productSources.donorProduct');
+        return response()->json($this->formatSystemProductFull($sp->fresh()));
+    }
+
+    /**
+     * PATCH /api/v1/admin/system-products/{id}/moderate
+     * Только решение по очереди модерации (изоляция от парсера и от редактора карточки).
+     */
+    public function moderate(Request $request, int $id): JsonResponse
+    {
+        $sp = SystemProduct::findOrFail($id);
+
+        $data = $request->validate([
+            'status' => 'required|string|in:draft,pending,approved,published,needs_review',
+        ]);
+
+        $sp->update(['status' => $data['status']]);
 
         $sp->load('productSources.donorProduct');
         return response()->json($this->formatSystemProductFull($sp->fresh()));

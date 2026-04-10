@@ -2,7 +2,9 @@
 
 namespace App\Observers;
 
+use App\Jobs\EnsureSystemProductFromDonorJob;
 use App\Models\Product;
+use App\Models\ProductSource;
 use App\Services\Catalog\DonorSyncAwarenessService;
 
 class ProductObserver
@@ -11,8 +13,26 @@ class ProductObserver
         private DonorSyncAwarenessService $awarenessService
     ) {}
 
+    public function created(Product $product): void
+    {
+        EnsureSystemProductFromDonorJob::dispatch($product->id);
+    }
+
     public function updated(Product $product): void
     {
         $this->awarenessService->onDonorProductUpdated($product);
+
+        if (! filter_var(env('CATALOG_AUTO_INGEST_FROM_PARSER', true), FILTER_VALIDATE_BOOL)) {
+            return;
+        }
+
+        $hasParserSource = ProductSource::query()
+            ->where('donor_product_id', $product->id)
+            ->where('source', ProductSource::SOURCE_PARSER)
+            ->exists();
+
+        if (! $hasParserSource) {
+            EnsureSystemProductFromDonorJob::dispatch($product->id);
+        }
     }
 }

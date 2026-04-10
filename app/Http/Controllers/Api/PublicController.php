@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\ProductAttribute;
 use App\Models\Seller;
 use App\Models\FilterConfig;
+use App\Services\Catalog\PublicSystemCatalogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -16,12 +17,21 @@ use Illuminate\Http\Request;
  */
 class PublicController extends Controller
 {
+    private function useSystemProductCatalog(): bool
+    {
+        return filter_var(env('PUBLIC_CATALOG_USE_SYSTEM_PRODUCTS', false), FILTER_VALIDATE_BOOL);
+    }
+
     /**
      * GET /api/v1/public/menu
      * Иерархия категорий для навигации
      */
     public function menu(): JsonResponse
     {
+        if ($this->useSystemProductCatalog()) {
+            return app(PublicSystemCatalogService::class)->menu();
+        }
+
         $categories = Category::where('enabled', true)
             ->whereNull('parent_id')
             ->orderBy('sort_order')
@@ -40,6 +50,10 @@ class PublicController extends Controller
      */
     public function categoryProducts(Request $request, string $slug): JsonResponse
     {
+        if ($this->useSystemProductCatalog()) {
+            return app(PublicSystemCatalogService::class)->categoryProducts($request, $slug);
+        }
+
         $category = Category::where('slug', $slug)
             ->where('enabled', true)
             ->firstOrFail();
@@ -105,6 +119,10 @@ class PublicController extends Controller
      */
     public function product(string $externalId): JsonResponse
     {
+        if ($this->useSystemProductCatalog()) {
+            return app(PublicSystemCatalogService::class)->product($externalId);
+        }
+
         $product = Product::where('external_id', $externalId)
             ->where('status', 'active')
             ->with([
@@ -140,6 +158,10 @@ class PublicController extends Controller
      */
     public function seller(Request $request, string $slug): JsonResponse
     {
+        if ($this->useSystemProductCatalog()) {
+            return app(PublicSystemCatalogService::class)->seller($request, $slug);
+        }
+
         $seller = Seller::where('slug', $slug)->where('status', 'active')->firstOrFail();
 
         $products = Product::where('seller_id', $seller->id)
@@ -212,6 +234,10 @@ class PublicController extends Controller
      */
     public function featured(Request $request): JsonResponse
     {
+        if ($this->useSystemProductCatalog()) {
+            return app(PublicSystemCatalogService::class)->featured($request);
+        }
+
         $limit = min((int) $request->input('limit', 24), 60);
         $products = Product::where('status', 'active')
             ->where('is_relevant', true)

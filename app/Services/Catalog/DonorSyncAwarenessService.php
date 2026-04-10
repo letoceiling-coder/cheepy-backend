@@ -28,9 +28,16 @@ class DonorSyncAwarenessService
 
         foreach ($sources as $source) {
             $lastSeen = $source->donor_updated_at;
+            $systemProduct = $source->systemProduct;
+            if ($systemProduct === null) {
+                continue;
+            }
 
             if ($lastSeen === null || $donorUpdatedAt->gt($lastSeen)) {
-                $source->systemProduct->update(['status' => SystemProduct::STATUS_NEEDS_REVIEW]);
+                // Не снимаем published автоматически — витрина остаётся стабильной; фиксируем дрейф донора.
+                if ($systemProduct->status !== SystemProduct::STATUS_PUBLISHED) {
+                    $systemProduct->update(['status' => SystemProduct::STATUS_NEEDS_REVIEW]);
+                }
             }
 
             $source->update(['donor_updated_at' => $donorUpdatedAt]);

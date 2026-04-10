@@ -1,0 +1,43 @@
+---
+description: Два проекта — cheepy (фронт) и sadavod-laravel (бек); этот репо — Laravel API
+alwaysApply: true
+---
+
+# Границы репозиториев (фиксированная схема)
+
+## Локальные пути
+
+| Роль | Путь | Стек |
+|------|------|------|
+| **Frontend** | `C:\OSPanel\domains\cheepy` | Vite, React, TS |
+| **Backend (этот репозиторий)** | `C:\OSPanel\domains\sadavod-laravel` | Laravel, API, очереди, миграции |
+
+Два **отдельных Git-репозитория**: изменения API/БД — здесь; UI — только в `cheepy`.
+
+## Домена два
+
+- Клиент (витрина, CRM): отдельный хост (например `siteaacess.store`).
+- API: задаётся во фронте как `VITE_API_URL` (например `https://online-parser.siteaacess.store/api/v1`). Не путать с корнем SPA.
+
+## Ответственность этого репозитория
+
+- Маршруты `routes/api.php`, контроллеры, модели, миграции, jobs, парсер, публичное API, JWT admin.
+- Не добавлять сюда React/Vite-код.
+
+## Запрещено
+
+- Дублировать фронт внутри Laravel без причины.
+- Менять только документацию во фронте вместо правки контракта API здесь.
+
+## CRM и парсер — изоляция (категории и данные)
+
+- Донор: `products`, `donor_categories` — заполняет парсер; CRM каталог **не правит** эти сущности в обычном сценарии.
+- **Модерация:** только workflow (статус/причина) на CRM-записях; без смены продавца/категории/полей карточки через endpoint модерации; без записи в таблицы парсера. Правки витрины — отдельные use-case.
+- **Инжест** `system_products` — через **job**, не в одной транзакции с сохранением парсера.
+- Каталог Cheepy: `catalog_categories` + `category_mapping`; CRUD здесь и в admin catalog/mapping API.
+- `system_products.category_id` → `catalog_categories`; при импорте резолв через `DonorCategory` + `CategoryMapping` (`SystemProductFromDonorService`).
+- Модель `Category` / таблица `categories` (legacy, `linked_to_parser`) — не смешивать с деревом CRM без миграции; цель — публичное API на `catalog_categories` + опубликованные `system_products`.
+
+## Связанное правило (фронт-репо)
+
+Полный план CRM: в репозитории `cheepy` — `.cursor/rules/crm-implementation-roadmap.mdc`; дубликат плана: `.cursor/rules/crm-implementation-roadmap.mdc` здесь.
