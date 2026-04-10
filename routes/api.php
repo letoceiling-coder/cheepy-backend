@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\LogController;
 use App\Http\Controllers\Api\ParserController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\PublicController;
+use App\Http\Controllers\Api\CmsPublicController;
 use App\Http\Controllers\Api\SaasApiKeyController;
 use App\Http\Controllers\Api\SaasSearchController;
 use App\Http\Controllers\Api\SystemProductController;
@@ -432,6 +433,8 @@ Route::prefix('v1/public')->group(function () {
     Route::get('sellers/{slug}', [PublicController::class, 'seller']);
     Route::get('search', [PublicController::class, 'search']);
     Route::get('featured', [PublicController::class, 'featured']);
+    /** CMS: динамические страницы конструктора (path_prefix + slug, напр. p + summer-sale → /p/summer-sale на фронте) */
+    Route::get('cms/pages/{pathPrefix}/{slug}', [CmsPublicController::class, 'showByPath']);
 });
 
 // SaasSearchController not deployed
@@ -639,4 +642,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
 
     // CRM Media Library
     require base_path('routes/admin_media.php');
+
+    // CMS pages (конструктор, расширяемые блоки)
+    require base_path('routes/admin_cms.php');
 });
