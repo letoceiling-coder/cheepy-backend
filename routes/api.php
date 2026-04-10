@@ -645,4 +645,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
 
     // CMS pages (конструктор, расширяемые блоки)
     require base_path('routes/admin_cms.php');
+
+    // Конструктор витрины — шаблоны страниц (блоки в БД)
+    require base_path('routes/admin_constructor_layout.php');
 });
