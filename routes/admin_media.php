@@ -15,6 +15,7 @@ Route::prefix('admin/media')->group(function () {
     Route::delete('folders/{id}', [CrmMediaController::class, 'destroyFolder'])->whereNumber('id');
 
     Route::get('files', [CrmMediaController::class, 'files']);
+    Route::get('files/{id}/content', [CrmMediaController::class, 'streamContent'])->whereNumber('id');
     Route::post('files', [CrmMediaController::class, 'upload']);
     Route::post('files/move', [CrmMediaController::class, 'moveFiles']);
     Route::post('files/{id}/restore', [CrmMediaController::class, 'restore'])->whereNumber('id');

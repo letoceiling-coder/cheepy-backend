@@ -9,6 +9,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 /**
  * CRM медиабиблиотека: папки, файлы, корзина. Не затрагивает парсер / products.
@@ -127,6 +128,26 @@ class CrmMediaController extends Controller
                 'current_page' => $paginator->currentPage(),
                 'last_page' => $paginator->lastPage(),
             ],
+        ]);
+    }
+
+    /**
+     * Отдача файла с авторизацией (для превью в CRM, когда публичный /storage недоступен из браузера).
+     */
+    public function streamContent(int $id): BinaryFileResponse|JsonResponse
+    {
+        $media = CrmMediaFile::findOrFail($id);
+        if (! Storage::disk('public')->exists($media->path)) {
+            return response()->json(['message' => 'Файл не найден на диске'], 404);
+        }
+
+        $absolute = Storage::disk('public')->path($media->path);
+        $safeName = str_replace(["\r", "\n", '"'], '', $media->original_name);
+
+        return response()->file($absolute, [
+            'Content-Type' => $media->mime_type ?: 'application/octet-stream',
+            'Content-Disposition' => 'inline; filename="'.$safeName.'"',
+            'Cache-Control' => 'private, max-age=300',
         ]);
     }
 
