@@ -391,6 +391,9 @@ class SystemProductController extends Controller
             'price' => $sp->price,
             'price_raw' => $sp->price_raw,
             'status' => $sp->status,
+            'seller_id' => $sp->seller_id,
+            'category_id' => $sp->category_id,
+            'brand_id' => $sp->brand_id,
             'seller' => $sp->seller?->only(['id', 'name', 'slug']),
             'category' => $sp->category?->only(['id', 'name', 'slug']),
             'brand' => $sp->brand?->only(['id', 'name', 'slug']),
@@ -442,6 +445,10 @@ class SystemProductController extends Controller
                 ],
             ];
         })->toArray();
+
+        $donor = $sp->productSources->first()?->donorProduct;
+        $suggested = $this->fromDonorService->resolveMappedCatalogCategoryIdForDonorProduct($donor);
+        $base['mapping_suggested_category_id'] = $suggested;
 
         return $base;
     }

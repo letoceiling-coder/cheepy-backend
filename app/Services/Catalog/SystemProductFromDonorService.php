@@ -51,6 +51,18 @@ class SystemProductFromDonorService
         });
     }
 
+    /**
+     * products.category_id — FK на categories.id; в donor_categories.external_id хранится тот же id (после donor:sync).
+     */
+    public function resolveMappedCatalogCategoryIdForDonorProduct(?Product $donor): ?int
+    {
+        if ($donor === null || $donor->category_id === null) {
+            return null;
+        }
+
+        return $this->resolveCatalogCategoryId((int) $donor->category_id);
+    }
+
     private function resolveCatalogCategoryId(?int $parserCategoryId): ?int
     {
         if ($parserCategoryId === null) {
@@ -62,7 +74,12 @@ class SystemProductFromDonorService
             return null;
         }
 
-        $mapping = CategoryMapping::where('donor_category_id', $donorCat->id)->first();
+        $mapping = CategoryMapping::query()
+            ->where('donor_category_id', $donorCat->id)
+            ->orderByDesc('is_manual')
+            ->orderByDesc('confidence')
+            ->orderBy('catalog_category_id')
+            ->first();
 
         return $mapping?->catalog_category_id;
     }
