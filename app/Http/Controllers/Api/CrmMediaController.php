@@ -132,10 +132,11 @@ class CrmMediaController extends Controller
 
     public function upload(Request $request): JsonResponse
     {
+        // max в килобайтах; должно быть ≤ upload_max_filesize / post_max_size в php.ini
         $data = $request->validate([
             'folder_id' => 'required|integer|exists:crm_media_folders,id',
             'files' => 'required|array|min:1|max:50',
-            'files.*' => 'file|max:'.(1024 * 50),
+            'files.*' => 'file|max:'.(1024 * 100),
         ]);
 
         $trash = CrmMediaFolder::trashFolder();
