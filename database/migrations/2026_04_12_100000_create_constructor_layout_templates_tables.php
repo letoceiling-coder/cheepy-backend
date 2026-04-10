@@ -20,8 +20,10 @@ return new class extends Migration
 
         Schema::create('constructor_layout_template_blocks', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('constructor_layout_template_id')
-                ->constrained('constructor_layout_templates')
+            $table->unsignedBigInteger('constructor_layout_template_id');
+            $table->foreign('constructor_layout_template_id', 'fk_cl_blocks_template_id')
+                ->references('id')
+                ->on('constructor_layout_templates')
                 ->cascadeOnDelete();
             $table->unsignedInteger('sort_order')->default(0);
             $table->string('block_type', 120);
