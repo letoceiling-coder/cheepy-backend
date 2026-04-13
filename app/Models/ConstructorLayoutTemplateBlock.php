@@ -13,11 +13,18 @@ class ConstructorLayoutTemplateBlock extends Model
         'block_type',
         'settings',
         'client_key',
+        'is_enabled',
+        'is_required',
+        'is_locked',
+        'slot_key',
         'is_visible',
     ];
 
     protected $casts = [
         'settings' => 'array',
+        'is_enabled' => 'boolean',
+        'is_required' => 'boolean',
+        'is_locked' => 'boolean',
         'is_visible' => 'boolean',
     ];
 

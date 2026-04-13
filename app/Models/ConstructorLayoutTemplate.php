@@ -11,12 +11,19 @@ class ConstructorLayoutTemplate extends Model
         'template_key',
         'name',
         'description',
+        'template_type',
+        'page_scope',
+        'page_key',
         'is_system',
+        'is_editable',
+        'is_active',
         'sort_order',
     ];
 
     protected $casts = [
         'is_system' => 'boolean',
+        'is_editable' => 'boolean',
+        'is_active' => 'boolean',
     ];
 
     public function blocks(): HasMany
