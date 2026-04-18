@@ -29,8 +29,10 @@ final class QueueWorkerDiagnostics
         $psPhoto = self::countQueueWorkForQueueName($psOut, 'photos');
 
         $supOut = (string) (@shell_exec('supervisorctl status 2>/dev/null') ?? '');
-        $supParser = self::countSupervisorRunningLines($supOut, ['parser-worker']);
-        $supPhoto = self::countSupervisorRunningLines($supOut, ['photo-worker']);
+        // Production often uses [program:parser-worker-photos] — "photo-worker" is not a substring of that name.
+        // Also "parser-worker" matches "parser-worker-photos" — exclude photos group from parser count.
+        $supParser = self::countSupervisorRunningLines($supOut, ['parser-worker'], ['parser-worker-photos']);
+        $supPhoto = self::countSupervisorRunningLines($supOut, ['parser-worker-photos', 'photo-worker']);
 
         return [
             'parser_workers' => max($psParser, $supParser),
@@ -43,10 +45,14 @@ final class QueueWorkerDiagnostics
     }
 
     /**
-     * @param  array<int, string>  $programNameSubstrings
+     * @param  array<int, string>  $includeSubstrings  e.g. program group name fragment
+     * @param  array<int, string>  $excludeSubstrings  skip line if it contains any (after a positive include match)
      */
-    private static function countSupervisorRunningLines(string $supervisorOutput, array $programNameSubstrings): int
-    {
+    private static function countSupervisorRunningLines(
+        string $supervisorOutput,
+        array $includeSubstrings,
+        array $excludeSubstrings = [],
+    ): int {
         if ($supervisorOutput === '') {
             return 0;
         }
@@ -56,11 +62,22 @@ final class QueueWorkerDiagnostics
             if (! str_contains($line, 'RUNNING')) {
                 continue;
             }
-            foreach ($programNameSubstrings as $sub) {
-                if (str_contains($line, $sub)) {
-                    $n++;
-                    break;
+            foreach ($includeSubstrings as $sub) {
+                if (! str_contains($line, $sub)) {
+                    continue;
                 }
+                $skip = false;
+                foreach ($excludeSubstrings as $ex) {
+                    if (str_contains($line, $ex)) {
+                        $skip = true;
+                        break;
+                    }
+                }
+                if ($skip) {
+                    continue;
+                }
+                $n++;
+                break;
             }
         }
 

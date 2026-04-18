@@ -981,7 +981,7 @@ class ParserController extends Controller
             $warning = $warning ? ($warning.' '.$stallMsg) : $stallMsg;
         }
         if ($photosStalled) {
-            $pMsg = 'Очередь photos не обрабатывается: нет воркеров для очереди photos (photo-worker / `--queue=photos`).';
+            $pMsg = 'Очередь photos не обрабатывается: нет воркеров для очереди photos (supervisor: `photo-worker` или `parser-worker-photos`; команда: `--queue=photos`).';
             $warning = $warning ? ($warning.' '.$pMsg) : $pMsg;
         }
 
