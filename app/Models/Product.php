@@ -134,6 +134,57 @@ class Product extends Model
         return $this->hasMany(ProductAttribute::class);
     }
 
+    /** Похожие товары / другие цвета (блок .similar_products на доноре). */
+    public function similarLinks(): HasMany
+    {
+        return $this->hasMany(ProductSimilar::class, 'product_id')->orderBy('sort_order');
+    }
+
+    /**
+     * Обновить related_product_id у всех строк, где related_external_id = наш external_id
+     * (когда карточка донора только что импортирована).
+     */
+    public function refreshSimilarLinksPointingToMe(): void
+    {
+        $ext = (string) ($this->external_id ?? '');
+        if ($ext === '') {
+            return;
+        }
+        ProductSimilar::query()
+            ->where('related_external_id', $ext)
+            ->update(['related_product_id' => $this->id]);
+    }
+
+    /**
+     * Синхронизировать похожие товары из парсера (внешние id из /odejda/{id}).
+     *
+     * @param  list<string>  $externalIds  порядок как на странице донора
+     */
+    public function syncSimilarFromParser(array $externalIds): void
+    {
+        $own = (string) ($this->external_id ?? '');
+        $ids = [];
+        foreach ($externalIds as $ext) {
+            $ext = preg_replace('/\D/', '', (string) $ext);
+            if ($ext === '' || $ext === $own) {
+                continue;
+            }
+            $ids[] = $ext;
+        }
+        $ids = array_values(array_unique($ids));
+
+        ProductSimilar::query()->where('product_id', $this->id)->delete();
+
+        foreach ($ids as $i => $ext) {
+            ProductSimilar::query()->create([
+                'product_id' => $this->id,
+                'related_external_id' => $ext,
+                'related_product_id' => static::query()->where('external_id', $ext)->value('id'),
+                'sort_order' => $i,
+            ]);
+        }
+    }
+
     /**
      * Извлечь целочисленную цену из строки "900 ₽" или "900р" или "900"
      */
@@ -229,7 +280,10 @@ class Product extends Model
 
         unset($attrs['_merge_source']);
 
-        return static::updateOrCreate(['external_id' => $externalId], $attrs);
+        $product = static::updateOrCreate(['external_id' => $externalId], $attrs);
+        $product->refreshSimilarLinksPointingToMe();
+
+        return $product;
     }
 
     private static function isEmptyValue(mixed $value): bool

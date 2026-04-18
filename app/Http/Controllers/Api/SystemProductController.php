@@ -23,6 +23,26 @@ class SystemProductController extends Controller
     public function __construct(
         private SystemProductFromDonorService $fromDonorService
     ) {}
+
+    /**
+     * Связи для полной карточки CRM (в т.ч. похожие товары донора).
+     *
+     * @return array<int, string|\Closure>
+     */
+    private function relationsForSystemProductFull(): array
+    {
+        return [
+            'productSources.donorProduct.category:id,name,slug',
+            'productSources.donorProduct.seller:id,name,slug',
+            'productSources.donorProduct.similarLinks.relatedProduct:id,title,external_id,photos,photos_count,source_url',
+            'seller',
+            'category',
+            'brand',
+            'attributes',
+            'photos' => fn ($q) => $q->orderBy('sort_order'),
+        ];
+    }
+
     /**
      * GET /api/v1/system-products
      */
@@ -78,15 +98,7 @@ class SystemProductController extends Controller
      */
     public function show(int $id): JsonResponse
     {
-        $sp = SystemProduct::with([
-            'productSources.donorProduct.category:id,name,slug',
-            'productSources.donorProduct.seller:id,name,slug',
-            'seller',
-            'category',
-            'brand',
-            'attributes',
-            'photos' => fn ($q) => $q->orderBy('sort_order'),
-        ])->findOrFail($id);
+        $sp = SystemProduct::with($this->relationsForSystemProductFull())->findOrFail($id);
 
         return response()->json($this->formatSystemProductFull($sp));
     }
@@ -129,7 +141,7 @@ class SystemProductController extends Controller
             ]);
         }
 
-        $sp->load('productSources.donorProduct');
+        $sp->load($this->relationsForSystemProductFull());
         return response()->json($this->formatSystemProductFull($sp), 201);
     }
 
@@ -154,8 +166,7 @@ class SystemProductController extends Controller
 
         $sp->update($data);
 
-        $sp->load('productSources.donorProduct');
-        return response()->json($this->formatSystemProductFull($sp->fresh()));
+        return response()->json($this->formatSystemProductFull($sp->fresh($this->relationsForSystemProductFull())));
     }
 
     /**
@@ -203,14 +214,7 @@ class SystemProductController extends Controller
             }
         });
 
-        return response()->json($this->formatSystemProductFull($sp->fresh()->load([
-            'productSources.donorProduct',
-            'seller',
-            'category',
-            'brand',
-            'attributes',
-            'photos',
-        ])));
+        return response()->json($this->formatSystemProductFull($sp->fresh($this->relationsForSystemProductFull())));
     }
 
     /**
@@ -281,14 +285,7 @@ class SystemProductController extends Controller
                 ->delete();
         });
 
-        return response()->json($this->formatSystemProductFull($sp->fresh()->load([
-            'productSources.donorProduct',
-            'seller',
-            'category',
-            'brand',
-            'attributes',
-            'photos',
-        ])));
+        return response()->json($this->formatSystemProductFull($sp->fresh($this->relationsForSystemProductFull())));
     }
 
     private function detectCrmAttrType(string $value): string
@@ -345,8 +342,7 @@ class SystemProductController extends Controller
 
         $sp->update(['status' => $data['status']]);
 
-        $sp->load('productSources.donorProduct');
-        return response()->json($this->formatSystemProductFull($sp->fresh()));
+        return response()->json($this->formatSystemProductFull($sp->fresh($this->relationsForSystemProductFull())));
     }
 
     /**
@@ -445,6 +441,39 @@ class SystemProductController extends Controller
         return null;
     }
 
+    /**
+     * Похожие товары донора (таблица product_similar), если связь загружена.
+     *
+     * @return list<array{related_external_id: string, related_product_id: int|null, sort_order: int, related: array<string, mixed>|null}>
+     */
+    private function formatDonorSimilarLinks(?Product $d): array
+    {
+        if ($d === null || ! $d->relationLoaded('similarLinks')) {
+            return [];
+        }
+
+        return $d->similarLinks->map(function ($row) {
+            $rel = $row->relatedProduct;
+            $thumb = null;
+            if ($rel && is_array($rel->photos) && isset($rel->photos[0])) {
+                $thumb = is_string($rel->photos[0]) ? $rel->photos[0] : null;
+            }
+
+            return [
+                'related_external_id' => $row->related_external_id,
+                'related_product_id' => $row->related_product_id,
+                'sort_order' => (int) $row->sort_order,
+                'related' => $rel ? [
+                    'id' => $rel->id,
+                    'title' => $rel->title,
+                    'external_id' => $rel->external_id,
+                    'source_url' => $rel->source_url,
+                    'thumbnail' => $thumb,
+                ] : null,
+            ];
+        })->values()->toArray();
+    }
+
     private function formatSystemProductFull(SystemProduct $sp): array
     {
         $base = $this->formatSystemProduct($sp);
@@ -484,6 +513,7 @@ class SystemProductController extends Controller
                     'thumbnail' => $firstPhoto,
                     'category' => $d->category?->only(['id', 'name', 'slug']),
                     'seller' => $d->seller?->only(['id', 'name', 'slug']),
+                    'similar_products' => $this->formatDonorSimilarLinks($d),
                 ],
             ];
         })->toArray();

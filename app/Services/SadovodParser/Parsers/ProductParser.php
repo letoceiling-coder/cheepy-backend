@@ -17,7 +17,7 @@ class ProductParser
     /**
      * Parse product page: photos, characteristics, description, seller link.
      *
-     * @return array{id: string, title: string, price: string, photos: array, characteristics: array, description: string, category: array, seller: array}
+     * @return array{id: string, title: string, price: string, photos: array, characteristics: array, description: string, category: array, seller: array, similar_external_ids: list<string>}
      */
     public function parse(string $path): array
     {
@@ -36,6 +36,7 @@ class ProductParser
         $description = $this->extractDescription($crawler);
         $category = $this->extractCategory($crawler);
         $seller = $this->extractSellerBlock($crawler);
+        $similarExternalIds = $this->extractSimilarExternalIds($crawler, $id);
 
         return [
             'id' => $id,
@@ -46,7 +47,42 @@ class ProductParser
             'description' => $description,
             'category' => $category,
             'seller' => $seller,
+            'similar_external_ids' => $similarExternalIds,
         ];
+    }
+
+    /**
+     * «Похожие» / другие цвета: ссылки из блока .similar_products → /odejda/{id}.
+     *
+     * @return list<string>
+     */
+    private function extractSimilarExternalIds(Crawler $crawler, string $currentId): array
+    {
+        $ids = [];
+        try {
+            $crawler->filter('.similar_products a[href*="/odejda/"]')->each(function (Crawler $a) use (&$ids) {
+                $href = (string) ($a->attr('href') ?? '');
+                if (preg_match('#/odejda/(\d+)#', $href, $m)) {
+                    $ids[] = $m[1];
+                }
+            });
+        } catch (\Throwable $e) {
+        }
+
+        $out = [];
+        $seen = [];
+        foreach ($ids as $ext) {
+            if ($ext === $currentId) {
+                continue;
+            }
+            if (isset($seen[$ext])) {
+                continue;
+            }
+            $seen[$ext] = true;
+            $out[] = $ext;
+        }
+
+        return $out;
     }
 
     private function extractTitle(Crawler $crawler): string

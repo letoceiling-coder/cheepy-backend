@@ -762,6 +762,8 @@ class DatabaseParserService
                 'is_new' => $isNew,
             ]);
 
+            $product->syncSimilarFromParser($pData['similar_external_ids'] ?? []);
+
             if ($seller) {
                 $seller->increment('products_count');
             }

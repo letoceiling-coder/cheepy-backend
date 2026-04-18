@@ -47,7 +47,16 @@ class SystemProductFromDonorService
             $this->copyAttributes($donor, $sp);
             $this->copyPhotos($donor, $sp);
 
-            return $sp->load(['productSources.donorProduct', 'attributes', 'photos', 'seller', 'category', 'brand']);
+            return $sp->load([
+                'productSources.donorProduct.category:id,name,slug',
+                'productSources.donorProduct.seller:id,name,slug',
+                'productSources.donorProduct.similarLinks.relatedProduct:id,title,external_id,photos,photos_count,source_url',
+                'attributes',
+                'photos',
+                'seller',
+                'category',
+                'brand',
+            ]);
         });
     }
 
