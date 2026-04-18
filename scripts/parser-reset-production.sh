@@ -31,27 +31,30 @@ if [ -n "$PREFIX" ]; then
 fi
 
 echo ""
-echo "=== Step 5: Clean parser database data ==="
-php scripts/truncate-parser-tables.php
-
-echo ""
-echo "=== Step 6: Deploy latest code & clear caches ==="
+echo "=== Step 5: Deploy latest code & clear caches (перед очисткой — актуальный список таблиц) ==="
 git pull
 php artisan config:clear
 php artisan cache:clear
 php artisan route:clear
 php artisan view:clear
+
+echo ""
+echo "=== Step 6: Clean parser database data (products + связи) ==="
+php artisan parser:wipe-donor-products --force
+
+echo ""
+echo "=== Step 7: Queue restart after wipe ==="
 php artisan queue:restart
 
 echo ""
-echo "=== Step 7: Start workers ==="
+echo "=== Step 8: Start workers ==="
 supervisorctl start 'parser-worker:*' 2>/dev/null || true
 supervisorctl start 'parser-worker-photos:*' 2>/dev/null || true
 sleep 2
 supervisorctl status || true
 
 echo ""
-echo "=== Step 8: Verify clean state ==="
+echo "=== Step 9: Verify clean state ==="
 echo "Redis queues:"
 redis-cli -n 0 LLEN queues:parser 2>/dev/null || echo "0"
 redis-cli -n 0 LLEN queues:photos 2>/dev/null || echo "0"
@@ -63,7 +66,7 @@ echo "=== Step 9: Start first clean parser run ==="
 php scripts/start-parser-job.php || true
 
 echo ""
-echo "=== Step 10: Brief wait and queue check ==="
+echo "=== Step 11: Brief wait and queue check ==="
 sleep 5
 echo "Queue length (parser):"
 redis-cli -n 0 LLEN queues:parser 2>/dev/null || echo "0"
@@ -71,7 +74,7 @@ echo "Last log lines:"
 tail -n 30 storage/logs/laravel.log 2>/dev/null || true
 
 echo ""
-echo "=== Step 11: Final diagnostics ==="
+echo "=== Step 12: Final diagnostics ==="
 echo "1) supervisorctl status:"
 supervisorctl status || true
 echo "2) Redis queue size (parser / photos):"
