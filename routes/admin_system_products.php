@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\AdminSiteAlChatController;
 use App\Http\Controllers\Api\SystemProductController;
 use Illuminate\Support\Facades\Route;
 
@@ -12,9 +13,11 @@ use Illuminate\Support\Facades\Route;
 | PATCH  /api/v1/admin/system-products/{id}/moderate  — только статус (модерация)
 | PATCH  /api/v1/admin/system-products/{id}           — карточка каталога (без статуса)
 | POST   /api/v1/admin/system-products/create-from-donor
+| POST   /api/v1/admin/site-al/chat                   — прокси к внешнему агенту (описания CRM)
 */
 
 Route::prefix('admin')->group(function () {
+    Route::post('site-al/chat', [AdminSiteAlChatController::class, 'chat']);
     Route::post('system-products/create-from-donor', [SystemProductController::class, 'createFromDonor']);
     Route::patch('system-products/{id}/moderate', [SystemProductController::class, 'moderate'])->whereNumber('id');
     Route::patch('system-products/{id}/crm-attributes', [SystemProductController::class, 'syncCrmAttributes'])->whereNumber('id');

@@ -43,4 +43,12 @@ return [
         'daily_limit' => (int) env('OPENAI_DAILY_EMBEDDING_LIMIT', 10000),
     ],
 
+    /** Внешний чат-агент (CRM модерация описаний и др.) — ключ только на сервере. */
+    'site_al' => [
+        'base_url' => rtrim(env('SITE_AL_BASE_URL', 'https://site-al.ru/api/v1'), '/'),
+        'api_key' => env('SITE_AL_API_KEY'),
+        'agent_id' => env('SITE_AL_AGENT_ID'),
+        'timeout' => (int) env('SITE_AL_TIMEOUT', 120),
+    ],
+
 ];
