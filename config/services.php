@@ -49,6 +49,8 @@ return [
         'api_key' => env('SITE_AL_API_KEY'),
         'agent_id' => env('SITE_AL_AGENT_ID'),
         'timeout' => (int) env('SITE_AL_TIMEOUT', 120),
+        /** Vision / product-photos/verify может работать дольше чата. */
+        'photo_verify_timeout' => (int) env('SITE_AL_PHOTO_VERIFY_TIMEOUT', 180),
     ],
 
 ];
