@@ -15,6 +15,20 @@ use Illuminate\Support\Facades\Log;
  */
 class AdminSiteAlChatController extends Controller
 {
+    /**
+     * Жёсткое требование языка для CRM-витрины (снижает «ответы» модели на китайском/английских отказах).
+     */
+    private const RUSSIAN_OUTPUT_PREAMBLE = <<<'TXT'
+КРИТИЧЕСКОЕ ТРЕБОВАНИЕ К ИТОГОВОМУ ОТВЕТУ:
+— Пиши только по-русски: основной текст — кириллица, как на витрине маркетплейса в России.
+— Латиница допустима только в уместных местах (маркировки размеров S/M/L, бренды из исходных данных, единицы измерения, если они уже в материале). Не добавляй новые английские предложения и служебные фразы.
+— Запрещено: китайские, японские, корейские и прочие символы; фразы вроде «please rephrase», просьбы перейти на английский, «将需求», вставки вроде «冷水，请您…».
+— Не отказывайся и не проси пользователя переформулировать запрос — просто выполни задачу по-русски.
+
+Ниже — фактическое задание от оператора CRM:
+
+TXT;
+
     public function chat(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -43,7 +57,7 @@ class AdminSiteAlChatController extends Controller
 
         $payload = [
             'agentId' => $agentId,
-            'message' => $validated['message'],
+            'message' => self::RUSSIAN_OUTPUT_PREAMBLE.$validated['message'],
         ];
         if (! empty($validated['conversationId'])) {
             $payload['conversationId'] = $validated['conversationId'];
