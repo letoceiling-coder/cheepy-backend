@@ -492,6 +492,17 @@ class ParserController extends Controller
 
             Config::set('parser.use_proxy', $networkMode === 'proxy');
 
+            // Нет активного ParserJob — снимаем залипший Redis-lock (после сбоя без ParserFinished / после wipe БД).
+            $activeParserJob = ParserJob::whereIn('status', ['running', 'pending'])->exists();
+            if (! $activeParserJob) {
+                try {
+                    Redis::del('parser_lock');
+                    Redis::del('parser_running');
+                } catch (\Throwable $e) {
+                    Log::warning('start-daemon: could not clear stale parser locks', ['error' => $e->getMessage()]);
+                }
+            }
+
             ParserState::current()->update([
                 'status' => ParserState::STATUS_RUNNING,
                 'network_mode' => $networkMode,

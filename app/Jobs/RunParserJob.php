@@ -10,6 +10,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redis;
 
 /**
  * Queue job to run the parser.
@@ -75,5 +76,12 @@ class RunParserJob implements ShouldQueue
         Log::error("RunParserJob permanently failed for job {$this->jobId}", [
             'exception' => $exception->getMessage(),
         ]);
+
+        // Иначе parser_lock остаётся до TTL (2ч) без ParserFinished — блокирует ручной старт и демон.
+        try {
+            Redis::del('parser_lock');
+        } catch (\Throwable $e) {
+            // ignore
+        }
     }
 }
