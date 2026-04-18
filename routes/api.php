@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\SellerController;
 use App\Http\Controllers\Api\SettingController;
 use App\Http\Controllers\DeployController;
 use App\Http\Middleware\JwtMiddleware;
+use App\Support\ReverbProcessProbe;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Route;
 
@@ -54,20 +55,7 @@ Route::prefix('v1')->group(function () {
             $redis = 'failed';
         }
 
-        $reverb = 'stopped';
-        try {
-            $port = (int) (config('reverb.servers.reverb.port') ?? env('REVERB_SERVER_PORT', 8080));
-            $fp = @fsockopen('127.0.0.1', $port, $errno, $errstr, 2);
-            if ($fp) {
-                fclose($fp);
-                $reverb = 'running';
-            } elseif (function_exists('shell_exec')) {
-                $ps = trim((string) shell_exec('ps aux | grep reverb | grep -v grep'));
-                $reverb = $ps !== '' ? 'running' : 'stopped';
-            }
-        } catch (\Throwable $e) {
-            $reverb = 'stopped';
-        }
+        $reverb = ReverbProcessProbe::websocketStatus();
 
         $queueWorkers = 0;
         try {
@@ -94,20 +82,7 @@ Route::prefix('v1')->group(function () {
             $redis = 'failed';
         }
 
-        $reverb = 'stopped';
-        try {
-            $port = (int) (config('reverb.servers.reverb.port') ?? env('REVERB_SERVER_PORT', 8080));
-            $fp = @fsockopen('127.0.0.1', $port, $errno, $errstr, 2);
-            if ($fp) {
-                fclose($fp);
-                $reverb = 'running';
-            } elseif (function_exists('shell_exec')) {
-                $ps = trim((string) shell_exec('ps aux | grep reverb | grep -v grep'));
-                $reverb = $ps !== '' ? 'running' : 'stopped';
-            }
-        } catch (\Throwable $e) {
-            $reverb = 'stopped';
-        }
+        $reverb = ReverbProcessProbe::websocketStatus();
 
         $queueWorkers = 0;
         try {
