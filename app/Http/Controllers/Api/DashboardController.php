@@ -39,7 +39,8 @@ class DashboardController extends Controller
         $activeSellers = Seller::where('status', 'active')->count();
 
         $lastJob = ParserJob::where('status', 'completed')->latest('finished_at')->first();
-        $runningJob = ParserJob::where('status', 'running')->first();
+        // Align with /system/status and /admin/parser/status: pending is still an active run.
+        $runningJob = ParserJob::whereIn('status', ['running', 'pending'])->first();
 
         $recentLogs = ParserLog::with('job:id,type,status')
             ->latest('logged_at')

@@ -16,6 +16,7 @@ use App\Services\Parser\ParserLogger;
 use App\Services\DatabaseParserService;
 use App\Support\ParserJobOptions;
 use App\Support\ParserProxyState;
+use App\Support\QueueWorkerDiagnostics;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
@@ -552,16 +553,28 @@ class ParserController extends Controller
         $lastCompleted = ParserJob::where('status', 'completed')->latest()->first();
 
         $queueParser = 0;
+        $queueDefault = 0;
         $queuePhotos = 0;
         try {
-            $conn = \Illuminate\Support\Facades\Queue::connection('redis');
+            $conn = \Illuminate\Support\Facades\Queue::connection(config('queue.default'));
             $queueParser = $conn->size('parser');
+            $queueDefault = $conn->size('default');
             $queuePhotos = $conn->size('photos');
         } catch (\Throwable $e) {
             // ignore
         }
 
-        $warning = $this->detectParserWarning($running, $queueParser + $queuePhotos);
+        $workerSnap = QueueWorkerDiagnostics::snapshot();
+        $workersRunning = $workerSnap['parser_workers'];
+        $photoWorkersRunning = $workerSnap['photo_workers'];
+        $queueStalled = ($queueParser + $queueDefault) > 0 && $workersRunning === 0;
+        $photosStalled = $queuePhotos > 0 && $photoWorkersRunning === 0;
+
+        $warning = $this->mergeStaleWorkerWarnings(
+            $this->detectParserWarning($running, $queueParser + $queueDefault + $queuePhotos),
+            $queueStalled,
+            $photosStalled
+        );
 
         $parserState = ParserState::current();
         $proxyState = ParserProxyState::snapshot();
@@ -573,8 +586,13 @@ class ParserController extends Controller
             'current_job'         => $running ? $this->formatJob($running) : null,
             'last_completed'      => $lastCompleted ? $this->formatJob($lastCompleted) : null,
             'queue_parser_size'   => $queueParser,
+            'queue_default_size'  => $queueDefault,
             'queue_photos_size'   => $queuePhotos,
-            'queue_total_size'    => $queueParser + $queuePhotos,
+            'queue_total_size'    => $queueParser + $queueDefault + $queuePhotos,
+            'workers_running'     => $workersRunning,
+            'photo_workers_running' => $photoWorkersRunning,
+            'queue_workers_stalled' => $queueStalled,
+            'photo_queue_workers_stalled' => $photosStalled,
             'proxy_blocked'       => $proxyState['blocked'],
             'proxy_blocked_until' => $proxyState['blocked_until'],
             'proxy_block_reason'  => $proxyState['reason'],
@@ -622,20 +640,12 @@ class ParserController extends Controller
             // ignore
         }
 
-        $workersRunning = 0;
-        if (function_exists('shell_exec')) {
-            $supervisor = (string) (@shell_exec('supervisorctl status 2>/dev/null') ?? '');
-            if ($supervisor !== '') {
-                foreach (preg_split('/\R/', $supervisor) as $line) {
-                    if (str_contains($line, 'parser-worker') && str_contains($line, 'RUNNING')) {
-                        $workersRunning++;
-                    }
-                }
-            } else {
-                $out = @shell_exec('ps aux 2>/dev/null | grep -E "artisan queue:work" | grep -v grep | wc -l');
-                $workersRunning = (int) trim((string) ($out ?? '0'));
-            }
-        }
+        $workerSnap = QueueWorkerDiagnostics::snapshot();
+        $workersRunning = $workerSnap['parser_workers'];
+        $photoWorkersRunning = $workerSnap['photo_workers'];
+
+        $queueStalled = ($queueParser + $queueDefault) > 0 && $workersRunning === 0;
+        $photosStalled = $queuePhotos > 0 && $photoWorkersRunning === 0;
 
         $lastErrors = ParserLog::whereIn('level', ['error', 'warn'])
             ->latest('logged_at')
@@ -662,8 +672,23 @@ class ParserController extends Controller
             ->count();
         $errorsTodayParserLogs = (int) ParserLog::where('level', 'error')->whereDate('logged_at', today())->count();
 
+        $warning = $this->mergeStaleWorkerWarnings(
+            $this->detectParserWarning($running, $queueParser + $queueDefault + $queuePhotos),
+            $queueStalled,
+            $photosStalled
+        );
+
         return response()->json([
             'workers_running' => $workersRunning,
+            'photo_workers_running' => $photoWorkersRunning,
+            'queue_workers_stalled' => $queueStalled,
+            'photo_queue_workers_stalled' => $photosStalled,
+            'workers_detection' => [
+                'supervisor_parser' => $workerSnap['supervisor_parser'],
+                'ps_parser' => $workerSnap['ps_parser'],
+                'supervisor_photo' => $workerSnap['supervisor_photo'],
+                'ps_photo' => $workerSnap['ps_photo'],
+            ],
             'parser_running' => $running !== null,
             'daemon_enabled' => $parserState->status === ParserState::STATUS_RUNNING,
             'parser_state' => $parserState->status,
@@ -693,7 +718,7 @@ class ParserController extends Controller
             'last_errors' => $lastErrors,
             'error_frequency' => ['last_hour' => $errorsPerHour],
             'progress' => $progress,
-            'warning' => $this->detectParserWarning($running, $queueParser + $queueDefault + $queuePhotos),
+            'warning' => $warning,
             'proxy_status' => $proxyOk ? 'ok' : 'failed',
             'proxy_probe_reason' => $proxyProbe['reason'] ?? null,
             'proxy_blocked' => $proxyState['blocked'],
@@ -723,15 +748,7 @@ class ParserController extends Controller
             // ignore
         }
 
-        $workersRunning = 0;
-        if (function_exists('shell_exec')) {
-            $supervisor = (string) (@shell_exec('supervisorctl status 2>/dev/null') ?? '');
-            foreach (preg_split('/\R/', $supervisor) as $line) {
-                if (str_contains($line, 'parser-worker') && str_contains($line, 'RUNNING')) {
-                    $workersRunning++;
-                }
-            }
-        }
+        $workersRunning = QueueWorkerDiagnostics::snapshot()['parser_workers'];
 
         $proxyProbe = $this->checkProxyAvailability(true);
         $proxyOk = $proxyProbe['proxy_ok'];
@@ -955,6 +972,20 @@ class ParserController extends Controller
             }
         }
         return null;
+    }
+
+    private function mergeStaleWorkerWarnings(?string $warning, bool $queueStalled, bool $photosStalled): ?string
+    {
+        if ($queueStalled) {
+            $stallMsg = 'Очередь parser/default не обрабатывается: нет процессов queue:work для очереди parser (проверьте supervisor: parser-worker или `php artisan queue:work redis --queue=parser`).';
+            $warning = $warning ? ($warning.' '.$stallMsg) : $stallMsg;
+        }
+        if ($photosStalled) {
+            $pMsg = 'Очередь photos не обрабатывается: нет воркеров для очереди photos (photo-worker / `--queue=photos`).';
+            $warning = $warning ? ($warning.' '.$pMsg) : $pMsg;
+        }
+
+        return $warning;
     }
 
     /**
