@@ -92,32 +92,103 @@ class ProductParser
 
     private function extractPhotos(Crawler $crawler, string $baseUrl): array
     {
-        $photos = [];
+        $baseUrl = rtrim($baseUrl, '/');
+
+        // sadovodbaza.ru: основные кадры только в Swiper; «похожие цвета» (.similar_products) и «Товары магазина»
+        // (.product-list / .shop-product) — другие товары, их нельзя смешивать с галереей карточки.
+        $gallerySelectors = [
+            '.product-view .mySwiper img',
+            '.product-view .swiper-slide img',
+            '.product-gallery img',
+            'main .carousel img',
+            'main [class*="swiper"] .swiper-slide img',
+        ];
+
+        foreach ($gallerySelectors as $selector) {
+            try {
+                $batch = $this->collectProductPhotoUrls($crawler->filter($selector), $baseUrl, false);
+                if ($batch !== []) {
+                    return $batch;
+                }
+            } catch (\Throwable $e) {
+                // неверный селектор / пустой узел
+            }
+        }
+
         try {
-            $crawler->filter('main img[src*="odejda"], .product-gallery img, .carousel img, [class*="gallery"] img')->each(function (Crawler $node) use (&$photos, $baseUrl) {
-                $src = $node->attr('src') ?? $node->attr('data-src');
-                if (!$src) {
-                    return;
-                }
-                $url = str_starts_with($src, 'http') ? $src : $baseUrl . '/' . ltrim($src, '/');
-                if (!in_array($url, $photos, true)) {
-                    $photos[] = $url;
-                }
-            });
+            $batch = $this->collectProductPhotoUrls($crawler->filter('main img'), $baseUrl, true);
+            if ($batch !== []) {
+                return $batch;
+            }
         } catch (\Throwable $e) {
         }
-        if (empty($photos)) {
-            $crawler->filter('main img')->each(function (Crawler $node) use (&$photos, $baseUrl) {
-                $src = $node->attr('src') ?? $node->attr('data-src');
-                if ($src && (str_contains($src, 'odejda') || str_contains($src, 'upload'))) {
-                    $url = str_starts_with($src, 'http') ? $src : $baseUrl . '/' . ltrim($src, '/');
-                    if (!in_array($url, $photos, true)) {
-                        $photos[] = $url;
+
+        return [];
+    }
+
+    /**
+     * @param  bool  $fallbackRules  если true — только uploaded_files / img_big, без _img_mini (превью других цветов)
+     */
+    private function collectProductPhotoUrls(Crawler $images, string $baseUrl, bool $fallbackRules): array
+    {
+        $out = [];
+        $images->each(function (Crawler $node) use (&$out, $baseUrl, $fallbackRules) {
+            if ($this->isInsideExcludedPhotoContainer($node)) {
+                return;
+            }
+            $src = $node->attr('src') ?? $node->attr('data-src');
+            if (! $src || str_contains($src, 'data:image')) {
+                return;
+            }
+            $lower = strtolower($src);
+            if ($fallbackRules) {
+                if (! str_contains($lower, 'uploaded_files') && ! str_contains($lower, 'img_big')) {
+                    return;
+                }
+                if (str_contains($lower, '_img_mini')) {
+                    return;
+                }
+            }
+            $url = str_starts_with($src, 'http') ? $src : $baseUrl.'/'.ltrim($src, '/');
+            if (! in_array($url, $out, true)) {
+                $out[] = $url;
+            }
+        });
+
+        return $out;
+    }
+
+    /**
+     * Исключаем миниатюры других цветов, сетку «Товары магазина», аватар продавца и т.п.
+     */
+    private function isInsideExcludedPhotoContainer(Crawler $imgNode): bool
+    {
+        $n = $imgNode->getNode(0);
+        $needles = [
+            'similar_products',
+            'similar_product',
+            'product-list',
+            'shop-product',
+            'shop-product-item',
+            'shop-product-img',
+            'shop-avatar',
+            'shop-contact',
+        ];
+        while ($n) {
+            if ($n instanceof \DOMElement) {
+                $class = $n->getAttribute('class');
+                if ($class !== '') {
+                    foreach ($needles as $needle) {
+                        if (str_contains($class, $needle)) {
+                            return true;
+                        }
                     }
                 }
-            });
+            }
+            $n = $n->parentNode;
         }
-        return $photos;
+
+        return false;
     }
 
     private function extractCharacteristics(Crawler $crawler): array
