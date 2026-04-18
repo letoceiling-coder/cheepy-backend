@@ -15,13 +15,20 @@ use Illuminate\Support\Facades\Log;
  */
 class AdminSiteAlProductPhotoController extends Controller
 {
+    /** Совпадает с дефолтом site-al PRODUCT_PHOTO_VERIFY_MAX_ITEMS (24). */
+    private const MAX_PHOTOS_PER_REQUEST = 24;
+
     public function verify(Request $request): JsonResponse
     {
+        $request->merge([
+            'productName' => trim((string) $request->input('productName', '')),
+        ]);
+
         $validated = $request->validate([
-            'productName' => ['required', 'string', 'max:500'],
+            'productName' => ['required', 'string', 'min:1', 'max:500'],
             'description' => ['nullable', 'string', 'max:50000'],
             'color' => ['nullable', 'string', 'max:200'],
-            'photos' => ['required', 'array', 'min:1', 'max:40'],
+            'photos' => ['required', 'array', 'min:1', 'max:'.self::MAX_PHOTOS_PER_REQUEST],
             'photos.*.url' => ['required', 'string', 'max:2000'],
             'options' => ['nullable', 'array'],
             'options.minConfidence' => ['nullable', 'numeric', 'between:0,1'],
@@ -38,9 +45,25 @@ class AdminSiteAlProductPhotoController extends Controller
             ], 503);
         }
 
+        $photoRows = array_values($validated['photos']);
+        $photoRows = array_map(function (array $p) {
+            return ['url' => trim((string) ($p['url'] ?? ''))];
+        }, $photoRows);
+        $photoRows = array_values(array_filter($photoRows, fn ($p) => $p['url'] !== ''));
+        $photoRows = array_values(array_filter(
+            $photoRows,
+            fn ($p) => (bool) preg_match('#^https://#i', $p['url'])
+        ));
+
+        if ($photoRows === []) {
+            return response()->json([
+                'message' => 'Нет ни одного URL с https:// в photos (внешний сервис качает картинки по ссылке).',
+            ], 422);
+        }
+
         $payload = [
             'productName' => $validated['productName'],
-            'photos' => array_map(fn ($p) => ['url' => $p['url']], $validated['photos']),
+            'photos' => $photoRows,
         ];
         if (array_key_exists('description', $validated) && $validated['description'] !== null) {
             $payload['description'] = $validated['description'];
@@ -79,8 +102,18 @@ class AdminSiteAlProductPhotoController extends Controller
                     ? $body['message']
                     : 'Сервис проверки фото вернул HTTP '.$response->status());
 
+            Log::warning('site-al product-photos verify upstream error', [
+                'status' => $response->status(),
+                'body' => $body,
+            ]);
+
+            $out = is_array($body) ? $body : ['message' => $msg];
+            if (! isset($out['message']) && $msg !== '') {
+                $out['message'] = $msg;
+            }
+
             return response()->json(
-                is_array($body) ? $body : ['message' => $msg],
+                $out,
                 $response->status() >= 400 && $response->status() < 600 ? $response->status() : 502
             );
         }
