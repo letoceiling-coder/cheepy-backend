@@ -42,6 +42,24 @@ class ParserDaemonJob implements ShouldQueue
             return;
         }
 
+        // Страховка: даже если активный ParserJob помечен completed, а в очереди всё ещё лежат
+        // ParseCategoryJob (pipeline ещё фактически работает) — не запускать новый full,
+        // иначе продублируем 100+ категорий поверх работающего прогона.
+        try {
+            $pendingCategoryJobs = (int) Queue::connection(config('queue.default'))->size('parser');
+        } catch (\Throwable $e) {
+            $pendingCategoryJobs = 0;
+        }
+        if ($pendingCategoryJobs > 0) {
+            Log::info('Parser daemon: queue has pending category jobs, skipping new run', [
+                'queue' => 'parser',
+                'pending' => $pendingCategoryJobs,
+            ]);
+            self::dispatch()->delay(now()->addSeconds(60));
+
+            return;
+        }
+
         Log::info('Parser daemon iteration started');
 
         try {

@@ -46,7 +46,14 @@ class RunParserJob implements ShouldQueue
             $job->update(['status' => 'running', 'started_at' => now()]);
             (new DatabaseParserService($job))->run();
             $job->refresh();
-            if ($job->status === 'running') {
+
+            // Для full-pipeline (type=full + total_categories>0) job завершает
+            // последний выполнившийся ParseCategoryJob через maybeCompleteFullPipelineJob().
+            // Если пометить completed здесь — UI сразу покажет «нет активного прогона»,
+            // ParserDaemonJob сочтёт, что можно стартовать новый full, и продублирует
+            // ещё 132 ParseCategoryJob поверх уже работающих.
+            $isPipelineInFlight = $job->type === 'full' && (int) $job->total_categories > 0;
+            if ($job->status === 'running' && ! $isPipelineInFlight) {
                 $job->update(['status' => 'completed', 'finished_at' => now()]);
             }
         } catch (\Throwable $e) {
