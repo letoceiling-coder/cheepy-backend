@@ -21,6 +21,9 @@ class ParserJobOptions
 
         $downloadPhotos = (bool) $s->download_photos;
         $storePhotoLinks = (bool) ($s->store_photo_links ?? true);
+        // По умолчанию true — старое поведение: парсер обновляет уже существующие товары.
+        // false — пропускать external_id, которые уже есть в products (быстрый режим «только новые»).
+        $updateExisting = (bool) ($s->update_existing ?? true);
 
         $options = [
             'categories' => $ids,
@@ -33,6 +36,7 @@ class ParserJobOptions
             'save_photos' => $downloadPhotos || $storePhotoLinks,
             'download_photos' => $downloadPhotos,
             'store_photo_links' => $storePhotoLinks,
+            'update_existing' => $updateExisting,
             'save_to_db' => true,
             'queue_threshold' => (int) $s->queue_threshold,
             'runtime' => self::runtimePayload($s),
@@ -76,6 +80,9 @@ class ParserJobOptions
         }
         if (array_key_exists('store_photo_links', $overrides)) {
             $base['store_photo_links'] = (bool) $overrides['store_photo_links'];
+        }
+        if (array_key_exists('update_existing', $overrides)) {
+            $base['update_existing'] = (bool) $overrides['update_existing'];
         }
         if (array_key_exists('save_to_db', $overrides)) {
             $base['save_to_db'] = (bool) $overrides['save_to_db'];

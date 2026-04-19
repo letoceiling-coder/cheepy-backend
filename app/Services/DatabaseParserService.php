@@ -542,6 +542,10 @@ class DatabaseParserService
         }
         $productLimit = (int) $this->requireOption($this->options, 'products_per_category');
         $saveDetails = ! ((bool) $this->requireOption($this->options, 'no_details'));
+        // По умолчанию true — старое поведение (full + update existing).
+        // false — режим «только новые»: пропускаем external_id, которые уже есть в products,
+        // экономим HTTP на детали товара (productParser->parse) и весь upsert/photos pipeline.
+        $updateExisting = (bool) ($this->options['update_existing'] ?? true);
 
         $page = 1;
         $savedCount = 0;
@@ -588,6 +592,27 @@ class DatabaseParserService
                     $this->updateJob(['total_pages' => $totalPages]);
                 }
 
+                // Режим «только новые»: одним SELECT WHERE IN отсекаем уже существующие external_id.
+                // Для крупной страницы (50 товаров) это 1 SQL вместо N HTTP-запросов на детали + upsert.
+                $existingIds = [];
+                if (! $updateExisting) {
+                    $pageIds = [];
+                    foreach ($products as $pData) {
+                        $eid = (string) ($pData['id'] ?? '');
+                        if ($eid !== '') {
+                            $pageIds[] = $eid;
+                        }
+                    }
+                    if ($pageIds !== []) {
+                        $existingIds = Product::whereIn('external_id', $pageIds)
+                            ->pluck('external_id')
+                            ->map(fn ($v) => (string) $v)
+                            ->all();
+                        $existingIds = array_flip($existingIds);
+                    }
+                }
+
+                $skippedExisting = 0;
                 foreach ($products as $pData) {
                     if ($this->isCancelled()) {
                         break 2;
@@ -600,6 +625,14 @@ class DatabaseParserService
                             'parser_job_id' => $this->job->id,
                         ]);
                         break 2;
+                    }
+
+                    if (! $updateExisting) {
+                        $eid = (string) ($pData['id'] ?? '');
+                        if ($eid !== '' && isset($existingIds[$eid])) {
+                            $skippedExisting++;
+                            continue;
+                        }
                     }
 
                     $saved = $this->saveProductFromListing($pData, $category, $saveDetails, $dispatchPhotosToQueue);
@@ -622,6 +655,8 @@ class DatabaseParserService
                         'category' => $slug,
                         'page' => $page,
                         'parser_job_id' => $this->job->id,
+                        'skipped_existing' => $skippedExisting,
+                        'update_existing' => $updateExisting,
                     ]);
                 }
 

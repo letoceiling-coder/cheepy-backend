@@ -89,6 +89,7 @@ class ParserController extends Controller
             'download_photos' => ['nullable', 'boolean'],
             'store_photo_links' => ['nullable', 'boolean'],
             'download_medium' => ['nullable', 'boolean'],
+            'update_existing' => ['nullable', 'boolean'],
             'max_workers' => ['nullable', 'integer', 'min:1', 'max:20'],
             'request_delay_min' => ['nullable', 'integer', 'min:100', 'max:10000'],
             'request_delay_max' => ['nullable', 'integer', 'min:100', 'max:15000'],
