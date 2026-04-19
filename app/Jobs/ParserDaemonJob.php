@@ -45,7 +45,9 @@ class ParserDaemonJob implements ShouldQueue
         Log::info('Parser daemon iteration started');
 
         try {
-            if (! Redis::set('parser_lock', 1, 'EX', 7200, 'NX')) {
+            // TTL 1200с (20 мин) вместо 2 часов: при падении воркера лок самосбросится
+            // быстрее, не блокируя демон/ручной старт. Heartbeat продлевает TTL каждые 30с.
+            if (! Redis::set('parser_lock', 1, 'EX', 1200, 'NX')) {
                 Log::warning('Parser daemon: could not acquire lock, skipping');
 
                 return;

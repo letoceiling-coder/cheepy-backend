@@ -100,13 +100,25 @@ class ParserWatchdog extends Command
 
         // If queue has jobs but no workers → restart workers
         if ($queueTotal > 0 && $workersCount === 0) {
-            Log::info('Parser watchdog: queue has jobs but workers=0, restarting workers', [
+            Log::warning('Parser watchdog: queue has jobs but workers=0, restarting workers', [
                 'queue_parser' => $queueParser,
                 'queue_photos' => $queuePhotos,
             ]);
             if (!$dryRun) {
+                // queue:restart посылает RESTART-флаг существующим воркерам.
+                // Если воркеры мертвы и supervisor их не поднял — флаг прочитать некому.
+                // Поэтому сначала явно стартуем supervisor-группы воркеров парсера/фото.
+                if (function_exists('shell_exec')) {
+                    $startCmds = [
+                        'supervisorctl start parser-worker:* 2>/dev/null',
+                        'supervisorctl start parser-worker-photos:* 2>/dev/null',
+                    ];
+                    foreach ($startCmds as $cmd) {
+                        @shell_exec($cmd);
+                    }
+                }
                 Artisan::call('queue:restart');
-                Log::info('Parser watchdog: sent queue:restart (workers will restart via supervisor)');
+                Log::info('Parser watchdog: started supervisor groups + sent queue:restart');
             }
             $this->info('Watchdog: restarted workers (queue had jobs, workers were dead)');
             return 0;

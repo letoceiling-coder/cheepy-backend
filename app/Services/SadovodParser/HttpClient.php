@@ -157,16 +157,30 @@ class HttpClient
      * Do NOT treat HTTP 200 as block based on generic words like "cloudflare" or "block"
      * that can appear in normal site HTML.
      */
+    private const BLOCK_STREAK_KEY = 'parser:block_streak';
+    private const BLOCK_STREAK_TTL = 120;
+    private const BLOCK_STREAK_CRITICAL = 5;
+
     /**
-     * Логируем блокировку/невалидный ответ; глобально парсер не ставим на паузу (сеть может восстановиться).
+     * Логируем блокировку/невалидный ответ. По умолчанию warning — единичные таймауты
+     * не должны ронять алерты на critical. Если подряд за 2 минуты накопилось 5+ блоков —
+     * это уже устойчивая проблема, поднимаем уровень до critical.
      */
     private function reactDonorBlocked(string $reason, string $path, string $url, string $bodyPreview = ''): void
     {
-        Log::critical('DONOR BLOCKED', [
+        $streak = (int) Cache::get(self::BLOCK_STREAK_KEY, 0) + 1;
+        Cache::put(self::BLOCK_STREAK_KEY, $streak, now()->addSeconds(self::BLOCK_STREAK_TTL));
+
+        $level = $streak >= self::BLOCK_STREAK_CRITICAL ? 'critical' : 'warning';
+        Log::log($level, 'DONOR BLOCKED', [
             'reason' => $reason,
             'path' => $path,
             'url' => $url,
-            'preview' => $bodyPreview !== '' ? mb_substr($bodyPreview, 0, 500) : null,
+            'streak' => $streak,
+            // preview оставляем только при critical, чтобы не раздувать ротацию логов на одиночных сбоях.
+            'preview' => $level === 'critical' && $bodyPreview !== ''
+                ? mb_substr($bodyPreview, 0, 500)
+                : null,
         ]);
 
         throw new RuntimeException('DONOR BLOCKED');
@@ -259,6 +273,8 @@ class HttpClient
                 Log::debug('HttpClient response preview', ['path' => $path, 'preview' => substr($body, 0, 500)]);
             }
             Cache::put(self::NETWORK_TIMEOUT_STREAK_KEY, 0, now()->addMinutes(30));
+            // На успешном запросе сбрасываем серию блоков — серия не должна тянуться часами после восстановления.
+            Cache::forget(self::BLOCK_STREAK_KEY);
             $this->lastRequestAt = microtime(true);
             ParserMetricsService::incrementRequests();
 

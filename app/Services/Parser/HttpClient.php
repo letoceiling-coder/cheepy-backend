@@ -16,12 +16,12 @@ class HttpClient
 
     private const BAD_PROXY_TTL_SECONDS = 60;
 
-    private const REQUEST_COOLDOWN_THRESHOLD = 100;
-
-    private const REQUEST_COOLDOWN_SECONDS = 10;
-
-    private int $requestCount = 0;
-
+    /**
+     * Раньше каждые N запросов воркер засыпал на 10с, что съедало пропускную
+     * способность непредсказуемо. Темп сейчас ограничивается верхним
+     * SadovodParser\HttpClient::applyRateLimit + случайной задержкой ниже,
+     * поэтому глобальный cooldown не нужен.
+     */
     private bool $networkModeLogged = false;
 
     private const USER_AGENTS = [
@@ -144,14 +144,11 @@ class HttpClient
      */
     public function get(string $url, array $headers = []): string
     {
+        // Единственный sleep между запросами этого воркера. Верхний слой
+        // SadovodParser\HttpClient::applyRateLimit добавляет глобальный cap
+        // (max_requests_per_second), но не задержку — сложение sleep'ов запрещено.
         $delayMs = random_int($this->delayMinMs, $this->delayMaxMs);
         usleep($delayMs * 1000);
-
-        $this->requestCount++;
-        if ($this->requestCount > self::REQUEST_COOLDOWN_THRESHOLD) {
-            sleep(self::REQUEST_COOLDOWN_SECONDS);
-            $this->requestCount = 0;
-        }
 
         $net = $this->effectiveNetwork();
         $useProxy = $net['use_proxy'];
@@ -167,7 +164,10 @@ class HttpClient
             throw new RuntimeException('PROXY_BLOCKED_COOLDOWN_ACTIVE');
         }
 
-        $effectiveTimeout = max(10, min(15, $this->timeoutSeconds));
+        // Раньше был жёсткий потолок 15с — игнорировал ParserSetting.timeout_seconds
+        // (60 по умолчанию) и резал нормальные запросы донора. Оставляем минимум 10с
+        // и потолок 60с, чтобы не висеть бесконечно при дохлом прокси.
+        $effectiveTimeout = max(10, min(60, $this->timeoutSeconds));
 
         if (! $this->networkModeLogged) {
             $this->networkModeLogged = true;

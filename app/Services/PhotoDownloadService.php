@@ -14,12 +14,17 @@ class PhotoDownloadService
     private Client $client;
     private int $delayMinMs = 1500;
     private int $delayMaxMs = 3000;
+    private bool $downloadMedium;
 
     public function __construct()
     {
         $settings = ParserSetting::current();
         $this->delayMinMs = max(100, (int) ($settings->request_delay_min ?? 1500));
         $this->delayMaxMs = max($this->delayMinMs, (int) ($settings->request_delay_max ?? 3000));
+        // medium-версия фото — управляется из /admin → parser_settings.download_medium.
+        // По умолчанию выключено: иначе на каждое фото уходил лишний HTTP-запрос к донору
+        // в try/catch (даже когда medium-версии не существует), что удваивало нагрузку.
+        $this->downloadMedium = (bool) ($settings->download_medium ?? false);
         $this->client = new Client([
             'timeout' => max(10, (int) ($settings->timeout_seconds ?? 60)),
             'verify' => false,
@@ -37,6 +42,19 @@ class PhotoDownloadService
     {
         $photos = $product->photos ?? [];
         if (empty($photos)) return ['downloaded' => 0, 'failed' => 0, 'skipped' => 0];
+
+        // Early-out: если все фото уже done и нет принудительного режима — ни одного HTTP-запроса.
+        if (! $force) {
+            $totalRecords = $product->photoRecords()->count();
+            if ($totalRecords > 0) {
+                $pending = $product->photoRecords()
+                    ->whereIn('download_status', ['pending', 'failed'])
+                    ->count();
+                if ($pending === 0) {
+                    return ['downloaded' => 0, 'failed' => 0, 'skipped' => $totalRecords];
+                }
+            }
+        }
 
         $downloaded = 0;
         $failed = 0;
@@ -133,17 +151,20 @@ class PhotoDownloadService
             $localPath = "photos/{$productId}/{$index}_{$hash}.{$ext}";
             Storage::disk('local')->put($localPath, $body);
 
-            // Попробуем скачать medium-версию
-            $mediumUrl = $this->getMediumUrl($url);
+            // medium-версию качаем только если явно включено: SADAVOD_DOWNLOAD_MEDIUM=true.
+            // Иначе на каждое фото уходил лишний HTTP-запрос к донору.
             $localMediumPath = null;
-            if ($mediumUrl !== $url) {
-                try {
-                    $medResponse = $this->client->get($mediumUrl);
-                    $medBody = (string) $medResponse->getBody();
-                    $localMediumPath = "photos/{$productId}/{$index}_{$hash}_medium.{$ext}";
-                    Storage::disk('local')->put($localMediumPath, $medBody);
-                } catch (\Throwable $e) {
-                    // medium не критично
+            if ($this->downloadMedium) {
+                $mediumUrl = $this->getMediumUrl($url);
+                if ($mediumUrl !== $url) {
+                    try {
+                        $medResponse = $this->client->get($mediumUrl);
+                        $medBody = (string) $medResponse->getBody();
+                        $localMediumPath = "photos/{$productId}/{$index}_{$hash}_medium.{$ext}";
+                        Storage::disk('local')->put($localMediumPath, $medBody);
+                    } catch (\Throwable $e) {
+                        // medium не критично
+                    }
                 }
             }
 

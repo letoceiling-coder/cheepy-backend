@@ -10,6 +10,7 @@ class ParserSetting extends Model
     protected $fillable = [
         'download_photos',
         'store_photo_links',
+        'download_medium',
         'max_workers',
         'request_delay_min',
         'request_delay_max',
@@ -30,6 +31,7 @@ class ParserSetting extends Model
     protected $casts = [
         'download_photos' => 'boolean',
         'store_photo_links' => 'boolean',
+        'download_medium' => 'boolean',
         'max_workers' => 'integer',
         'request_delay_min' => 'integer',
         'request_delay_max' => 'integer',
@@ -65,6 +67,7 @@ class ParserSetting extends Model
         return [
             'download_photos' => false,
             'store_photo_links' => true,
+            'download_medium' => false,
             'max_workers' => 3,
             'request_delay_min' => 1500,
             'request_delay_max' => 3000,

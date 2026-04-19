@@ -10,6 +10,9 @@ class ParserMetricsService
     private const KEY_BLOCKED = 'parser:metrics:blocked';
     private const KEY_RETRIES = 'parser:metrics:retries';
     private const TTL_MINUTE = 90; // slightly over 1 min for rolling window
+    // Cum-счётчики раньше росли вечно. 24ч TTL — окно «за последние сутки», метрика
+    // авто-чистится при простое, не превращается в общий накопитель за всё время.
+    private const TTL_DAILY = 86400;
 
     public static function incrementRequests(): void
     {
@@ -26,6 +29,7 @@ class ParserMetricsService
     {
         try {
             Redis::incr(self::KEY_BLOCKED);
+            Redis::expire(self::KEY_BLOCKED, self::TTL_DAILY);
         } catch (\Throwable $e) {
             // ignore
         }
@@ -35,6 +39,7 @@ class ParserMetricsService
     {
         try {
             Redis::incr(self::KEY_RETRIES);
+            Redis::expire(self::KEY_RETRIES, self::TTL_DAILY);
         } catch (\Throwable $e) {
             // ignore
         }

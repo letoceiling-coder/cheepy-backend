@@ -19,9 +19,17 @@ class ParseCategoryJob implements ShouldQueue
 
     public int $timeout = 3600;
 
-    public int $tries = 1;
+    /**
+     * 2 попытки: один транзитный сбой сети больше не валит всю категорию.
+     * Дополнительный локальный ретрай отдельной страницы внутри
+     * DatabaseParserService::fetchCategoryPageWithRetry поднимает шансы пройти.
+     */
+    public int $tries = 2;
 
-    public int $backoff = 0;
+    /**
+     * Backoff между попытками джоба (секунды). Нумерация — по индексу попытки.
+     */
+    public array $backoff = [60, 300];
 
     public function __construct(
         public int $parserJobId,

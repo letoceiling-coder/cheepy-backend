@@ -318,7 +318,19 @@ class DatabaseParserService
      */
     private function runFullPipeline(): void
     {
-        $this->runMenuOnly();
+        // Меню донора меняется крайне редко. Раньше каждый full-проход (а демон может
+        // запускаться раз в 60 секунд) делал десятки HTTP-запросов и сотни SQL-запросов
+        // на updateOrCreate категорий. Кэшируем флаг «меню свежее» на 6 часов.
+        $menuFreshKey = 'parser:menu_synced_at';
+        if (! Cache::has($menuFreshKey) || Category::query()->doesntExist()) {
+            $this->runMenuOnly();
+            Cache::put($menuFreshKey, now()->toIso8601String(), now()->addHours(6));
+        } else {
+            Log::info('MENU SYNC SKIPPED (cache fresh)', [
+                'parser_job_id' => $this->job->id,
+                'last_synced_at' => Cache::get($menuFreshKey),
+            ]);
+        }
 
         $allowedCategories = $this->requireOption($this->options, 'categories');
         $linkedOnly = (bool) $this->requireOption($this->options, 'linked_only');
@@ -404,7 +416,12 @@ class DatabaseParserService
      */
     private function runFull(): void
     {
-        $this->runMenuOnly();
+        // Меню — раз в 6 часов; см. комментарий в runFullPipeline().
+        $menuFreshKey = 'parser:menu_synced_at';
+        if (! Cache::has($menuFreshKey) || Category::query()->doesntExist()) {
+            $this->runMenuOnly();
+            Cache::put($menuFreshKey, now()->toIso8601String(), now()->addHours(6));
+        }
 
         $categoryFilter = $this->requireOption($this->options, 'categories');
         $linkedOnly = (bool) $this->requireOption($this->options, 'linked_only');
@@ -528,14 +545,18 @@ class DatabaseParserService
 
         $page = 1;
         $savedCount = 0;
+        $pageFetchFailures = 0;
+        $maxPageFetchRetries = 1;
 
         while (true) {
             if ($this->isCancelled()) {
                 break;
             }
 
+            // maxPages — мягкий потолок. Раньше тут стоял throw 'PAGE LIMIT VIOLATION',
+            // из-за которого категория падала с CRITICAL на регулярном условии «достигли потолка».
             if ($maxPages > 0 && $page > $maxPages) {
-                throw new RuntimeException('CRITICAL: PAGE LIMIT VIOLATION');
+                break;
             }
 
             $this->updateAction("Категория: {$slug} | Страница {$page}" . ($maxPages ? "/{$maxPages}" : ''));
@@ -543,11 +564,12 @@ class DatabaseParserService
 
             try {
                 $this->debugCounters['pages_attempted']++;
-                // Одна HTTP-страница каталога за итерацию. Раньше вызывали parseCategory(..., 0, 24):
-                // третий аргумент там — maxPages, из-за этого за один проход тянули до 24 страниц донора.
-                $result = $this->catalogParser->parseCategoryPage('/catalog/' . $slug, $page);
+                // Одна HTTP-страница каталога за итерацию + локальный ретрай на одиночную сетевую ошибку.
+                // Раньше один таймаут страницы 1 валил весь обход категории.
+                $result = $this->fetchCategoryPageWithRetry($slug, $page, $maxPageFetchRetries);
                 $products = $result['products'] ?? [];
                 $hasMore = $result['has_more'] ?? false;
+                $crawlerHandled = true;
 
                 if (empty($products)) {
                     Log::warning('EMPTY PAGE DETECTED', [
@@ -584,11 +606,11 @@ class DatabaseParserService
                     if ($saved) {
                         $savedCount++;
                         $this->debugCounters['products']++;
-                        if ($productLimit > 0 && $this->debugCounters['products'] > $productLimit) {
-                            throw new RuntimeException('CRITICAL: PRODUCT LIMIT BROKEN');
-                        }
-                        $this->job->refresh();
-                        if ($savedCount % 10 === 0) {
+                        // Раньше здесь стоял $this->job->refresh() на каждый сохранённый товар
+                        // (на крупной категории — тысячи лишних SELECT * FROM parser_jobs).
+                        // Refresh теперь делаем только перед event'ом раз в N товаров.
+                        if ($savedCount % 50 === 0) {
+                            $this->job->refresh();
                             event(new ParserProgressUpdated($this->job));
                         }
                     }
@@ -596,10 +618,7 @@ class DatabaseParserService
 
                 if (! empty($products)) {
                     $this->debugCounters['pages']++;
-                    if ($maxPages > 0 && $this->debugCounters['pages'] > $maxPages) {
-                        throw new RuntimeException('CRITICAL: PAGE LIMIT BROKEN');
-                    }
-                    Log::warning('PAGE PARSED', [
+                    Log::info('PAGE PARSED', [
                         'category' => $slug,
                         'page' => $page,
                         'parser_job_id' => $this->job->id,
@@ -631,34 +650,47 @@ class DatabaseParserService
                 }
 
                 $page++;
-                usleep($this->requestDelayMicros());
+                // Задержка между HTTP-запросами уже выполнена внутри
+                // Parser\HttpClient::get (random delay_min_ms..delay_max_ms) и
+                // SadovodParser\HttpClient::applyRateLimit (max_requests_per_second).
+                // Дополнительный sleep здесь раньше суммировался с этими двумя и
+                // давал 3-кратное замедление прохода категории.
             } catch (\Throwable $e) {
                 $this->log('error', "Ошибка парсинга страницы {$page} категории {$slug}: " . $e->getMessage());
                 $this->job->increment('errors_count');
-                $this->job->refresh();
                 event(new ParserError($this->job, "Ошибка парсинга страницы {$page} категории {$slug}: " . $e->getMessage()));
-                break;
+                $pageFetchFailures++;
+                if ($pageFetchFailures >= 3) {
+                    Log::warning('CATEGORY ABORTED AFTER FAILURES', [
+                        'category' => $slug,
+                        'failures' => $pageFetchFailures,
+                        'parser_job_id' => $this->job->id,
+                    ]);
+                    break;
+                }
+                $page++;
             } finally {
+                if (isset($result)) {
+                    unset($result);
+                }
                 gc_collect_cycles();
+            }
+
+            $memory = memory_get_usage(true);
+            if ($memory > self::PARSER_MEMORY_LIMIT_BYTES) {
+                Log::critical('MEMORY LIMIT REACHED MID-CATEGORY', [
+                    'category' => $slug,
+                    'page' => $page,
+                    'memory' => $memory,
+                    'parser_job_id' => $this->job->id,
+                ]);
+                throw new RuntimeException('CRITICAL: MEMORY LIMIT');
             }
         }
 
-        if ($maxPages > 0 && $this->debugCounters['pages'] > $maxPages) {
-            throw new RuntimeException('CRITICAL: PAGE LIMIT BROKEN');
-        }
-        if ($productLimit > 0 && $this->debugCounters['products'] > $productLimit) {
-            throw new RuntimeException('CRITICAL: PRODUCT LIMIT BROKEN');
-        }
-
-        if ($this->debugCounters['pages_attempted'] > 0
-            && $this->debugCounters['pages'] === 0) {
-            Log::critical('CATEGORY FAILED COMPLETELY', [
-                'category' => $slug,
-                'attempted' => $this->debugCounters['pages_attempted'],
-            ]);
-
-            throw new RuntimeException('CRITICAL: CATEGORY FAILED');
-        }
+        // Раньше тут были throw 'PAGE LIMIT BROKEN' / 'PRODUCT LIMIT BROKEN' / 'CATEGORY FAILED' —
+        // это были не критические инварианты, а нормальный конец прохода. Категория с пустыми
+        // страницами или достигшая лимита больше не считается ошибкой пайплайна.
 
         Log::warning('CATEGORY RESULT', [
             'category' => $slug,
@@ -716,7 +748,7 @@ class DatabaseParserService
                 try {
                     $detailData = $this->productParser->parse('/odejda/' . $externalId);
                     $pData = array_merge($pData, $detailData);
-                    usleep($this->requestDelayMicros());
+                    // sleep уже сделан в нижнем HTTP-клиенте, дополнительный убран.
                 } catch (\Throwable $e) {
                     $this->log('warn', "Не удалось получить детали товара {$externalId}: " . $e->getMessage(), [
                         'product_external_id' => $externalId,
@@ -781,22 +813,40 @@ class DatabaseParserService
             $this->syncCoreAttributes($product, $pData['characteristics'] ?? [], $category);
 
             $savePhotosOpt = (bool) $this->requireOption($this->options, 'save_photos');
+            // Новые флаги — фолбэк на save_photos для обратной совместимости со старыми options.
+            $downloadPhotosOpt = (bool) ($this->options['download_photos'] ?? $savePhotosOpt);
+            $storePhotoLinksOpt = (bool) ($this->options['store_photo_links'] ?? $savePhotosOpt);
+
             if (! $savePhotosOpt) {
                 $key = 'photo_block_logged_job_'.$this->job->id;
                 if (! Cache::get($key)) {
-                    Log::critical('PHOTO DOWNLOAD BLOCKED', [
+                    Log::info('PHOTO PIPELINE DISABLED (save_photos=false)', [
                         'parser_job_id' => $this->job->id,
                     ]);
                     Cache::put($key, true, 3600);
                 }
             } elseif (! empty($pData['photos'])) {
-                if ($dispatchPhotosToQueue) {
+                if ($downloadPhotosOpt) {
+                    if ($dispatchPhotosToQueue) {
+                        $this->createPhotoRecordsOnly($product, $pData['photos'] ?? []);
+                        // Дедупликация: диспатчим только если есть фото в pending/failed.
+                        // Иначе на повторном проходе одного и того же товара джоб
+                        // делал бы лишнюю прокрутку воркера ради `skipped`.
+                        $hasPending = $product->photoRecords()
+                            ->whereIn('download_status', ['pending', 'failed'])
+                            ->exists();
+                        if ($hasPending) {
+                            DownloadPhotoJob::dispatch($product->id, $this->job->id);
+                        }
+                    } else {
+                        $result = $this->photoService->downloadProductPhotos($product);
+                        $this->job->increment('photos_downloaded', $result['downloaded']);
+                        $this->job->increment('photos_failed', $result['failed']);
+                    }
+                } elseif ($storePhotoLinksOpt) {
+                    // Только ссылки: создаём ProductPhoto со статусом pending без скачивания.
+                    // Раньше при store_photo_links=true ничего не происходило, потому что флаг был неактивен.
                     $this->createPhotoRecordsOnly($product, $pData['photos'] ?? []);
-                    DownloadPhotoJob::dispatch($product->id, $this->job->id);
-                } else {
-                    $result = $this->photoService->downloadProductPhotos($product);
-                    $this->job->increment('photos_downloaded', $result['downloaded']);
-                    $this->job->increment('photos_failed', $result['failed']);
                 }
             }
 
@@ -804,8 +854,10 @@ class DatabaseParserService
             $this->job->increment('parsed_products');
             $this->updateProgress(null, 1, 0);
             $broadcastEvery = $this->productBroadcastEvery();
+            // Без refresh() значение в локальной модели всё равно валидное
+            // (увеличение через increment() обновляет атрибут). На большом проходе
+            // отказ от refresh() экономит сотни SELECT * FROM parser_jobs.
             if (((int) $this->job->parsed_products % $broadcastEvery) === 0) {
-                $this->job->refresh();
                 event(new ProductParsed($this->job, [
                     'id' => $product->id,
                     'external_id' => $product->external_id,
@@ -829,7 +881,7 @@ class DatabaseParserService
             }
             $this->job->increment('errors_count');
             $this->updateProgress($pData['url'] ?? null, 0, 1);
-            $this->job->refresh();
+            // refresh() не нужен — локальная модель уже отражает инкремент.
             event(new ParserError($this->job, "Ошибка сохранения товара: " . $e->getMessage(), ['product_id' => $pData['id'] ?? null]));
             return false;
         }
@@ -968,7 +1020,7 @@ class DatabaseParserService
             if (!$data) {
                 try {
                     $this->updateAction("Продавец: {$slug}");
-                    usleep($this->requestDelayMicros());
+                    // sleep уже сделан в нижнем HTTP-клиенте.
                     $data = $this->sellerParser->parse('/s/' . $slug);
                     Cache::put($cacheKey, $data, 3600);
                 } catch (\Throwable $e) {
@@ -1159,5 +1211,37 @@ class DatabaseParserService
             return $m[1];
         }
         return '';
+    }
+
+    /**
+     * Один лёгкий локальный ретрай страницы каталога. Один разовый таймаут донора больше не валит категорию.
+     *
+     * @return array{products: array, has_more: bool, total_pages: int|null}
+     */
+    private function fetchCategoryPageWithRetry(string $slug, int $page, int $retries): array
+    {
+        $attempt = 0;
+        $lastError = null;
+        do {
+            try {
+                return $this->catalogParser->parseCategoryPage('/catalog/' . $slug, $page);
+            } catch (\Throwable $e) {
+                $lastError = $e;
+                $attempt++;
+                if ($attempt > $retries) {
+                    break;
+                }
+                Log::warning('CATEGORY PAGE RETRY', [
+                    'category' => $slug,
+                    'page' => $page,
+                    'attempt' => $attempt,
+                    'error' => $e->getMessage(),
+                    'parser_job_id' => $this->job->id,
+                ]);
+                sleep(2 * $attempt);
+            }
+        } while ($attempt <= $retries);
+
+        throw $lastError ?? new RuntimeException('CATEGORY PAGE FETCH FAILED');
     }
 }

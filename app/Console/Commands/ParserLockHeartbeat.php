@@ -13,7 +13,7 @@ class ParserLockHeartbeat extends Command
     protected $description = 'Refresh parser_lock TTL if parser is running (run every 30s by scheduler)';
 
     private const LOCK_KEY = 'parser_lock';
-    private const LOCK_TTL = 7200;
+    private const LOCK_TTL = 1200;
 
     public function handle(): int
     {

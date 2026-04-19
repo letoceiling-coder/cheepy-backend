@@ -77,7 +77,7 @@ class RunParserJob implements ShouldQueue
             'exception' => $exception->getMessage(),
         ]);
 
-        // Иначе parser_lock остаётся до TTL (2ч) без ParserFinished — блокирует ручной старт и демон.
+        // Иначе parser_lock остаётся до TTL (1200с) без ParserFinished — блокирует ручной старт и демон.
         try {
             Redis::del('parser_lock');
         } catch (\Throwable $e) {

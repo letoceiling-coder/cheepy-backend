@@ -88,6 +88,7 @@ class ParserController extends Controller
         $validated = $request->validate([
             'download_photos' => ['nullable', 'boolean'],
             'store_photo_links' => ['nullable', 'boolean'],
+            'download_medium' => ['nullable', 'boolean'],
             'max_workers' => ['nullable', 'integer', 'min:1', 'max:20'],
             'request_delay_min' => ['nullable', 'integer', 'min:100', 'max:10000'],
             'request_delay_max' => ['nullable', 'integer', 'min:100', 'max:15000'],
@@ -147,7 +148,8 @@ class ParserController extends Controller
         }
 
         $lockKey = 'parser_lock';
-        $lockTtl = 7200;
+        // 1200с (20 мин). Heartbeat обновляет TTL пока есть активный ParserJob.
+        $lockTtl = 1200;
         try {
             if (!Redis::set($lockKey, 1, 'EX', $lockTtl, 'NX')) {
                 return response()->json(['error' => 'Парсер уже запущен (lock)', 'job_id' => null], 409);

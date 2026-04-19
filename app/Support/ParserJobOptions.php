@@ -19,13 +19,20 @@ class ParserJobOptions
         $rawIds = $s->default_category_ids;
         $ids = is_array($rawIds) ? array_values(array_filter(array_map('intval', $rawIds))) : [];
 
+        $downloadPhotos = (bool) $s->download_photos;
+        $storePhotoLinks = (bool) ($s->store_photo_links ?? true);
+
         $options = [
             'categories' => $ids,
             'linked_only' => (bool) $s->default_linked_only,
             'products_per_category' => (int) ($s->default_products_per_category ?? 0),
             'max_pages' => (int) ($s->default_max_pages ?? 0),
             'no_details' => (bool) ($s->default_no_details ?? false),
-            'save_photos' => (bool) $s->download_photos,
+            // save_photos = есть_что_сохранять_по_фото. Раньше тождествен download_photos,
+            // из-за чего store_photo_links не работал.
+            'save_photos' => $downloadPhotos || $storePhotoLinks,
+            'download_photos' => $downloadPhotos,
+            'store_photo_links' => $storePhotoLinks,
             'save_to_db' => true,
             'queue_threshold' => (int) $s->queue_threshold,
             'runtime' => self::runtimePayload($s),
@@ -63,6 +70,12 @@ class ParserJobOptions
         }
         if (array_key_exists('save_photos', $overrides)) {
             $base['save_photos'] = (bool) $overrides['save_photos'];
+        }
+        if (array_key_exists('download_photos', $overrides)) {
+            $base['download_photos'] = (bool) $overrides['download_photos'];
+        }
+        if (array_key_exists('store_photo_links', $overrides)) {
+            $base['store_photo_links'] = (bool) $overrides['store_photo_links'];
         }
         if (array_key_exists('save_to_db', $overrides)) {
             $base['save_to_db'] = (bool) $overrides['save_to_db'];
