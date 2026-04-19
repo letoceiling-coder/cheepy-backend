@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Category;
 use App\Models\ParserJob;
 use App\Models\ParserLog;
+use App\Models\ParserSetting;
 use App\Models\Product;
 use App\Models\Seller;
 use Illuminate\Http\JsonResponse;
@@ -34,6 +35,15 @@ class DashboardController extends Controller
         $totalCategories = Category::count();
         $enabledCategories = Category::where('enabled', true)->count();
         $linkedCategories = Category::where('linked_to_parser', true)->count();
+
+        // Сколько категорий реально пойдёт в полный прогон парсера сейчас.
+        // Источник правды — parser_settings.default_category_ids (UI «Категории для полного режима»).
+        // Если пусто — fallback на enabled категории (поведение buildFromSettings).
+        $parserSetting = ParserSetting::current();
+        $selectedIds = is_array($parserSetting->default_category_ids ?? null) ? $parserSetting->default_category_ids : [];
+        $selectedForParser = count($selectedIds) > 0
+            ? Category::whereIn('id', $selectedIds)->where('enabled', true)->count()
+            : $enabledCategories;
 
         $totalSellers = Seller::count();
         $activeSellers = Seller::where('status', 'active')->count();
@@ -82,6 +92,8 @@ class DashboardController extends Controller
                 'total' => $totalCategories,
                 'enabled' => $enabledCategories,
                 'linked_to_parser' => $linkedCategories,
+                // Сколько реально парсится при полном прогоне сейчас (с учётом фильтра в настройках).
+                'selected_for_parser' => $selectedForParser,
             ],
             'sellers' => [
                 'total' => $totalSellers,

@@ -513,12 +513,49 @@ class ParserController extends Controller
                 'last_start' => now(),
             ]);
 
+            // Мгновенный старт: если активного ParserJob нет и очередь parser пустая —
+            // создаём ParserJob СРАЗУ и диспатчим RunParserJob, не ждём 60-секундный тик демона.
+            // Это убирает «секунды-минуты простоя» после нажатия кнопки Запустить.
+            // Демон всё равно дополнительно диспатчится для последующих циклических прогонов.
+            $immediateJobId = null;
+            if (! $activeParserJob) {
+                try {
+                    $queueSize = (int) Queue::connection(config('queue.default'))->size('parser');
+                } catch (\Throwable $e) {
+                    $queueSize = 0;
+                }
+                if ($queueSize === 0) {
+                    try {
+                        $options = ParserJobOptions::buildFromSettings();
+                        ParserJobOptions::assertCategoriesForJob('full', $options);
+                        $newJob = ParserJob::create([
+                            'type' => 'full',
+                            'options' => $options,
+                            'status' => 'pending',
+                        ]);
+                        RunParserJob::dispatch($newJob->id);
+                        $immediateJobId = $newJob->id;
+                        Log::warning('startDaemon: immediate ParserJob dispatched', [
+                            'parser_job_id' => $newJob->id,
+                            'categories' => count($options['categories'] ?? []),
+                            'update_existing' => $options['update_existing'] ?? null,
+                        ]);
+                    } catch (\Throwable $e) {
+                        Log::warning('startDaemon: immediate dispatch failed, falling back to daemon', ['error' => $e->getMessage()]);
+                    }
+                }
+            }
+
+            // Демон ставится всегда — для следующего цикла после завершения текущего прогона.
             ParserDaemonJob::dispatch();
 
             return response()->json([
-                'message' => 'Парсер запущен. Следующий прогон — через 60 сек после завершения текущего.',
+                'message' => $immediateJobId
+                    ? "Парсер запущен немедленно (job #{$immediateJobId}). Следующие прогоны — авто."
+                    : 'Парсер запущен. Следующий прогон — через 60 сек после завершения текущего.',
                 'daemon_enabled' => true,
                 'network_mode' => $networkMode,
+                'parser_job_id' => $immediateJobId,
             ], 201);
         } catch (\Throwable $e) {
             return response()->json(['error' => 'Network precheck failed: ' . $e->getMessage()], 500);

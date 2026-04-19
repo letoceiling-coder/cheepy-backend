@@ -9,6 +9,7 @@ use App\Services\Catalog\SystemProductFromDonorService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
@@ -52,20 +53,39 @@ class EnsureSystemProductFromDonorJob implements ShouldBeUnique, ShouldQueue
             return;
         }
 
-        DB::transaction(function () use ($product, $fromDonorService): void {
-            Product::query()->whereKey($product->id)->lockForUpdate()->first();
+        try {
+            DB::transaction(function () use ($product, $fromDonorService): void {
+                Product::query()->whereKey($product->id)->lockForUpdate()->first();
 
-            $exists = ProductSource::query()
-                ->where('donor_product_id', $product->id)
-                ->where('source', ProductSource::SOURCE_PARSER)
-                ->exists();
+                $exists = ProductSource::query()
+                    ->where('donor_product_id', $product->id)
+                    ->where('source', ProductSource::SOURCE_PARSER)
+                    ->exists();
 
-            if ($exists) {
+                if ($exists) {
+                    return;
+                }
+
+                $fromDonorService->createFromDonor($product, SystemProduct::STATUS_PENDING);
+            });
+        } catch (QueryException $e) {
+            $code = (string) ($e->errorInfo[1] ?? '');
+            // 1062 — уникальный ключ (например sp_attr_product_name_value_uniq) — параллельный job
+            // уже создал тот же атрибут. 1213 — deadlock. В обоих случаях это ИЗВЕСТНОЕ race-условие
+            // при параллельном инжесте множества донорных товаров с одинаковыми атрибутами (цвет/размер).
+            // Не валим job в failed_jobs (раздувает таблицу, шумит в дашборде); фиксируем warning.
+            if (in_array($code, ['1062', '1213'], true)) {
+                Log::warning('EnsureSystemProductFromDonorJob race ignored', [
+                    'donor_product_id' => $this->donorProductId,
+                    'sql_code' => $code,
+                    'message' => mb_substr($e->getMessage(), 0, 240),
+                ]);
+
                 return;
             }
 
-            $fromDonorService->createFromDonor($product, SystemProduct::STATUS_PENDING);
-        });
+            throw $e;
+        }
     }
 
     public function failed(Throwable $e): void

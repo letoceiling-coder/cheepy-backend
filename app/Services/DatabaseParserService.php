@@ -551,9 +551,30 @@ class DatabaseParserService
         $savedCount = 0;
         $pageFetchFailures = 0;
         $maxPageFetchRetries = 1;
+        // Жёсткий потолок страниц на одну категорию во ВСЕХ режимах.
+        // Защита от багов крауллера/донора, когда has_more=true возвращается бесконечно
+        // (наблюдалось: категория «jenskie-rubashki» зашла на стр. 799 в режиме «только новые»
+        // и держала воркер 2.5+ часа). Реалистично крупная категория = ~50-150 страниц.
+        $hardPageCap = 300;
+        // В режиме «только новые» (update_existing=false) — early exit, когда N подряд страниц
+        // целиком состоят из уже существующих external_id. Это означает: «догнали хвост»
+        // инкрементального обхода — все товары на странице уже в БД, новых не будет.
+        $consecutiveAllSkippedPages = 0;
+        $allSkippedPagesThreshold = 2;
 
         while (true) {
             if ($this->isCancelled()) {
+                break;
+            }
+
+            if ($page > $hardPageCap) {
+                Log::critical('CATEGORY HARD PAGE CAP REACHED', [
+                    'category' => $slug,
+                    'page' => $page,
+                    'hard_cap' => $hardPageCap,
+                    'parser_job_id' => $this->job->id,
+                    'reason' => 'pagination_safety_break',
+                ]);
                 break;
             }
 
@@ -658,6 +679,27 @@ class DatabaseParserService
                         'skipped_existing' => $skippedExisting,
                         'update_existing' => $updateExisting,
                     ]);
+                }
+
+                // Early exit для режима «только новые»: если ВСЯ страница состоит из existing,
+                // и так подряд $allSkippedPagesThreshold страниц — выходим из категории.
+                // Это норма для инкрементального обхода: догнали хвост — нечего обрабатывать.
+                if (! $updateExisting && ! empty($products)) {
+                    $pageProductCount = count($products);
+                    if ($skippedExisting >= $pageProductCount) {
+                        $consecutiveAllSkippedPages++;
+                        if ($consecutiveAllSkippedPages >= $allSkippedPagesThreshold) {
+                            Log::warning('CATEGORY EARLY-EXIT: incremental tail reached', [
+                                'category' => $slug,
+                                'page' => $page,
+                                'consecutive_all_skipped' => $consecutiveAllSkippedPages,
+                                'parser_job_id' => $this->job->id,
+                            ]);
+                            break;
+                        }
+                    } else {
+                        $consecutiveAllSkippedPages = 0;
+                    }
                 }
 
                 if ($maxPages > 0 && $page >= $maxPages) {
