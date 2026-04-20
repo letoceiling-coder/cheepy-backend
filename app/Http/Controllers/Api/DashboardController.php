@@ -22,7 +22,11 @@ class DashboardController extends Controller
         $totalProducts = Product::count();
         $activeProducts = Product::where('status', 'active')->count();
         $hiddenProducts = Product::where('status', 'hidden')->count();
-        $newToday = Product::whereDate('parsed_at', today())->count();
+        // Раньше считали по parsed_at: в режиме «только новые» (update_existing=false) товары,
+        // которые уже в БД, skip-ятся без upsert, parsed_at не меняется — счётчик всегда 0,
+        // хотя в фоне парсер по факту прошёл все категории. Правильная семантика «Новые сегодня»
+        // — это товары, реально созданные за сегодня, т.е. по created_at.
+        $newToday = Product::whereDate('created_at', today())->count();
         $productsErrorAllTime = Product::where('status', 'error')->count();
         $errorsTodayProducts = Product::where('status', 'error')
             ->whereDate('status_changed_at', today())

@@ -111,5 +111,12 @@ class ParserDaemonJob implements ShouldQueue
         ]);
 
         RunParserJob::dispatch($job->id);
+
+        // Самоподдержание цикла: раньше после создания ParserJob демон молча завершался —
+        // и цепочка ParserDaemonJob ломалась. Новые прогоны появлялись только по
+        // scheduler-full-parser (cron каждые 6 часов), между ними UI показывал «простой».
+        // Теперь демон сам переставляет себя через 60 сек — при завершении прогона он
+        // быстро подхватит и запустит следующий цикл.
+        self::dispatch()->delay(now()->addSeconds(60));
     }
 }
