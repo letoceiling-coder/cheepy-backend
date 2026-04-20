@@ -45,8 +45,15 @@ class ParserDaemonJob implements ShouldQueue
         // Страховка: даже если активный ParserJob помечен completed, а в очереди всё ещё лежат
         // ParseCategoryJob (pipeline ещё фактически работает) — не запускать новый full,
         // иначе продублируем 100+ категорий поверх работающего прогона.
+        //
+        // ВАЖНО: считаем ТОЛЬКО настоящий pending list (LLEN), а не Queue::size().
+        // Queue::size() в RedisQueue = LLEN + ZCARD(delayed) + ZCARD(reserved). Это ломает
+        // логику: сам ParserDaemonJob во время handle() лежит в reserved, плюс наши
+        // собственные self::dispatch()->delay(60) копятся в delayed. В итоге демон видел
+        // «pending=1..N» от самого себя и бесконечно откладывался, никогда не доходя до
+        // создания ParserJob. Нас же интересуют только РЕАЛЬНО ждущие ParseCategoryJob.
         try {
-            $pendingCategoryJobs = (int) Queue::connection(config('queue.default'))->size('parser');
+            $pendingCategoryJobs = (int) Redis::llen('queues:parser');
         } catch (\Throwable $e) {
             $pendingCategoryJobs = 0;
         }
@@ -83,8 +90,8 @@ class ParserDaemonJob implements ShouldQueue
         Log::critical('OPTIONS BEFORE CREATE', $options);
 
         try {
-            // Same as Redis LLEN on the parser list; Queue respects redis prefix / connection.
-            $queueSize = (int) Queue::connection(config('queue.default'))->size('parser');
+            // Real pending-list size only (see note above about Queue::size vs LLEN).
+            $queueSize = (int) Redis::llen('queues:parser');
         } catch (\Throwable $e) {
             Redis::del('parser_lock');
             Log::warning('Parser daemon: queue size check failed', ['error' => $e->getMessage()]);
