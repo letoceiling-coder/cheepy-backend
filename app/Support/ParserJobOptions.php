@@ -24,6 +24,15 @@ class ParserJobOptions
         // По умолчанию true — старое поведение: парсер обновляет уже существующие товары.
         // false — пропускать external_id, которые уже есть в products (быстрый режим «только новые»).
         $updateExisting = (bool) ($s->update_existing ?? true);
+        // Глубина early-exit для режима «только новые» (N страниц all-skip подряд → break).
+        $tailPages = (int) ($s->incremental_tail_pages ?? 3);
+        if ($tailPages < 1) {
+            $tailPages = 1;
+        } elseif ($tailPages > 10) {
+            $tailPages = 10;
+        }
+        // Режим «обновление: только доступность» (актуален при update_existing=true).
+        $updateAvailabilityOnly = (bool) ($s->update_availability_only ?? true);
 
         $options = [
             'categories' => $ids,
@@ -37,6 +46,8 @@ class ParserJobOptions
             'download_photos' => $downloadPhotos,
             'store_photo_links' => $storePhotoLinks,
             'update_existing' => $updateExisting,
+            'incremental_tail_pages' => $tailPages,
+            'update_availability_only' => $updateAvailabilityOnly,
             'save_to_db' => true,
             'queue_threshold' => (int) $s->queue_threshold,
             'runtime' => self::runtimePayload($s),
@@ -83,6 +94,18 @@ class ParserJobOptions
         }
         if (array_key_exists('update_existing', $overrides)) {
             $base['update_existing'] = (bool) $overrides['update_existing'];
+        }
+        if (array_key_exists('incremental_tail_pages', $overrides)) {
+            $tp = (int) $overrides['incremental_tail_pages'];
+            if ($tp < 1) {
+                $tp = 1;
+            } elseif ($tp > 10) {
+                $tp = 10;
+            }
+            $base['incremental_tail_pages'] = $tp;
+        }
+        if (array_key_exists('update_availability_only', $overrides)) {
+            $base['update_availability_only'] = (bool) $overrides['update_availability_only'];
         }
         if (array_key_exists('save_to_db', $overrides)) {
             $base['save_to_db'] = (bool) $overrides['save_to_db'];

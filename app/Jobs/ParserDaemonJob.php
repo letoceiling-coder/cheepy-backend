@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\ParserJob;
+use App\Models\ParserSetting;
 use App\Models\ParserState;
 use App\Support\ParserJobOptions;
 use Illuminate\Bus\Queueable;
@@ -34,10 +35,21 @@ class ParserDaemonJob implements ShouldQueue
             return;
         }
 
+        // Интервал между итерациями демона — настраивается в админке (parser_settings.daemon_interval_seconds).
+        // Раньше был захардкожен 60с, что давало 12 full-прогонов/час (4 мин работы + 60с пауза) —
+        // избыточная частота, грузит донора. Дефолт 180с → 6/час. Clamp 30..600 дополнительно
+        // для защиты от ошибочных значений в БД.
+        $interval = (int) (ParserSetting::current()->daemon_interval_seconds ?? 180);
+        if ($interval < 30) {
+            $interval = 30;
+        } elseif ($interval > 600) {
+            $interval = 600;
+        }
+
         $running = ParserJob::whereIn('status', ['running', 'pending'])->first();
         if ($running) {
-            Log::info('Parser daemon: run already in progress, scheduling next check in 60 seconds');
-            self::dispatch()->delay(now()->addSeconds(60));
+            Log::info('Parser daemon: run already in progress, scheduling next check', ['in_seconds' => $interval]);
+            self::dispatch()->delay(now()->addSeconds($interval));
 
             return;
         }
@@ -61,8 +73,9 @@ class ParserDaemonJob implements ShouldQueue
             Log::info('Parser daemon: queue has pending category jobs, skipping new run', [
                 'queue' => 'parser',
                 'pending' => $pendingCategoryJobs,
+                'retry_in_seconds' => $interval,
             ]);
-            self::dispatch()->delay(now()->addSeconds(60));
+            self::dispatch()->delay(now()->addSeconds($interval));
 
             return;
         }
@@ -122,8 +135,8 @@ class ParserDaemonJob implements ShouldQueue
         // Самоподдержание цикла: раньше после создания ParserJob демон молча завершался —
         // и цепочка ParserDaemonJob ломалась. Новые прогоны появлялись только по
         // scheduler-full-parser (cron каждые 6 часов), между ними UI показывал «простой».
-        // Теперь демон сам переставляет себя через 60 сек — при завершении прогона он
-        // быстро подхватит и запустит следующий цикл.
-        self::dispatch()->delay(now()->addSeconds(60));
+        // Теперь демон сам переставляет себя через daemon_interval_seconds — при завершении
+        // прогона подхватит и запустит следующий цикл.
+        self::dispatch()->delay(now()->addSeconds($interval));
     }
 }

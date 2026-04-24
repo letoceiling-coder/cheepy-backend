@@ -39,8 +39,16 @@ Schedule::call(function () {
     ->withoutOverlapping(120)
     ->appendOutputTo(storage_path('logs/scheduler-parser.log'));
 
-// Photo download queue (process pending photos in batch)
+// Photo download queue (process pending photos in batch).
+// Guard: если в настройках download_photos=false — НЕ диспатчить. Раньше джоб стартовал
+// всегда, пытался обработать photo_records pending и упирался в timeout (10 мин на батч),
+// копил timeout'ы в failed_jobs. При выключенном даунлоаде это мёртвый код.
 Schedule::call(function () {
+    $settings = \App\Models\ParserSetting::current();
+    if (! (bool) $settings->download_photos) {
+        \Illuminate\Support\Facades\Log::info('scheduler-download-photos-batch skipped: download_photos=false');
+        return;
+    }
     \App\Jobs\DownloadPhotosJob::dispatch(100)->onQueue('photos');
 })->name('scheduler-download-photos-batch')
     ->hourly()
@@ -49,3 +57,12 @@ Schedule::call(function () {
 Schedule::command('queue:prune-failed', ['--hours' => 168])
     ->daily()
     ->at('03:00');
+
+// Availability cleanup: hourly HEAD-probe для товаров с relevance_checked_at > 7 дней
+// (или NULL). Работает маленькими пачками по 100, чтобы не нагружать донор.
+// Страховочный механизм к availability-pass парсера — ловит товары, чьи категории
+// давно не обходились.
+Schedule::job(new \App\Jobs\CleanupUnavailableProductsJob(100))
+    ->name('cleanup-unavailable-products')
+    ->hourly()
+    ->withoutOverlapping(60);

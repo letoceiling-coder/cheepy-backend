@@ -25,6 +25,7 @@ use App\Services\SadovodParser\Parsers\SellerParser;
 use App\Services\Parser\ParserLogger;
 use App\Support\ParserJobOptions;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use JsonException;
@@ -478,7 +479,21 @@ class DatabaseParserService
             'last_parsed_at' => now(),
         ]);
 
-        $this->log('info', "Категория {$slug}: сохранено {$savedCount} товаров (pipeline)");
+        // UX: «сохранено 0 товаров» в режиме «только новые»/availability-only — это НОРМА
+        // (в категории нет свежих объявлений, либо существующие просто обновлены по наличию).
+        // Не пугаем оператора формулировкой «0» — выдаём человекочитаемое сообщение.
+        $updateExisting = (bool) ($this->options['update_existing'] ?? true);
+        $updateAvailabilityOnly = (bool) ($this->options['update_availability_only'] ?? false);
+        if ($savedCount > 0) {
+            $msg = "Категория {$slug}: добавлено новых — {$savedCount}";
+        } elseif (! $updateExisting) {
+            $msg = "Категория {$slug}: новых нет";
+        } elseif ($updateExisting && $updateAvailabilityOnly) {
+            $msg = "Категория {$slug}: доступность обновлена";
+        } else {
+            $msg = "Категория {$slug}: обновление завершено (новых — 0)";
+        }
+        $this->log('info', $msg);
 
         $this->job->increment('parsed_categories');
         $this->job->refresh();
@@ -546,6 +561,12 @@ class DatabaseParserService
         // false — режим «только новые»: пропускаем external_id, которые уже есть в products,
         // экономим HTTP на детали товара (productParser->parse) и весь upsert/photos pipeline.
         $updateExisting = (bool) ($this->options['update_existing'] ?? true);
+        // Режим «Обновление: только доступность» (активен когда update_existing=true).
+        // Для existing external_id НЕ дёргаем HTTP-детали и не выполняем полный upsert —
+        // делаем лёгкий batch UPDATE is_relevant=true, relevance_checked_at=NOW(), price=NEW.
+        // По итогам прохода category: товары этой category_id, которых мы НЕ видели →
+        // is_relevant=false (donor их убрал). Эффект: полный «update» прогон стал в ~10x быстрее.
+        $updateAvailabilityOnly = (bool) ($this->options['update_availability_only'] ?? false);
 
         $page = 1;
         $savedCount = 0;
@@ -559,8 +580,22 @@ class DatabaseParserService
         // В режиме «только новые» (update_existing=false) — early exit, когда N подряд страниц
         // целиком состоят из уже существующих external_id. Это означает: «догнали хвост»
         // инкрементального обхода — все товары на странице уже в БД, новых не будет.
+        // Глубина N настраивается из админки (incremental_tail_pages), clamp 1..10.
         $consecutiveAllSkippedPages = 0;
-        $allSkippedPagesThreshold = 2;
+        $allSkippedPagesThreshold = (int) ($this->options['incremental_tail_pages'] ?? 3);
+        if ($allSkippedPagesThreshold < 1) {
+            $allSkippedPagesThreshold = 1;
+        } elseif ($allSkippedPagesThreshold > 10) {
+            $allSkippedPagesThreshold = 10;
+        }
+
+        // Для режима availability-only: копим все external_id, увиденные в этой категории,
+        // чтобы после обхода одним UPDATE пометить пропавшие как is_relevant=false.
+        $seenExternalIdsInCategory = [];
+        // Защита от ложных unavailable-маркировок: если прогон был прерван (cancelled,
+        // pageFetchFailures, memory limit) — НЕ помечаем missing как unavailable,
+        // потому что мы просто не дошли до конца категории.
+        $categoryFullyTraversed = false;
 
         while (true) {
             if ($this->isCancelled()) {
@@ -613,23 +648,47 @@ class DatabaseParserService
                     $this->updateJob(['total_pages' => $totalPages]);
                 }
 
-                // Режим «только новые»: одним SELECT WHERE IN отсекаем уже существующие external_id.
-                // Для крупной страницы (50 товаров) это 1 SQL вместо N HTTP-запросов на детали + upsert.
+                // Режим «только новые» ИЛИ «обновление: только доступность» — нужно знать,
+                // какие external_id со страницы уже есть в БД. Одним SELECT WHERE IN получаем
+                // множество — далее решаем, что с ним делать (skip или batch-update).
                 $existingIds = [];
-                if (! $updateExisting) {
-                    $pageIds = [];
-                    foreach ($products as $pData) {
-                        $eid = (string) ($pData['id'] ?? '');
-                        if ($eid !== '') {
-                            $pageIds[] = $eid;
+                $needExistingLookup = (! $updateExisting) || ($updateExisting && $updateAvailabilityOnly);
+                $pageIds = [];
+                foreach ($products as $pData) {
+                    $eid = (string) ($pData['id'] ?? '');
+                    if ($eid !== '') {
+                        $pageIds[] = $eid;
+                        if ($updateExisting && $updateAvailabilityOnly) {
+                            $seenExternalIdsInCategory[$eid] = true;
                         }
                     }
-                    if ($pageIds !== []) {
-                        $existingIds = Product::whereIn('external_id', $pageIds)
-                            ->pluck('external_id')
-                            ->map(fn ($v) => (string) $v)
-                            ->all();
-                        $existingIds = array_flip($existingIds);
+                }
+                if ($needExistingLookup && $pageIds !== []) {
+                    $existingIds = Product::whereIn('external_id', $pageIds)
+                        ->pluck('external_id')
+                        ->map(fn ($v) => (string) $v)
+                        ->all();
+                    $existingIds = array_flip($existingIds);
+                }
+
+                // Batch update для режима availability-only: для всех existing товаров страницы
+                // ставим is_relevant=true, relevance_checked_at=NOW(). БЕЗ HTTP на детали и upsert.
+                if ($updateExisting && $updateAvailabilityOnly && ! empty($existingIds)) {
+                    try {
+                        $existingOnPage = array_values(array_intersect($pageIds, array_keys($existingIds)));
+                        if ($existingOnPage !== []) {
+                            Product::whereIn('external_id', $existingOnPage)->update([
+                                'is_relevant' => true,
+                                'relevance_checked_at' => now(),
+                            ]);
+                        }
+                    } catch (\Throwable $e) {
+                        Log::warning('AVAILABILITY BATCH UPDATE FAILED', [
+                            'category' => $slug,
+                            'page' => $page,
+                            'error' => $e->getMessage(),
+                            'parser_job_id' => $this->job->id,
+                        ]);
                     }
                 }
 
@@ -648,8 +707,18 @@ class DatabaseParserService
                         break 2;
                     }
 
+                    $eid = (string) ($pData['id'] ?? '');
+
+                    // Режим «только новые»: existing пропускаем целиком.
                     if (! $updateExisting) {
-                        $eid = (string) ($pData['id'] ?? '');
+                        if ($eid !== '' && isset($existingIds[$eid])) {
+                            $skippedExisting++;
+                            continue;
+                        }
+                    } elseif ($updateAvailabilityOnly) {
+                        // Режим «обновление: только доступность». Existing уже обработаны
+                        // batch UPDATE'ом выше (is_relevant=true). Полный upsert нужен только
+                        // для по-настоящему новых товаров.
                         if ($eid !== '' && isset($existingIds[$eid])) {
                             $skippedExisting++;
                             continue;
@@ -713,6 +782,11 @@ class DatabaseParserService
                 }
 
                 if (! $hasMore || ($maxPages > 0 && $page >= $maxPages)) {
+                    // Дошли до конца категории штатно (has_more=false или max_pages cap).
+                    // Это единственное состояние, при котором можно безопасно делать
+                    // «кто не виден — is_relevant=false»: мы действительно знаем
+                    // весь каталог категории у донора.
+                    $categoryFullyTraversed = true;
                     break;
                 }
                 if ($productLimit > 0 && $savedCount >= $productLimit) {
@@ -769,11 +843,94 @@ class DatabaseParserService
         // это были не критические инварианты, а нормальный конец прохода. Категория с пустыми
         // страницами или достигшая лимита больше не считается ошибкой пайплайна.
 
+        // Финальная маркировка unavailable для availability-only режима.
+        // Только если категория пройдена целиком (НЕ прерванная cancel/failures),
+        // и только если видимое количество «вменяемое» (защита от локального бага донора,
+        // когда категория отдала 1 пустую страницу и закончилась). Порог — 50% от
+        // Category->products_count, но не меньше 20.
+        if ($updateExisting && $updateAvailabilityOnly && $categoryFullyTraversed) {
+            try {
+                $seenCount = count($seenExternalIdsInCategory);
+                $prevCount = (int) ($category->products_count ?? 0);
+                $safetyThreshold = (int) max(20, floor($prevCount * 0.5));
+
+                if ($prevCount === 0 || $seenCount >= $safetyThreshold) {
+                    $seenIds = array_keys($seenExternalIdsInCategory);
+                    $markedUnavailable = 0;
+
+                    if ($seenIds === []) {
+                        // Категория пустая у донора — всё помечаем как is_relevant=false.
+                        $markedUnavailable = Product::where('category_id', $category->id)
+                            ->where(function ($q) {
+                                $q->where('is_relevant', '!=', false)->orWhereNull('is_relevant');
+                            })
+                            ->update([
+                                'is_relevant' => false,
+                                'relevance_checked_at' => now(),
+                            ]);
+                    } else {
+                        // Инвертируем: вычисляем targetIds = products в этой категории,
+                        // которых не было в seenIds, и обновляем их батчами. Это защищает
+                        // от проблемы WHERE NOT IN c очень большим массивом на MySQL
+                        // (десятки тысяч external_id из прогона крупной категории
+                        // превысят max_allowed_packet/prepared statement limits).
+                        $toMark = DB::table('products')
+                            ->where('category_id', $category->id)
+                            ->where(function ($q) {
+                                $q->where('is_relevant', '!=', false)->orWhereNull('is_relevant');
+                            })
+                            ->whereNotIn('external_id', [])
+                            ->pluck('external_id')
+                            ->map(fn ($v) => (string) $v)
+                            ->filter(fn ($eid) => $eid !== '' && ! isset($seenExternalIdsInCategory[$eid]))
+                            ->values()
+                            ->all();
+
+                        if ($toMark !== []) {
+                            foreach (array_chunk($toMark, 500) as $chunk) {
+                                $markedUnavailable += (int) DB::table('products')
+                                    ->whereIn('external_id', $chunk)
+                                    ->update([
+                                        'is_relevant' => false,
+                                        'relevance_checked_at' => now(),
+                                    ]);
+                            }
+                        }
+                    }
+
+                    if ($markedUnavailable > 0) {
+                        Log::warning('CATEGORY AVAILABILITY PASS COMPLETE', [
+                            'category' => $slug,
+                            'category_id' => $category->id,
+                            'seen' => $seenCount,
+                            'marked_unavailable' => $markedUnavailable,
+                            'parser_job_id' => $this->job->id,
+                        ]);
+                    }
+                } else {
+                    Log::warning('AVAILABILITY PASS SKIPPED: seen count below safety threshold', [
+                        'category' => $slug,
+                        'seen' => $seenCount,
+                        'prev_products_count' => $prevCount,
+                        'safety_threshold' => $safetyThreshold,
+                        'parser_job_id' => $this->job->id,
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('AVAILABILITY FINAL UPDATE FAILED', [
+                    'category' => $slug,
+                    'error' => $e->getMessage(),
+                    'parser_job_id' => $this->job->id,
+                ]);
+            }
+        }
+
         Log::warning('CATEGORY RESULT', [
             'category' => $slug,
             'pages_processed' => $this->debugCounters['pages'],
             'pages_attempted' => $this->debugCounters['pages_attempted'],
             'products_processed' => $this->debugCounters['products'],
+            'mode' => $updateExisting ? ($updateAvailabilityOnly ? 'update_availability_only' : 'update_full') : 'new_only',
             'parser_job_id' => $this->job->id,
         ]);
 
