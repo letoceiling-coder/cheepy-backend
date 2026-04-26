@@ -29,6 +29,7 @@ class DownloadSinglePhotoJob implements ShouldQueue
         public int $photoIndex,
         public ?int $parserJobId = null
     ) {
+        $this->timeout = max(10, (int) config('parser.photo_job_timeout_seconds', 30));
         $this->onQueue('photos');
     }
 

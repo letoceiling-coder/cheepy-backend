@@ -55,6 +55,11 @@ Schedule::call(function () {
     if ($mode === 'micro') {
         $maxQueueSize = max(100, (int) config('parser.max_photo_queue_size', 3000));
         $queueLen = (int) Redis::llen('queues:photos');
+        if ((bool) config('parser.enable_priority_queues', false)) {
+            $queueLen += (int) Redis::llen('queues:' . (string) config('parser.photos_queue_high', 'photos_high'));
+            $queueLen += (int) Redis::llen('queues:' . (string) config('parser.photos_queue_normal', 'photos_normal'));
+            $queueLen += (int) Redis::llen('queues:' . (string) config('parser.photos_queue_low', 'photos_low'));
+        }
         if ($queueLen >= $maxQueueSize) {
             \Illuminate\Support\Facades\Log::warning('scheduler-download-photos-batch skipped: queue full', [
                 'queue_len' => $queueLen,
@@ -75,6 +80,11 @@ Schedule::call(function () {
             ->pluck('id')
             ->each(function (int $productId) use (&$dispatched, $ratePerSec, $maxQueueSize): void {
                 $queueLen = (int) Redis::llen('queues:photos');
+                if ((bool) config('parser.enable_priority_queues', false)) {
+                    $queueLen += (int) Redis::llen('queues:' . (string) config('parser.photos_queue_high', 'photos_high'));
+                    $queueLen += (int) Redis::llen('queues:' . (string) config('parser.photos_queue_normal', 'photos_normal'));
+                    $queueLen += (int) Redis::llen('queues:' . (string) config('parser.photos_queue_low', 'photos_low'));
+                }
                 if ($queueLen >= $maxQueueSize) {
                     \Illuminate\Support\Facades\Log::warning('scheduler-download-photos-batch truncated: queue limit reached', [
                         'dispatched_products' => $dispatched,
@@ -100,14 +110,29 @@ Schedule::call(function () {
 
 // Photo pipeline telemetry: queue size, failed jobs, skip pressure.
 Schedule::call(function () {
+    $highQ = (string) config('parser.photos_queue_high', 'photos_high');
+    $normalQ = (string) config('parser.photos_queue_normal', 'photos_normal');
+    $lowQ = (string) config('parser.photos_queue_low', 'photos_low');
     \Illuminate\Support\Facades\Log::info('photo-pipeline-metrics', [
         'mode' => (string) config('parser.photo_pipeline_mode', 'legacy'),
         'photos_queue_size' => (int) Redis::llen('queues:photos'),
+        'photos_high_queue_size' => (int) Redis::llen('queues:' . $highQ),
+        'photos_normal_queue_size' => (int) Redis::llen('queues:' . $normalQ),
+        'photos_low_queue_size' => (int) Redis::llen('queues:' . $lowQ),
         'failed_jobs_photos' => (int) DB::table('failed_jobs')->where('queue', 'photos')->count(),
+        'failed_jobs_photos_high' => (int) DB::table('failed_jobs')->where('queue', $highQ)->count(),
+        'failed_jobs_photos_normal' => (int) DB::table('failed_jobs')->where('queue', $normalQ)->count(),
+        'failed_jobs_photos_low' => (int) DB::table('failed_jobs')->where('queue', $lowQ)->count(),
     ]);
 })->name('photo-pipeline-metrics')
     ->everyFiveMinutes()
     ->withoutOverlapping(4);
+
+// Cleanup and retention for photo pipeline artifacts (guarded by flag).
+Schedule::job(new \App\Jobs\PhotoPipelineMaintenanceJob())
+    ->name('photo-pipeline-maintenance')
+    ->dailyAt('03:20')
+    ->withoutOverlapping(120);
 
 Schedule::command('queue:prune-failed', ['--hours' => 168])
     ->daily()

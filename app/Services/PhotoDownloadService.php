@@ -6,6 +6,8 @@ use App\Models\Product;
 use App\Models\ProductPhoto;
 use App\Models\ParserSetting;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -86,6 +88,11 @@ class PhotoDownloadService
     public function downloadSinglePhoto(Product $product, string $photoUrl, int $index, bool $force = false): array
     {
         $normalizedUrl = $this->normalizeUrl($photoUrl);
+        $host = (string) (parse_url($normalizedUrl, PHP_URL_HOST) ?: '');
+        if (! $force && $this->isHostBlocked($host)) {
+            return ['success' => false, 'error' => 'host_blocked'];
+        }
+
         $existing = ProductPhoto::where('product_id', $product->id)
             ->where('original_url', $normalizedUrl)
             ->first();
@@ -116,6 +123,7 @@ class PhotoDownloadService
 
         $result = $this->downloadOne($normalizedUrl, $product->external_id, $index);
         if ($result['success']) {
+            $this->registerHostSuccess($host);
             $photoRecord->update([
                 'local_path' => $result['local_path'],
                 'local_medium_path' => $result['local_medium_path'] ?? null,
@@ -129,6 +137,7 @@ class PhotoDownloadService
             return ['success' => true];
         }
 
+        $this->registerHostError($host);
         $photoRecord->update(['download_status' => 'failed']);
         return ['success' => false, 'error' => (string) ($result['error'] ?? 'Photo download failed')];
     }
@@ -168,33 +177,36 @@ class PhotoDownloadService
                         'Referer' => 'https://sadovodbaza.ru/',
                     ],
                 ]);
-            $body = (string) $response->getBody();
-            $mimeType = $response->getHeaderLine('Content-Type');
-            $mimeType = explode(';', $mimeType)[0];
+                $body = (string) $response->getBody();
+                $mimeType = $response->getHeaderLine('Content-Type');
+                $mimeType = explode(';', $mimeType)[0];
+                if ($mimeType !== '' && ! str_starts_with($mimeType, 'image/')) {
+                    return ['success' => false, 'error' => 'invalid_image_mime:' . $mimeType];
+                }
 
-            $ext = $this->getExtFromMime($mimeType) ?? pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION) ?? 'jpg';
-            $hash = md5($body);
+                $ext = $this->getExtFromMime($mimeType) ?? pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION) ?? 'jpg';
+                $hash = md5($body);
 
-            // Структура: photos/{product_id}/{index}_{hash}.jpg
-            $localPath = "photos/{$productId}/{$index}_{$hash}.{$ext}";
-            Storage::disk('local')->put($localPath, $body);
+                // Структура: photos/{product_id}/{index}_{hash}.jpg
+                $localPath = "photos/{$productId}/{$index}_{$hash}.{$ext}";
+                Storage::disk('local')->put($localPath, $body);
 
             // medium-версию качаем только если явно включено: SADAVOD_DOWNLOAD_MEDIUM=true.
             // Иначе на каждое фото уходил лишний HTTP-запрос к донору.
-            $localMediumPath = null;
-            if ($this->downloadMedium) {
-                $mediumUrl = $this->getMediumUrl($url);
-                if ($mediumUrl !== $url) {
-                    try {
-                        $medResponse = $this->client->get($mediumUrl);
-                        $medBody = (string) $medResponse->getBody();
-                        $localMediumPath = "photos/{$productId}/{$index}_{$hash}_medium.{$ext}";
-                        Storage::disk('local')->put($localMediumPath, $medBody);
-                    } catch (\Throwable $e) {
-                        // medium не критично
+                $localMediumPath = null;
+                if ($this->downloadMedium) {
+                    $mediumUrl = $this->getMediumUrl($url);
+                    if ($mediumUrl !== $url) {
+                        try {
+                            $medResponse = $this->client->get($mediumUrl);
+                            $medBody = (string) $medResponse->getBody();
+                            $localMediumPath = "photos/{$productId}/{$index}_{$hash}_medium.{$ext}";
+                            Storage::disk('local')->put($localMediumPath, $medBody);
+                        } catch (\Throwable $e) {
+                            // medium не критично
+                        }
                     }
                 }
-            }
 
                 return [
                     'success' => true,
@@ -209,7 +221,10 @@ class PhotoDownloadService
                 if (str_contains($msg, 'timed out') || str_contains($msg, 'Connection timed out') || str_contains($msg, 'cURL error 28')) {
                     Log::warning('Parser timeout', ['url' => $url, 'attempt' => $attempt]);
                 }
-                if ($attempt < $maxAttempts) {
+                $statusCode = ($e instanceof RequestException && $e->hasResponse())
+                    ? $e->getResponse()->getStatusCode()
+                    : null;
+                if ($attempt < $maxAttempts && $this->isRetryableError($msg, $statusCode)) {
                     usleep($attempt * 2_000_000);
                     continue;
                 }
@@ -248,5 +263,89 @@ class PhotoDownloadService
             'image/webp' => 'webp',
             default => null,
         };
+    }
+
+    private function isRetryableError(string $msg, ?int $statusCode): bool
+    {
+        if ($statusCode !== null && in_array($statusCode, [400, 401, 403, 404, 410, 422], true)) {
+            return false;
+        }
+        if (str_contains($msg, 'invalid_image_mime')) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function isHostBlocked(string $host): bool
+    {
+        if (! (bool) config('parser.enable_cdn_protection', false)) {
+            return false;
+        }
+        if ($host === '') {
+            return false;
+        }
+
+        return (bool) Cache::get($this->hostBlockKey($host), false);
+    }
+
+    private function registerHostSuccess(string $host): void
+    {
+        if (! (bool) config('parser.enable_cdn_protection', false) || $host === '') {
+            return;
+        }
+        Cache::put($this->hostErrConsecutiveKey($host), 0, 3600);
+        Cache::increment($this->hostSuccessKey($host));
+        Cache::put($this->hostSuccessKey($host), (int) Cache::get($this->hostSuccessKey($host), 0), 3600);
+    }
+
+    private function registerHostError(string $host): void
+    {
+        if (! (bool) config('parser.enable_cdn_protection', false) || $host === '') {
+            return;
+        }
+
+        $threshold = max(3, (int) config('parser.cdn_block_threshold', 15));
+        $ttl = max(60, (int) config('parser.cdn_block_ttl_seconds', 600));
+
+        Cache::increment($this->hostErrorKey($host));
+        Cache::put($this->hostErrorKey($host), (int) Cache::get($this->hostErrorKey($host), 0), 3600);
+        $consecutive = Cache::increment($this->hostErrConsecutiveKey($host));
+        Cache::put($this->hostErrConsecutiveKey($host), $consecutive, 3600);
+
+        if ($consecutive >= $threshold) {
+            Cache::put($this->hostBlockKey($host), true, $ttl);
+            Cache::put($this->hostErrConsecutiveKey($host), 0, 3600);
+            Log::warning('photo-cdn host temporarily blocked', [
+                'host' => $host,
+                'threshold' => $threshold,
+                'block_ttl_seconds' => $ttl,
+            ]);
+        }
+    }
+
+    private function hostKeyPrefix(string $host): string
+    {
+        return 'photo_host:' . md5(strtolower($host));
+    }
+
+    private function hostErrorKey(string $host): string
+    {
+        return $this->hostKeyPrefix($host) . ':errors';
+    }
+
+    private function hostSuccessKey(string $host): string
+    {
+        return $this->hostKeyPrefix($host) . ':success';
+    }
+
+    private function hostErrConsecutiveKey(string $host): string
+    {
+        return $this->hostKeyPrefix($host) . ':consecutive';
+    }
+
+    private function hostBlockKey(string $host): string
+    {
+        return $this->hostKeyPrefix($host) . ':blocked';
     }
 }
