@@ -19,7 +19,8 @@ class PublicController extends Controller
 {
     private function useSystemProductCatalog(): bool
     {
-        return filter_var(config('cheepy_catalog.public_use_system_products'), FILTER_VALIDATE_BOOL);
+        // Public catalog is CRM-only by product decision.
+        return true;
     }
 
     /**
@@ -28,20 +29,8 @@ class PublicController extends Controller
      */
     public function menu(): JsonResponse
     {
-        if ($this->useSystemProductCatalog()) {
-            return app(PublicSystemCatalogService::class)->menu();
-        }
-
-        $categories = Category::where('enabled', true)
-            ->whereNull('parent_id')
-            ->orderBy('sort_order')
-            ->with([
-                'children' => fn($q) => $q->where('enabled', true)->orderBy('sort_order')
-                    ->with(['children' => fn($q2) => $q2->where('enabled', true)->orderBy('sort_order')])
-            ])
-            ->get(['id', 'name', 'slug', 'icon', 'parent_id', 'sort_order', 'products_count']);
-
-        return response()->json(['categories' => $categories]);
+        // CRM-only источник меню для витрины/header.
+        return app(PublicSystemCatalogService::class)->menu();
     }
 
     /**
