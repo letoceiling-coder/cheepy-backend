@@ -3,6 +3,7 @@
 namespace App\Services\Catalog;
 
 use App\Models\CatalogCategory;
+use App\Models\SystemProduct;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -23,7 +24,11 @@ class CatalogCategoryService
     {
         $productsCountSub = DB::table('system_products')
             ->selectRaw('count(*)')
-            ->whereColumn('system_products.category_id', 'catalog_categories.id');
+            ->whereColumn('system_products.category_id', 'catalog_categories.id')
+            ->whereIn('system_products.status', [
+                SystemProduct::STATUS_APPROVED,
+                SystemProduct::STATUS_PUBLISHED,
+            ]);
 
         return CatalogCategory::with('parent')
             ->selectRaw('catalog_categories.*')

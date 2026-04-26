@@ -48,9 +48,11 @@ class PublicSystemCatalogService
             ->where('is_active', true)
             ->firstOrFail();
 
+        $categoryIds = $this->collectActiveDescendantCategoryIds((int) $category->id);
+
         $query = SystemProduct::query()
             ->whereIn('status', $this->visibleStatuses())
-            ->where('category_id', $category->id)
+            ->whereIn('category_id', $categoryIds)
             ->with([
                 'seller:id,name,slug,pavilion',
                 'photos' => $this->enabledPhotos(),
@@ -96,7 +98,7 @@ class PublicSystemCatalogService
         $perPage = min((int) $request->input('per_page', 24), 60);
         $page = $query->paginate($perPage);
 
-        $filters = $this->buildSystemFiltersForCategory((int) $category->id);
+        $filters = $this->buildSystemFiltersForCategoryIds($categoryIds);
 
         return response()->json([
             'category' => [
@@ -252,11 +254,11 @@ class PublicSystemCatalogService
     /**
      * @return list<array<string, mixed>>
      */
-    private function buildSystemFiltersForCategory(int $catalogCategoryId): array
+    private function buildSystemFiltersForCategoryIds(array $catalogCategoryIds): array
     {
         $ids = SystemProduct::query()
             ->whereIn('status', $this->visibleStatuses())
-            ->where('category_id', $catalogCategoryId)
+            ->whereIn('category_id', $catalogCategoryIds)
             ->pluck('id');
         if ($ids->isEmpty()) {
             return [];
@@ -287,6 +289,40 @@ class PublicSystemCatalogService
         }
 
         return $out;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function collectActiveDescendantCategoryIds(int $rootId): array
+    {
+        $all = CatalogCategory::query()
+            ->where('is_active', true)
+            ->get(['id', 'parent_id']);
+
+        $childrenByParent = [];
+        foreach ($all as $row) {
+            $pid = $row->parent_id === null ? 0 : (int) $row->parent_id;
+            $childrenByParent[$pid] ??= [];
+            $childrenByParent[$pid][] = (int) $row->id;
+        }
+
+        $result = [];
+        $stack = [$rootId];
+        $seen = [];
+        while (! empty($stack)) {
+            $id = (int) array_pop($stack);
+            if (isset($seen[$id])) {
+                continue;
+            }
+            $seen[$id] = true;
+            $result[] = $id;
+            foreach ($childrenByParent[$id] ?? [] as $childId) {
+                $stack[] = (int) $childId;
+            }
+        }
+
+        return $result;
     }
 
     /**
