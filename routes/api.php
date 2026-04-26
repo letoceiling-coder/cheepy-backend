@@ -405,6 +405,7 @@ Route::prefix('v1')->group(function () {
 Route::prefix('v1/public')->group(function () {
     Route::get('menu', [PublicController::class, 'menu']);
     Route::get('layout/global', [PublicConstructorLayoutController::class, 'global']);
+    Route::get('layout/page/{pageKey}', [PublicConstructorLayoutController::class, 'page']);
     Route::get('categories/{slug}/products', [PublicController::class, 'categoryProducts']);
     Route::get('products/{externalId}', [PublicController::class, 'product']);
     Route::get('sellers/{slug}', [PublicController::class, 'seller']);
