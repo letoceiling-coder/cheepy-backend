@@ -17,26 +17,28 @@ class PublicSystemCatalogService
 {
     public function menu(): JsonResponse
     {
-        $countPublished = fn ($q) => $q->where('status', SystemProduct::STATUS_PUBLISHED);
+        $countVisible = fn ($q) => $q->whereIn('status', $this->visibleStatuses());
 
         $categories = CatalogCategory::query()
             ->where('is_active', true)
             ->whereNull('parent_id')
             ->orderBy('sort_order')
-            ->withCount(['systemProducts as products_count' => $countPublished])
+            ->withCount(['systemProducts as products_count' => $countVisible])
             ->with([
                 'children' => fn ($q) => $q->where('is_active', true)
                     ->orderBy('sort_order')
-                    ->withCount(['systemProducts as products_count' => $countPublished])
+                    ->withCount(['systemProducts as products_count' => $countVisible])
                     ->with([
                         'children' => fn ($q2) => $q2->where('is_active', true)
                             ->orderBy('sort_order')
-                            ->withCount(['systemProducts as products_count' => $countPublished]),
+                            ->withCount(['systemProducts as products_count' => $countVisible]),
                     ]),
             ])
             ->get(['id', 'name', 'slug', 'icon', 'parent_id', 'sort_order', 'products_count']);
 
-        return response()->json(['categories' => $categories]);
+        $normalized = $this->filterMenuTree($categories->toArray(), 1);
+
+        return response()->json(['categories' => array_values($normalized)]);
     }
 
     public function categoryProducts(Request $request, string $slug): JsonResponse
@@ -47,7 +49,7 @@ class PublicSystemCatalogService
             ->firstOrFail();
 
         $query = SystemProduct::query()
-            ->published()
+            ->whereIn('status', $this->visibleStatuses())
             ->where('category_id', $category->id)
             ->with([
                 'seller:id,name,slug,pavilion',
@@ -115,7 +117,7 @@ class PublicSystemCatalogService
 
     public function product(string $externalId): JsonResponse
     {
-        $sp = $this->findPublishedSystemProductByPublicId($externalId);
+        $sp = $this->findVisibleSystemProductByPublicId($externalId);
 
         $sp->load([
             'category:id,name,slug',
@@ -129,7 +131,7 @@ class PublicSystemCatalogService
         $sellerProducts = [];
         if ($sp->seller_id) {
             $sellerProducts = SystemProduct::query()
-                ->published()
+                ->whereIn('status', $this->visibleStatuses())
                 ->where('seller_id', $sp->seller_id)
                 ->where('id', '!=', $sp->id)
                 ->with(['photos' => $this->enabledPhotos(), 'productSources.donorProduct:id,external_id'])
@@ -149,7 +151,7 @@ class PublicSystemCatalogService
         $seller = \App\Models\Seller::where('slug', $slug)->where('status', 'active')->firstOrFail();
 
         $products = SystemProduct::query()
-            ->published()
+            ->whereIn('status', $this->visibleStatuses())
             ->where('seller_id', $seller->id)
             ->with(['photos' => fn ($q) => $q->orderBy('sort_order'), 'productSources.donorProduct:id,external_id'])
             ->paginate($request->input('per_page', 24));
@@ -192,7 +194,7 @@ class PublicSystemCatalogService
         }
 
         $products = SystemProduct::query()
-            ->published()
+            ->whereIn('status', $this->visibleStatuses())
             ->where(function ($query) use ($q) {
                 $query->where('name', 'like', "%{$q}%")
                     ->orWhere('description', 'like', "%{$q}%");
@@ -216,7 +218,7 @@ class PublicSystemCatalogService
     {
         $limit = min((int) $request->input('limit', 24), 60);
         $products = SystemProduct::query()
-            ->published()
+            ->whereIn('status', $this->visibleStatuses())
             ->whereHas('photos', fn ($q) => $q->where('is_enabled', true))
             ->inRandomOrder()
             ->limit($limit)
@@ -226,20 +228,20 @@ class PublicSystemCatalogService
         return response()->json(['data' => $products->map(fn (SystemProduct $sp) => $this->formatSystemProductCard($sp))]);
     }
 
-    private function findPublishedSystemProductByPublicId(string $externalId): SystemProduct
+    private function findVisibleSystemProductByPublicId(string $externalId): SystemProduct
     {
         if (str_starts_with($externalId, 'sp-')) {
             $id = (int) substr($externalId, 3);
             if ($id > 0) {
                 return SystemProduct::query()
-                    ->published()
+                    ->whereIn('status', $this->visibleStatuses())
                     ->whereKey($id)
                     ->firstOrFail();
             }
         }
 
         return SystemProduct::query()
-            ->published()
+            ->whereIn('status', $this->visibleStatuses())
             ->whereHas('productSources', function ($q) use ($externalId) {
                 $q->where('source', ProductSource::SOURCE_PARSER)
                     ->whereHas('donorProduct', fn ($q2) => $q2->where('external_id', $externalId));
@@ -253,7 +255,7 @@ class PublicSystemCatalogService
     private function buildSystemFiltersForCategory(int $catalogCategoryId): array
     {
         $ids = SystemProduct::query()
-            ->published()
+            ->whereIn('status', $this->visibleStatuses())
             ->where('category_id', $catalogCategoryId)
             ->pluck('id');
         if ($ids->isEmpty()) {
@@ -366,5 +368,46 @@ class PublicSystemCatalogService
                 'logo_url' => $sp->brand->logo_url,
             ] : null,
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function visibleStatuses(): array
+    {
+        return [
+            SystemProduct::STATUS_APPROVED,
+            SystemProduct::STATUS_PUBLISHED,
+        ];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $nodes
+     * @return array<int, array<string, mixed>>
+     */
+    private function filterMenuTree(array $nodes, int $minProducts): array
+    {
+        $out = [];
+        foreach ($nodes as $node) {
+            $children = is_array($node['children'] ?? null) ? $node['children'] : [];
+            $children = $this->filterMenuTree($children, $minProducts);
+
+            $ownCount = (int) ($node['products_count'] ?? 0);
+            $childrenTotal = 0;
+            foreach ($children as $child) {
+                $childrenTotal += (int) ($child['products_count'] ?? 0);
+            }
+            $total = $ownCount + $childrenTotal;
+
+            if ($total <= $minProducts) {
+                continue;
+            }
+
+            $node['products_count'] = $total;
+            $node['children'] = array_values($children);
+            $out[] = $node;
+        }
+
+        return $out;
     }
 }
