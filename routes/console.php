@@ -5,6 +5,8 @@ use App\Console\Commands\RebuildAttributes;
 use App\Console\Commands\AuditAttributes;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Schedule;
 
 Artisan::command('inspire', function () {
@@ -49,10 +51,63 @@ Schedule::call(function () {
         \Illuminate\Support\Facades\Log::info('scheduler-download-photos-batch skipped: download_photos=false');
         return;
     }
+    $mode = (string) config('parser.photo_pipeline_mode', 'legacy');
+    if ($mode === 'micro') {
+        $maxQueueSize = max(100, (int) config('parser.max_photo_queue_size', 3000));
+        $queueLen = (int) Redis::llen('queues:photos');
+        if ($queueLen >= $maxQueueSize) {
+            \Illuminate\Support\Facades\Log::warning('scheduler-download-photos-batch skipped: queue full', [
+                'queue_len' => $queueLen,
+                'max_photo_queue_size' => $maxQueueSize,
+            ]);
+            return;
+        }
+
+        $batchSize = max(1, (int) config('parser.micro_product_batch_size', 40));
+        $ratePerSec = max(1, (int) config('parser.micro_dispatch_rate_per_sec', 20));
+        $dispatched = 0;
+
+        \App\Models\Product::query()
+            ->where('photos_downloaded', false)
+            ->where('photos_count', '>', 0)
+            ->orderBy('id')
+            ->limit($batchSize)
+            ->pluck('id')
+            ->each(function (int $productId) use (&$dispatched, $ratePerSec, $maxQueueSize): void {
+                $queueLen = (int) Redis::llen('queues:photos');
+                if ($queueLen >= $maxQueueSize) {
+                    \Illuminate\Support\Facades\Log::warning('scheduler-download-photos-batch truncated: queue limit reached', [
+                        'dispatched_products' => $dispatched,
+                        'queue_len' => $queueLen,
+                        'max_photo_queue_size' => $maxQueueSize,
+                    ]);
+                    return;
+                }
+
+                $delayMs = (int) floor(($dispatched * 1000) / $ratePerSec);
+                \App\Jobs\DownloadProductPhotosJob::dispatch($productId)
+                    ->onQueue('photos')
+                    ->delay(now()->addMilliseconds($delayMs));
+                $dispatched++;
+            });
+        return;
+    }
+
     \App\Jobs\DownloadPhotosJob::dispatch(100)->onQueue('photos');
 })->name('scheduler-download-photos-batch')
     ->hourly()
     ->withoutOverlapping(60);
+
+// Photo pipeline telemetry: queue size, failed jobs, skip pressure.
+Schedule::call(function () {
+    \Illuminate\Support\Facades\Log::info('photo-pipeline-metrics', [
+        'mode' => (string) config('parser.photo_pipeline_mode', 'legacy'),
+        'photos_queue_size' => (int) Redis::llen('queues:photos'),
+        'failed_jobs_photos' => (int) DB::table('failed_jobs')->where('queue', 'photos')->count(),
+    ]);
+})->name('photo-pipeline-metrics')
+    ->everyFiveMinutes()
+    ->withoutOverlapping(4);
 
 Schedule::command('queue:prune-failed', ['--hours' => 168])
     ->daily()

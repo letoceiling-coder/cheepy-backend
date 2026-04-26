@@ -19,6 +19,7 @@ use App\Services\SadovodParser\HttpClient;
 use App\Services\SadovodParser\Parsers\CatalogParser;
 use App\Services\SadovodParser\Parsers\MenuParser;
 use App\Services\SadovodParser\Parsers\ProductParser;
+use App\Jobs\DownloadProductPhotosJob;
 use App\Jobs\DownloadPhotoJob;
 use App\Jobs\ParseCategoryJob;
 use App\Services\SadovodParser\Parsers\SellerParser;
@@ -1070,7 +1071,13 @@ class DatabaseParserService
                             ->whereIn('download_status', ['pending', 'failed'])
                             ->exists();
                         if ($hasPending) {
-                            DownloadPhotoJob::dispatch($product->id, $this->job->id);
+                            $photoPipelineMode = (string) config('parser.photo_pipeline_mode', 'legacy');
+                            if ($photoPipelineMode === 'micro') {
+                                DownloadProductPhotosJob::dispatch($product->id, $this->job->id)
+                                    ->onQueue('photos');
+                            } else {
+                                DownloadPhotoJob::dispatch($product->id, $this->job->id);
+                            }
                         }
                     } else {
                         $result = $this->photoService->downloadProductPhotos($product);

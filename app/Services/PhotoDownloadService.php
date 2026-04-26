@@ -61,39 +61,12 @@ class PhotoDownloadService
         $skipped = 0;
 
         foreach ($photos as $index => $photoUrl) {
-            $normalizedUrl = $this->normalizeUrl($photoUrl);
-            $existing = ProductPhoto::where('product_id', $product->id)
-                ->where('original_url', $normalizedUrl)
-                ->first();
-
-            if ($existing && !$force && $existing->download_status === 'done') {
+            $result = $this->downloadSinglePhoto($product, (string) $photoUrl, (int) $index, $force);
+            if (($result['skipped'] ?? false) === true) {
                 $skipped++;
-                continue;
-            }
-
-            $photoRecord = $existing ?? ProductPhoto::create([
-                'product_id' => $product->id,
-                'original_url' => $normalizedUrl,
-                'medium_url' => $this->getMediumUrl($normalizedUrl),
-                'sort_order' => $index,
-                'is_primary' => $index === 0,
-                'download_status' => 'pending',
-            ]);
-
-            $result = $this->downloadOne($normalizedUrl, $product->external_id, $index);
-
-            if ($result['success']) {
-                $photoRecord->update([
-                    'local_path' => $result['local_path'],
-                    'local_medium_path' => $result['local_medium_path'] ?? null,
-                    'hash' => $result['hash'],
-                    'mime_type' => $result['mime_type'],
-                    'file_size' => $result['file_size'],
-                    'download_status' => 'done',
-                ]);
+            } elseif (($result['success'] ?? false) === true) {
                 $downloaded++;
             } else {
-                $photoRecord->update(['download_status' => 'failed']);
                 $failed++;
             }
         }
@@ -103,6 +76,61 @@ class PhotoDownloadService
         }
 
         return ['downloaded' => $downloaded, 'failed' => $failed, 'skipped' => $skipped];
+    }
+
+    /**
+     * Скачать одно фото товара и обновить product_photos.
+     *
+     * @return array{success: bool, skipped?: bool, error?: string}
+     */
+    public function downloadSinglePhoto(Product $product, string $photoUrl, int $index, bool $force = false): array
+    {
+        $normalizedUrl = $this->normalizeUrl($photoUrl);
+        $existing = ProductPhoto::where('product_id', $product->id)
+            ->where('original_url', $normalizedUrl)
+            ->first();
+
+        if ($existing && ! $force) {
+            // Idempotency: if file already exists, mark as done and skip repeated download.
+            if (! empty($existing->local_path) && Storage::disk('local')->exists($existing->local_path)) {
+                if ($existing->download_status !== 'done') {
+                    $existing->update(['download_status' => 'done']);
+                }
+                return ['success' => true, 'skipped' => true];
+            }
+
+            // Anti-duplicate: any non-pending status is treated as terminal in micro pipeline.
+            if ($existing->download_status !== 'pending') {
+                return ['success' => true, 'skipped' => true];
+            }
+        }
+
+        $photoRecord = $existing ?? ProductPhoto::create([
+            'product_id' => $product->id,
+            'original_url' => $normalizedUrl,
+            'medium_url' => $this->getMediumUrl($normalizedUrl),
+            'sort_order' => $index,
+            'is_primary' => $index === 0,
+            'download_status' => 'pending',
+        ]);
+
+        $result = $this->downloadOne($normalizedUrl, $product->external_id, $index);
+        if ($result['success']) {
+            $photoRecord->update([
+                'local_path' => $result['local_path'],
+                'local_medium_path' => $result['local_medium_path'] ?? null,
+                'hash' => $result['hash'],
+                'mime_type' => $result['mime_type'],
+                'file_size' => $result['file_size'],
+                'download_status' => 'done',
+            ]);
+            $product->update(['photos_downloaded' => true]);
+
+            return ['success' => true];
+        }
+
+        $photoRecord->update(['download_status' => 'failed']);
+        return ['success' => false, 'error' => (string) ($result['error'] ?? 'Photo download failed')];
     }
 
     /**
