@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\ParserController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\PublicController;
 use App\Http\Controllers\Api\PublicConstructorLayoutController;
+use App\Http\Controllers\Api\CrmMediaController;
 use App\Http\Controllers\Api\CmsPublicController;
 use App\Http\Controllers\Api\SaasApiKeyController;
 use App\Http\Controllers\Api\SaasSearchController;
