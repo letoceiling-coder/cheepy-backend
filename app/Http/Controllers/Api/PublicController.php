@@ -34,6 +34,15 @@ class PublicController extends Controller
     }
 
     /**
+     * GET /api/v1/public/categories/by-ids?ids=1,2,3
+     * Плоский список категорий по ID (без фильтрации по количеству товаров).
+     */
+    public function categoriesByIds(Request $request): JsonResponse
+    {
+        return app(PublicSystemCatalogService::class)->categoriesByIds($request);
+    }
+
+    /**
      * GET /api/v1/public/categories/{slug}/products
      * Товары категории с фильтрацией и пагинацией
      */

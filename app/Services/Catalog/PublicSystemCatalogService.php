@@ -41,6 +41,52 @@ class PublicSystemCatalogService
         return response()->json(['categories' => array_values($normalized)]);
     }
 
+    /**
+     * GET /api/v1/public/categories/by-ids?ids=1,2,3
+     * Возвращает плоский список категорий по указанным ID без фильтрации по products_count.
+     * Нужен для блоков конструктора, где пользователь явно выбрал категории (показываем все выбранные).
+     */
+    public function categoriesByIds(Request $request): JsonResponse
+    {
+        $raw = (string) $request->query('ids', '');
+        $ids = collect(preg_split('/[,\s]+/', $raw, -1, PREG_SPLIT_NO_EMPTY))
+            ->map(fn ($x) => (int) $x)
+            ->filter(fn ($x) => $x > 0)
+            ->unique()
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return response()->json(['data' => []]);
+        }
+
+        $countVisible = fn ($q) => $q->whereIn('status', $this->visibleStatuses());
+
+        $items = CatalogCategory::query()
+            ->whereIn('id', $ids->all())
+            ->withCount(['systemProducts as products_count' => $countVisible])
+            ->get(['id', 'name', 'slug', 'icon', 'parent_id', 'sort_order', 'is_active']);
+
+        $byId = $items->keyBy('id');
+        $ordered = $ids
+            ->map(fn ($id) => $byId->get($id))
+            ->filter()
+            ->values()
+            ->map(function (CatalogCategory $c) {
+                return [
+                    'id' => (int) $c->id,
+                    'name' => (string) $c->name,
+                    'slug' => (string) $c->slug,
+                    'icon' => $c->icon,
+                    'parent_id' => $c->parent_id === null ? null : (int) $c->parent_id,
+                    'sort_order' => (int) ($c->sort_order ?? 0),
+                    'is_active' => (bool) $c->is_active,
+                    'products_count' => (int) ($c->products_count ?? 0),
+                ];
+            });
+
+        return response()->json(['data' => $ordered]);
+    }
+
     public function categoryProducts(Request $request, string $slug): JsonResponse
     {
         $category = CatalogCategory::query()
