@@ -151,6 +151,30 @@ class CrmMediaController extends Controller
         ]);
     }
 
+    /**
+     * Публичная отдача файла без JWT (для витрины).
+     * Важно: не отдаём файлы из корзины.
+     */
+    public function publicStreamContent(int $id): BinaryFileResponse|JsonResponse
+    {
+        $media = CrmMediaFile::findOrFail($id);
+        if ($media->isInTrash()) {
+            return response()->json(['message' => 'Файл недоступен'], 404);
+        }
+        if (! Storage::disk('public')->exists($media->path)) {
+            return response()->json(['message' => 'Файл не найден на диске'], 404);
+        }
+
+        $absolute = Storage::disk('public')->path($media->path);
+        $safeName = str_replace(["\r", "\n", '"'], '', $media->original_name);
+
+        return response()->file($absolute, [
+            'Content-Type' => $media->mime_type ?: 'application/octet-stream',
+            'Content-Disposition' => 'inline; filename="'.$safeName.'"',
+            'Cache-Control' => 'public, max-age=86400, immutable',
+        ]);
+    }
+
     public function upload(Request $request): JsonResponse
     {
         // max в килобайтах; должно быть ≤ upload_max_filesize / post_max_size в php.ini
