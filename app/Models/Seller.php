@@ -26,6 +26,17 @@ class Seller extends Model
         return $this->hasMany(Product::class);
     }
 
+    /** CRM витрина: опубликованные карточки каталога. */
+    public function systemProducts(): HasMany
+    {
+        return $this->hasMany(SystemProduct::class, 'seller_id');
+    }
+
+    public function sellerReviews(): HasMany
+    {
+        return $this->hasMany(SellerReview::class);
+    }
+
     /**
      * Извлечь shop ID из whatsapp_url: /posts/link?utm_content=shop{id}&...
      */

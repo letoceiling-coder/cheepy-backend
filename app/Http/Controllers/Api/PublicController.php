@@ -34,6 +34,15 @@ class PublicController extends Controller
     }
 
     /**
+     * GET /api/v1/public/sellers
+     * Список продавцов с витринными товарами (system_products).
+     */
+    public function sellers(Request $request): JsonResponse
+    {
+        return app(PublicSystemCatalogService::class)->sellers($request);
+    }
+
+    /**
      * GET /api/v1/public/categories/by-ids?ids=1,2,3
      * Плоский список категорий по ID (без фильтрации по количеству товаров).
      */

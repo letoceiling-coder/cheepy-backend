@@ -4,6 +4,8 @@ namespace App\Services\Catalog;
 
 use App\Models\CatalogCategory;
 use App\Models\ProductSource;
+use App\Models\Seller;
+use App\Models\SellerReview;
 use App\Models\SystemProduct;
 use App\Models\SystemProductAttribute;
 use Illuminate\Http\JsonResponse;
@@ -198,17 +200,51 @@ class PublicSystemCatalogService
     {
         $seller = \App\Models\Seller::where('slug', $slug)->where('status', 'active')->firstOrFail();
 
-        $products = SystemProduct::query()
+        $stats = SellerReview::query()
+            ->where('seller_id', $seller->id)
+            ->where('is_published', true)
+            ->selectRaw('COUNT(*) as c, AVG(rating) as avg_r, SUM(CASE WHEN rating >= 4 THEN 1 ELSE 0 END) as pos')
+            ->first();
+
+        $reviewCount = (int) ($stats->c ?? 0);
+        $avgRating = $stats->avg_r !== null ? round((float) $stats->avg_r, 2) : null;
+        $positiveCount = (int) ($stats->pos ?? 0);
+        $positivePercent = $reviewCount > 0 ? (int) round(100 * $positiveCount / $reviewCount) : null;
+
+        $query = SystemProduct::query()
             ->whereIn('status', $this->visibleStatuses())
             ->where('seller_id', $seller->id)
-            ->with(['photos' => fn ($q) => $q->orderBy('sort_order'), 'productSources.donorProduct:id,external_id'])
-            ->paginate($request->input('per_page', 24));
+            ->with(['photos' => fn ($q) => $q->orderBy('sort_order'), 'productSources.donorProduct:id,external_id']);
+
+        $sortBy = $request->input('sort_by', 'popular');
+        switch ($sortBy) {
+            case 'price_asc':
+                $query->orderByRaw('COALESCE(price_raw, 4294967295) asc')->orderBy('id');
+                break;
+            case 'price_desc':
+                $query->orderByRaw('COALESCE(price_raw, 0) desc')->orderBy('id');
+                break;
+            case 'new':
+                $query->orderByDesc('created_at')->orderByDesc('id');
+                break;
+            case 'rating':
+                $query->orderByDesc('list_position')->orderByDesc('id');
+                break;
+            case 'popular':
+            default:
+                $query->orderByDesc('list_position')->orderByDesc('id');
+                break;
+        }
+
+        $perPage = min((int) $request->input('per_page', 24), 60);
+        $products = $query->paginate($perPage);
 
         return response()->json([
             'seller' => [
                 'id' => $seller->id,
                 'name' => $seller->name,
                 'slug' => $seller->slug,
+                'avatar_url' => $seller->avatar_url,
                 'pavilion' => $seller->pavilion,
                 'pavilion_line' => $seller->pavilion_line,
                 'pavilion_number' => $seller->pavilion_number,
@@ -223,6 +259,12 @@ class PublicSystemCatalogService
                 'seller_categories' => $seller->seller_categories ?? [],
                 'products_count' => $seller->products_count,
                 'source_url' => $seller->source_url,
+                'created_at' => $seller->created_at?->toIso8601String(),
+                'reviews_summary' => [
+                    'count' => $reviewCount,
+                    'avg_rating' => $avgRating,
+                    'positive_percent' => $positivePercent,
+                ],
             ],
             'data' => $products->getCollection()->map(fn (SystemProduct $sp) => $this->formatSystemProductCard($sp))->values(),
             'meta' => [
@@ -232,6 +274,81 @@ class PublicSystemCatalogService
                 'last_page' => $products->lastPage(),
             ],
         ]);
+    }
+
+    /**
+     * GET /api/v1/public/sellers
+     * Продавцы с хотя бы одной видимой карточкой system_products.
+     */
+    public function sellers(Request $request): JsonResponse
+    {
+        $visible = $this->visibleStatuses();
+        $sortBy = $request->input('sort_by', 'products_desc');
+
+        $query = Seller::query()
+            ->where('status', 'active')
+            ->whereHas('systemProducts', fn ($q) => $q->whereIn('status', $visible))
+            ->withCount([
+                'systemProducts as visible_products_count' => fn ($q) => $q->whereIn('status', $visible),
+                'sellerReviews as reviews_count' => fn ($q) => $q->where('is_published', true),
+                'sellerReviews as positive_reviews_count' => fn ($q) => $q->where('is_published', true)->where('rating', '>=', 4),
+            ])
+            ->withAvg([
+                'sellerReviews as reviews_avg_rating' => fn ($q) => $q->where('is_published', true),
+            ], 'rating');
+
+        switch ($sortBy) {
+            case 'name_asc':
+                $query->orderBy('name')->orderBy('sellers.id');
+                break;
+            case 'reviews_desc':
+                $query->orderByDesc('reviews_count')->orderByDesc('reviews_avg_rating')->orderBy('name');
+                break;
+            case 'newest':
+                $query->orderByDesc('created_at')->orderBy('name');
+                break;
+            case 'products_desc':
+            default:
+                $query->orderByDesc('visible_products_count')->orderBy('name');
+                break;
+        }
+
+        $perPage = min((int) $request->input('per_page', 24), 60);
+        $paginator = $query->paginate($perPage);
+
+        return response()->json([
+            'data' => $paginator->getCollection()->map(fn (Seller $s) => $this->formatPublicSellerListRow($s))->values(),
+            'meta' => [
+                'total' => $paginator->total(),
+                'per_page' => $paginator->perPage(),
+                'current_page' => $paginator->currentPage(),
+                'last_page' => $paginator->lastPage(),
+            ],
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function formatPublicSellerListRow(Seller $s): array
+    {
+        $rc = (int) ($s->reviews_count ?? 0);
+        $avg = $s->reviews_avg_rating !== null ? round((float) $s->reviews_avg_rating, 2) : null;
+        $pos = (int) ($s->positive_reviews_count ?? 0);
+        $positivePercent = $rc > 0 ? (int) round(100 * $pos / $rc) : null;
+
+        return [
+            'id' => $s->id,
+            'name' => $s->name,
+            'slug' => $s->slug,
+            'avatar_url' => $s->avatar_url,
+            'products_count' => (int) ($s->visible_products_count ?? 0),
+            'reviews_summary' => [
+                'count' => $rc,
+                'avg_rating' => $avg,
+                'positive_percent' => $positivePercent,
+            ],
+        ];
     }
 
     public function search(Request $request): JsonResponse

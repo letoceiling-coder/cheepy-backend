@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\ParserController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\PublicController;
 use App\Http\Controllers\Api\PublicConstructorLayoutController;
+use App\Http\Controllers\Api\PublicSellerReviewController;
 use App\Http\Controllers\Api\CrmMediaController;
 use App\Http\Controllers\Api\CmsPublicController;
 use App\Http\Controllers\Api\SaasApiKeyController;
@@ -411,6 +412,9 @@ Route::prefix('v1/public')->group(function () {
     Route::get('media/files/{id}/content', [CrmMediaController::class, 'publicStreamContent'])->whereNumber('id');
     Route::get('categories/{slug}/products', [PublicController::class, 'categoryProducts']);
     Route::get('products/{externalId}', [PublicController::class, 'product']);
+    Route::get('sellers', [PublicController::class, 'sellers']);
+    Route::get('sellers/{slug}/reviews', [PublicSellerReviewController::class, 'index']);
+    Route::post('sellers/{slug}/reviews', [PublicSellerReviewController::class, 'store'])->middleware('throttle:20,60');
     Route::get('sellers/{slug}', [PublicController::class, 'seller']);
     Route::get('search', [PublicController::class, 'search']);
     Route::get('featured', [PublicController::class, 'featured']);
