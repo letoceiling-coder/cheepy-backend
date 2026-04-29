@@ -344,9 +344,8 @@ class AttributeExtractionService
 
     private function persist(Product $product, array $extracted): void
     {
-        if (empty($extracted)) return;
-
         ProductAttribute::where('product_id', $product->id)->delete();
+        if (empty($extracted)) return;
 
         $rows = [];
         $now  = now();
