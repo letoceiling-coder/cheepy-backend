@@ -11,6 +11,7 @@ use App\Models\ProductSource;
 use App\Models\SystemProduct;
 use App\Models\SystemProductAttribute;
 use App\Models\SystemProductPhoto;
+use App\Services\CatalogAttributeNormalizer;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -44,7 +45,7 @@ class SystemProductFromDonorService
                 'donor_updated_at' => $donor->updated_at,
             ]);
 
-            $this->copyAttributes($donor, $sp);
+            $this->syncAttributesFromDonor($donor, $sp);
             $this->copyPhotos($donor, $sp);
 
             return $sp->load([
@@ -93,40 +94,61 @@ class SystemProductFromDonorService
         return $mapping?->catalog_category_id;
     }
 
-    private function copyAttributes(Product $donor, SystemProduct $sp): void
+    public function syncAttributesFromDonor(Product $donor, SystemProduct $sp): void
     {
         SystemProductAttribute::where('system_product_id', $sp->id)->delete();
 
         $attrs = ProductAttribute::where('product_id', $donor->id)->get();
+        $normalizer = app(CatalogAttributeNormalizer::class);
 
         $seen = [];
         foreach ($attrs as $a) {
-            $raw = mb_substr((string) $a->attr_value, 0, 500);
-            $attrValue = strtolower(trim($raw));
-            $attrName = strtolower(trim((string) $a->attr_name));
-            $dedupeKey = $attrName."\0".$attrValue;
-            if (isset($seen[$dedupeKey])) {
-                continue;
-            }
-            $seen[$dedupeKey] = true;
+            $rows = $normalizer->normalizeAttribute(
+                (string) ($a->attribute_key ?? ''),
+                (string) $a->attr_name,
+                (string) ($a->attr_value_original ?: $a->attr_value),
+                (string) $a->attr_type,
+                (float) ($a->confidence ?? 1.0),
+                'system-sync'
+            );
 
-            $attrType = $this->detectAttrType($attrValue);
-
-            $payload = [
-                'system_product_id' => $sp->id,
-                'attr_name' => $attrName,
-                'attr_value' => $attrValue,
-                'attr_value_original' => $raw,
-                'attr_type' => $attrType,
-            ];
-
-            if ($attrType === SystemProductAttribute::TYPE_INT) {
-                $payload['value_int'] = $this->parseInt($attrValue);
-            } elseif ($attrType === SystemProductAttribute::TYPE_FLOAT) {
-                $payload['value_float'] = $this->parseFloat($attrValue);
+            if ($rows === []) {
+                $rows = $normalizer->normalizeAttribute(
+                    (string) ($a->attribute_key ?? ''),
+                    (string) $a->attr_name,
+                    (string) $a->attr_value,
+                    (string) $a->attr_type,
+                    (float) ($a->confidence ?? 1.0),
+                    'system-sync'
+                );
             }
 
-            SystemProductAttribute::create($payload);
+            foreach ($rows as $row) {
+                $dedupeKey = $row['attribute_key']."\0".mb_strtolower((string) $row['attr_value']);
+                if (isset($seen[$dedupeKey])) {
+                    continue;
+                }
+                $seen[$dedupeKey] = true;
+
+                $attrType = $this->detectAttrType((string) $row['attr_value']);
+                $payload = [
+                    'system_product_id' => $sp->id,
+                    'attribute_key' => $row['attribute_key'],
+                    'attr_name' => $row['attr_name'],
+                    'attr_value' => $row['attr_value'],
+                    'attr_value_original' => $row['attr_value_original'],
+                    'attr_type' => $row['attr_type'] ?: $attrType,
+                    'confidence' => $row['confidence'] ?? 1.0,
+                ];
+
+                if ($attrType === SystemProductAttribute::TYPE_INT) {
+                    $payload['value_int'] = $this->parseInt((string) $row['attr_value']);
+                } elseif ($attrType === SystemProductAttribute::TYPE_FLOAT) {
+                    $payload['value_float'] = $this->parseFloat((string) $row['attr_value']);
+                }
+
+                SystemProductAttribute::create($payload);
+            }
         }
     }
 

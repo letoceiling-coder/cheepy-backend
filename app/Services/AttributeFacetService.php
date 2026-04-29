@@ -88,7 +88,10 @@ class AttributeFacetService
 
         foreach (self::FACET_KEYS as $attrKey) {
             $query = ProductAttribute::query()
-                ->where('attr_name', $this->displayName($attrKey, $displayNames))
+                ->where(function ($q) use ($attrKey, $displayNames) {
+                    $q->where('attribute_key', $attrKey)
+                        ->orWhere('attr_name', $this->displayName($attrKey, $displayNames));
+                })
                 ->where('confidence', '>=', $minConf)
                 ->select('attr_value', DB::raw('COUNT(*) as count'), DB::raw('MAX(confidence) as max_conf'))
                 ->groupBy('attr_value')

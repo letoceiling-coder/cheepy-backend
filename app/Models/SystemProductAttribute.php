@@ -17,15 +17,18 @@ class SystemProductAttribute extends Model
 
     protected $fillable = [
         'system_product_id',
+        'attribute_key',
         'attr_name',
         'attr_value',
         'attr_value_original',
         'attr_type',
+        'confidence',
         'value_int',
         'value_float',
     ];
 
     protected $casts = [
+        'confidence' => 'float',
         'value_int' => 'integer',
         'value_float' => 'float',
     ];

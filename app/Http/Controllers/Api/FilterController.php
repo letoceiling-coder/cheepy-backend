@@ -78,7 +78,9 @@ class FilterController extends Controller
         $result = [];
         foreach ($activeFilters as $filter) {
             $values = ProductAttribute::where('category_id', $categoryId)
-                ->where('attr_name', $filter->attr_name)
+                ->where(function ($q) use ($filter) {
+                    $q->where('attribute_key', $filter->attr_name)->orWhere('attr_name', $filter->attr_name);
+                })
                 ->distinct()
                 ->pluck('attr_value')
                 ->sort()

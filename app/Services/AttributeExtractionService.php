@@ -8,6 +8,7 @@ use App\Models\AttributeSynonym;
 use App\Models\AttributeValueNormalization;
 use App\Models\Product;
 use App\Models\ProductAttribute;
+use App\Services\CatalogAttributeNormalizer;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -138,7 +139,7 @@ class AttributeExtractionService
             }
         }
 
-        return $results;
+        return app(CatalogAttributeNormalizer::class)->normalizeExtractedRows($results);
     }
 
     /**
@@ -353,8 +354,10 @@ class AttributeExtractionService
             $rows[] = [
                 'product_id'  => $product->id,
                 'category_id' => $product->category_id,
+                'attribute_key' => mb_substr((string) ($attr['attribute_key'] ?? ''), 0, 60),
                 'attr_name'   => mb_substr($attr['attr_name'], 0, 199),
                 'attr_value'  => mb_substr($attr['attr_value'], 0, 499),
+                'attr_value_original' => mb_substr((string) ($attr['attr_value_original'] ?? $attr['attr_value']), 0, 499),
                 'attr_type'   => $attr['attr_type'],
                 'confidence'  => $attr['confidence'] ?? 1.0,
                 'created_at'  => $now,

@@ -8,6 +8,7 @@ use App\Models\Seller;
 use App\Models\SellerReview;
 use App\Models\SystemProduct;
 use App\Models\SystemProductAttribute;
+use App\Services\CatalogAttributeNormalizer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -116,7 +117,9 @@ class PublicSystemCatalogService
                 continue;
             }
             $query->whereHas('attributes', function ($q) use ($key, $value) {
-                $q->where('attr_name', $key)->where('attr_value', $value);
+                $q->where(function ($inner) use ($key) {
+                    $inner->where('attribute_key', $key)->orWhere('attr_name', $key);
+                })->where('attr_value', $value);
             });
         }
 
@@ -441,31 +444,58 @@ class PublicSystemCatalogService
             return [];
         }
 
-        $names = SystemProductAttribute::query()
-            ->whereIn('system_product_id', $ids)
-            ->select('attr_name')
-            ->distinct()
-            ->pluck('attr_name');
-
+        $normalizer = app(CatalogAttributeNormalizer::class);
+        $keys = ['size', 'color', 'material', 'country_of_origin', 'brand'];
         $out = [];
-        foreach ($names as $name) {
+        foreach ($keys as $key) {
             $values = SystemProductAttribute::query()
                 ->whereIn('system_product_id', $ids)
-                ->where('attr_name', $name)
+                ->where('attribute_key', $key)
                 ->distinct()
                 ->pluck('attr_value')
-                ->sort()
+                ->filter(fn ($v) => is_string($v) && trim($v) !== '')
+                ->unique()
+                ->sortBy(fn ($v) => $this->filterValueSortKey($key, (string) $v))
                 ->values()
                 ->all();
+            if (empty($values)) {
+                continue;
+            }
             $out[] = [
-                'attr_name' => $name,
-                'display_name' => $name,
+                'attr_name' => $key,
+                'display_name' => $normalizer->displayName($key),
                 'display_type' => 'select',
                 'values' => $values,
             ];
         }
 
         return $out;
+    }
+
+    private function filterValueSortKey(string $key, string $value): string
+    {
+        if ($key === 'size') {
+            $order = [
+                'XXS' => 1,
+                'XS' => 2,
+                'S' => 3,
+                'M' => 4,
+                'L' => 5,
+                'XL' => 6,
+                'XXL' => 7,
+                '3XL' => 8,
+                '4XL' => 9,
+                '5XL' => 10,
+            ];
+            if (isset($order[$value])) {
+                return sprintf('0001-%04d', $order[$value]);
+            }
+            if (ctype_digit($value)) {
+                return sprintf('0002-%04d', (int) $value);
+            }
+        }
+
+        return '9999-'.$value;
     }
 
     /**

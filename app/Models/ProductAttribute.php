@@ -8,7 +8,18 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class ProductAttribute extends Model
 {
     protected $fillable = [
-        'product_id', 'category_id', 'attr_name', 'attr_value', 'attr_type',
+        'product_id',
+        'category_id',
+        'attribute_key',
+        'attr_name',
+        'attr_value',
+        'attr_value_original',
+        'attr_type',
+        'confidence',
+    ];
+
+    protected $casts = [
+        'confidence' => 'float',
     ];
 
     public function product(): BelongsTo

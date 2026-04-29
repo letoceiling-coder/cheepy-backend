@@ -9,6 +9,7 @@ use App\Models\SystemProduct;
 use App\Models\SystemProductAttribute;
 use App\Models\SystemProductPhoto;
 use App\Services\Catalog\SystemProductFromDonorService;
+use App\Services\CatalogAttributeNormalizer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -187,30 +188,39 @@ class SystemProductController extends Controller
             SystemProductAttribute::where('system_product_id', $sp->id)->delete();
 
             $seen = [];
+            $normalizer = app(CatalogAttributeNormalizer::class);
             foreach ($data['attributes'] as $row) {
                 $raw = mb_substr((string) ($row['attr_value'] ?? ''), 0, 500);
-                $attrValue = strtolower(trim($raw));
-                $attrName = strtolower(trim((string) $row['attr_name']));
-                $key = $attrName."\0".$attrValue;
-                if ($attrName === '' || isset($seen[$key])) {
+                $attrName = trim((string) $row['attr_name']);
+                if ($attrName === '') {
                     continue;
                 }
-                $seen[$key] = true;
 
-                $attrType = $this->detectCrmAttrType($attrValue);
-                $payload = [
-                    'system_product_id' => $sp->id,
-                    'attr_name' => $attrName,
-                    'attr_value' => $attrValue,
-                    'attr_value_original' => $raw,
-                    'attr_type' => $attrType,
-                ];
-                if ($attrType === SystemProductAttribute::TYPE_INT) {
-                    $payload['value_int'] = $this->parseCrmInt($attrValue);
-                } elseif ($attrType === SystemProductAttribute::TYPE_FLOAT) {
-                    $payload['value_float'] = $this->parseCrmFloat($attrValue);
+                $rows = $normalizer->normalizeAttribute('', $attrName, $raw, 'text', 1.0, 'crm');
+                foreach ($rows as $normalized) {
+                    $key = $normalized['attribute_key']."\0".mb_strtolower((string) $normalized['attr_value']);
+                    if (isset($seen[$key])) {
+                        continue;
+                    }
+                    $seen[$key] = true;
+
+                    $attrType = $this->detectCrmAttrType((string) $normalized['attr_value']);
+                    $payload = [
+                        'system_product_id' => $sp->id,
+                        'attribute_key' => $normalized['attribute_key'],
+                        'attr_name' => $normalized['attr_name'],
+                        'attr_value' => $normalized['attr_value'],
+                        'attr_value_original' => $normalized['attr_value_original'],
+                        'attr_type' => $normalized['attr_type'] ?: $attrType,
+                        'confidence' => $normalized['confidence'] ?? 1.0,
+                    ];
+                    if ($attrType === SystemProductAttribute::TYPE_INT) {
+                        $payload['value_int'] = $this->parseCrmInt((string) $normalized['attr_value']);
+                    } elseif ($attrType === SystemProductAttribute::TYPE_FLOAT) {
+                        $payload['value_float'] = $this->parseCrmFloat((string) $normalized['attr_value']);
+                    }
+                    SystemProductAttribute::create($payload);
                 }
-                SystemProductAttribute::create($payload);
             }
         });
 

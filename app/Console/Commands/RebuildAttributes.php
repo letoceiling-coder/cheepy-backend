@@ -3,6 +3,8 @@
 namespace App\Console\Commands;
 
 use App\Models\Product;
+use App\Models\ProductSource;
+use App\Services\Catalog\SystemProductFromDonorService;
 use App\Services\AttributeExtractionService;
 use Illuminate\Console\Command;
 
@@ -12,11 +14,12 @@ class RebuildAttributes extends Command
                             {--chunk=200   : Products processed per DB chunk}
                             {--product=    : Rebuild for a single product_id only}
                             {--category=   : Rebuild only for products in this category_id}
-                            {--dry-run     : Extract without saving to DB}';
+                            {--dry-run     : Extract without saving to DB}
+                            {--skip-system : Do not sync system_product_attributes after donor rebuild}';
 
     protected $description = 'Rebuild product_attributes for all (or filtered) products using attribute_rules table';
 
-    public function handle(AttributeExtractionService $service): int
+    public function handle(AttributeExtractionService $service, SystemProductFromDonorService $systemSync): int
     {
         $chunkSize = (int) ($this->option('chunk') ?: 200);
 
@@ -33,6 +36,18 @@ class RebuildAttributes extends Command
                 $attrs = $service->extractFromText($text);
             } else {
                 $attrs = $service->extractAndSave($product);
+                if (! $this->option('skip-system')) {
+                    ProductSource::query()
+                        ->where('source', ProductSource::SOURCE_PARSER)
+                        ->where('donor_product_id', $product->id)
+                        ->with('systemProduct')
+                        ->get()
+                        ->each(function (ProductSource $source) use ($product, $systemSync) {
+                            if ($source->systemProduct) {
+                                $systemSync->syncAttributesFromDonor($product, $source->systemProduct);
+                            }
+                        });
+                }
             }
 
             $this->info("Saved " . count($attrs) . " attributes for product #{$id}.");
@@ -93,6 +108,39 @@ class RebuildAttributes extends Command
         $this->newLine(2);
         $this->info("Done. Processed: {$processed} products, saved: {$saved} attributes.");
         $this->line("  Avg per product: " . ($processed > 0 ? round($saved / $processed, 1) : 0));
+
+        if (! $dryRun && ! $this->option('skip-system')) {
+            $this->newLine();
+            $this->info('Syncing system_product_attributes from normalized donor attributes...');
+
+            $systemQuery = ProductSource::query()
+                ->where('source', ProductSource::SOURCE_PARSER)
+                ->with(['donorProduct', 'systemProduct'])
+                ->orderBy('id');
+
+            if ($categoryId) {
+                $systemQuery->whereHas('donorProduct', fn ($q) => $q->where('category_id', $categoryId));
+            }
+
+            $totalLinks = (clone $systemQuery)->count();
+            $systemBar = $this->output->createProgressBar($totalLinks);
+            $systemBar->start();
+            $synced = 0;
+
+            $systemQuery->chunk($chunkSize, function ($sources) use ($systemSync, $systemBar, &$synced) {
+                foreach ($sources as $source) {
+                    if ($source->donorProduct && $source->systemProduct) {
+                        $systemSync->syncAttributesFromDonor($source->donorProduct, $source->systemProduct);
+                        $synced++;
+                    }
+                    $systemBar->advance();
+                }
+            });
+
+            $systemBar->finish();
+            $this->newLine(2);
+            $this->info("System sync done. Synced: {$synced} system products.");
+        }
 
         return 0;
     }

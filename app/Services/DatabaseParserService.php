@@ -1140,6 +1140,7 @@ class DatabaseParserService
             'size' => 'size', 'Размер' => 'size', 'size_range' => 'size',
         ];
 
+        $normalizer = app(CatalogAttributeNormalizer::class);
         foreach ($characteristics as $name => $value) {
             if (!is_string($name) || !is_string($value)) continue;
             // Пропускаем мусорные значения: длинные, содержащие UI-текст
@@ -1147,13 +1148,18 @@ class DatabaseParserService
             if (preg_match('/Добавить в корзину|Позвонить|Смотреть все|В корзину|Уточнить/ui', $value)) continue;
             if (mb_strlen($name) > 195) continue;
 
-            ProductAttribute::create([
-                'product_id' => $product->id,
-                'category_id' => $category?->id,
-                'attr_name' => $name,
-                'attr_value' => $value,
-                'attr_type' => $typeMap[$name] ?? 'text',
-            ]);
+            foreach ($normalizer->normalizeAttribute('', $name, $value, $typeMap[$name] ?? 'text', 0.8, 'legacy') as $row) {
+                ProductAttribute::create([
+                    'product_id' => $product->id,
+                    'category_id' => $category?->id,
+                    'attribute_key' => $row['attribute_key'],
+                    'attr_name' => $row['attr_name'],
+                    'attr_value' => $row['attr_value'],
+                    'attr_value_original' => $row['attr_value_original'],
+                    'attr_type' => $row['attr_type'],
+                    'confidence' => $row['confidence'],
+                ]);
+            }
         }
     }
 
@@ -1162,35 +1168,40 @@ class DatabaseParserService
         $color = $characteristics['color'] ?? $characteristics['Цвет'] ?? $product->color ?? null;
         $size = $characteristics['size'] ?? $characteristics['Размер'] ?? $characteristics['size_range'] ?? $product->size_range ?? null;
 
-        $color = $this->normalizeCoreAttrValue($color);
-        $size = $this->normalizeCoreAttrValue($size);
+        $normalizer = app(CatalogAttributeNormalizer::class);
+        foreach ([
+            'color' => ['Цвет', $color, 'color'],
+            'size' => ['Размер', $size, 'size'],
+        ] as $key => [$name, $raw, $type]) {
+            $raw = $this->normalizeCoreAttrValue($raw);
+            if ($raw === null) {
+                continue;
+            }
 
-        if ($color !== null) {
-            ProductAttribute::updateOrCreate(
-                [
-                    'product_id' => $product->id,
-                    'attr_name' => 'Цвет',
-                    'attr_type' => 'color',
-                ],
-                [
-                    'category_id' => $category?->id,
-                    'attr_value' => $color,
-                ]
-            );
-        }
+            $rows = $normalizer->normalizeAttribute($key, $name, $raw, $type, 0.9, 'core');
+            if ($rows === []) {
+                continue;
+            }
 
-        if ($size !== null) {
-            ProductAttribute::updateOrCreate(
-                [
+            ProductAttribute::query()
+                ->where('product_id', $product->id)
+                ->where(function ($q) use ($key, $name) {
+                    $q->where('attribute_key', $key)->orWhere('attr_name', $name);
+                })
+                ->delete();
+
+            foreach ($rows as $row) {
+                ProductAttribute::create([
                     'product_id' => $product->id,
-                    'attr_name' => 'Размер',
-                    'attr_type' => 'size',
-                ],
-                [
                     'category_id' => $category?->id,
-                    'attr_value' => $size,
-                ]
-            );
+                    'attribute_key' => $row['attribute_key'],
+                    'attr_name' => $row['attr_name'],
+                    'attr_value' => $row['attr_value'],
+                    'attr_value_original' => $row['attr_value_original'],
+                    'attr_type' => $row['attr_type'],
+                    'confidence' => $row['confidence'],
+                ]);
+            }
         }
     }
 
