@@ -288,6 +288,20 @@ class PublicSystemCatalogService
             }
         }
 
+        // Numeric URL segment: try system_products.id, then donor external_id.
+        if (ctype_digit($externalId)) {
+            $id = (int) $externalId;
+            if ($id > 0) {
+                $byPk = SystemProduct::query()
+                    ->whereIn('status', $this->visibleStatuses())
+                    ->whereKey($id)
+                    ->first();
+                if ($byPk !== null) {
+                    return $byPk;
+                }
+            }
+        }
+
         return SystemProduct::query()
             ->whereIn('status', $this->visibleStatuses())
             ->whereHas('productSources', function ($q) use ($externalId) {
