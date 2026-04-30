@@ -17,6 +17,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prepend(\App\Http\Middleware\CorsMiddleware::class);
         $middleware->alias([
             'jwt' => \App\Http\Middleware\JwtMiddleware::class,
+            'customer.jwt' => \App\Http\Middleware\StorefrontJwtMiddleware::class,
             'saas.api' => \App\Http\Middleware\SaasApiKeyMiddleware::class,
         ]);
     })

@@ -296,4 +296,178 @@ class SocialOAuthFlowService
             ]
             : ['error' => 'OK не вернул access_token', 'raw' => $json];
     }
+
+    /**
+     * @param  array<string, mixed>  $exchangeRaw  ответ token endpoint (VK/Yandex/OK)
+     * @param  array<string, mixed>  $config  конфиг интеграции из CRM
+     * @return array{provider_user_id: string, email: ?string, name: ?string, error?: string}
+     */
+    public function resolveSocialIdentity(string $provider, string $accessToken, array $exchangeRaw, array $config): array
+    {
+        return match ($provider) {
+            'vk' => $this->resolveVkIdentity($accessToken, $exchangeRaw),
+            'yandex' => $this->resolveYandexIdentity($accessToken),
+            'ok' => $this->resolveOkIdentity($accessToken, $exchangeRaw, $config),
+            default => ['provider_user_id' => '', 'email' => null, 'name' => null, 'error' => 'Неизвестный провайдер'],
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $exchangeRaw
+     * @return array{provider_user_id: string, email: ?string, name: ?string, error?: string}
+     */
+    private function resolveVkIdentity(string $accessToken, array $exchangeRaw): array
+    {
+        $email = isset($exchangeRaw['email']) && is_string($exchangeRaw['email']) ? $exchangeRaw['email'] : null;
+        $uid = $exchangeRaw['user_id'] ?? null;
+        if (is_numeric($uid)) {
+            $name = null;
+
+            return [
+                'provider_user_id' => (string) $uid,
+                'email' => $email !== '' ? $email : null,
+                'name' => $name,
+            ];
+        }
+
+        try {
+            $res = Http::timeout(20)->get('https://api.vk.com/method/users.get', [
+                'access_token' => $accessToken,
+                'v' => '5.131',
+                'fields' => 'photo_200',
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('vk users.get transport', ['e' => $e->getMessage()]);
+
+            return ['provider_user_id' => '', 'email' => $email, 'name' => null, 'error' => 'Сеть: '.$e->getMessage()];
+        }
+
+        $json = $res->json();
+        $list = is_array($json['response'] ?? null) ? $json['response'] : [];
+        $first = isset($list[0]) && is_array($list[0]) ? $list[0] : [];
+        $id = $first['id'] ?? null;
+        if (! is_numeric($id)) {
+            return ['provider_user_id' => '', 'email' => $email, 'name' => null, 'error' => 'VK: не удалось получить id пользователя'];
+        }
+
+        $fn = isset($first['first_name']) && is_string($first['first_name']) ? $first['first_name'] : '';
+        $ln = isset($first['last_name']) && is_string($first['last_name']) ? $first['last_name'] : '';
+        $name = trim($fn.' '.$ln);
+
+        return [
+            'provider_user_id' => (string) $id,
+            'email' => $email !== '' ? $email : null,
+            'name' => $name !== '' ? $name : null,
+        ];
+    }
+
+    /**
+     * @return array{provider_user_id: string, email: ?string, name: ?string, error?: string}
+     */
+    private function resolveYandexIdentity(string $accessToken): array
+    {
+        try {
+            $res = Http::timeout(20)
+                ->withHeaders(['Authorization' => 'OAuth '.$accessToken])
+                ->get('https://login.yandex.ru/info');
+        } catch (\Throwable $e) {
+            Log::warning('yandex info transport', ['e' => $e->getMessage()]);
+
+            return ['provider_user_id' => '', 'email' => null, 'name' => null, 'error' => 'Сеть: '.$e->getMessage()];
+        }
+
+        $json = $res->json();
+        if (! $res->successful() || ! is_array($json)) {
+            return ['provider_user_id' => '', 'email' => null, 'name' => null, 'error' => 'Яндекс profile HTTP '.$res->status()];
+        }
+
+        $id = $json['id'] ?? $json['client_id'] ?? null;
+        if ($id === null || $id === '') {
+            return ['provider_user_id' => '', 'email' => null, 'name' => null, 'error' => 'Яндекс: нет id'];
+        }
+
+        $email = isset($json['default_email']) && is_string($json['default_email']) ? $json['default_email'] : null;
+        $login = isset($json['login']) && is_string($json['login']) ? $json['login'] : null;
+        $email = $email ?? ($login ? $login.'@yandex.ru' : null);
+
+        $name = null;
+        if (isset($json['real_name']) && is_string($json['real_name']) && trim($json['real_name']) !== '') {
+            $name = trim($json['real_name']);
+        } elseif (isset($json['display_name']) && is_string($json['display_name'])) {
+            $name = trim($json['display_name']);
+        }
+
+        return [
+            'provider_user_id' => (string) $id,
+            'email' => $email,
+            'name' => $name,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $exchangeRaw
+     * @param  array<string, mixed>  $config
+     * @return array{provider_user_id: string, email: ?string, name: ?string, error?: string}
+     */
+    private function resolveOkIdentity(string $accessToken, array $exchangeRaw, array $config): array
+    {
+        $publicKey = trim((string) ($config['public_key'] ?? ''));
+        $secretKey = trim((string) ($config['secret_key'] ?? ''));
+        if ($publicKey === '' || $secretKey === '') {
+            return ['provider_user_id' => '', 'email' => null, 'name' => null, 'error' => 'OK: не заданы ключи приложения'];
+        }
+
+        $params = [
+            'application_key' => $publicKey,
+            'format' => 'json',
+            'method' => 'users.getCurrentUser',
+            'session_key' => $accessToken,
+        ];
+        ksort($params);
+        $sigBase = '';
+        foreach ($params as $k => $v) {
+            $sigBase .= $k.'='.$v;
+        }
+        $sessionSecret = md5($accessToken.$secretKey);
+        $params['sig'] = md5($sigBase.md5($sessionSecret));
+
+        try {
+            $res = Http::timeout(20)->get('https://api.ok.ru/fetch.do', $params);
+        } catch (\Throwable $e) {
+            Log::warning('ok fetch transport', ['e' => $e->getMessage()]);
+
+            return ['provider_user_id' => '', 'email' => null, 'name' => null, 'error' => 'Сеть: '.$e->getMessage()];
+        }
+
+        $json = $res->json();
+        if (! $res->successful()) {
+            return ['provider_user_id' => '', 'email' => null, 'name' => null, 'error' => 'OK profile HTTP '.$res->status()];
+        }
+
+        if (isset($json['error_code'])) {
+            return ['provider_user_id' => '', 'email' => null, 'name' => null, 'error' => 'OK API: '.json_encode($json['error_msg'] ?? $json)];
+        }
+
+        $uid = $json['uid'] ?? null;
+
+        if ($uid === null || $uid === '') {
+            return ['provider_user_id' => '', 'email' => null, 'name' => null, 'error' => 'OK: не удалось получить uid'];
+        }
+
+        $name = null;
+        if (isset($json['name']) && is_string($json['name'])) {
+            $name = trim($json['name']);
+        }
+
+        $email = null;
+        if (isset($json['email']) && is_string($json['email'])) {
+            $email = trim($json['email']);
+        }
+
+        return [
+            'provider_user_id' => (string) $uid,
+            'email' => $email !== '' ? $email : null,
+            'name' => $name !== '' ? $name : null,
+        ];
+    }
 }

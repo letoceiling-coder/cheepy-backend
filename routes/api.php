@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\SmsAuthPublicController;
+use App\Http\Controllers\Api\StorefrontAuthController;
 use App\Http\Controllers\Api\CrmSocialOauthIntegrationController;
 use App\Http\Controllers\Api\SocialOAuthPublicController;
 use App\Http\Controllers\Api\AiMetricsController;
@@ -443,9 +445,20 @@ Route::prefix('v1')->group(function () {
 // =====================================================================
 Route::prefix('v1/auth')->group(function () {
     Route::post('login', [AuthController::class, 'login']);
+    Route::get('sms/meta', [SmsAuthPublicController::class, 'meta']);
     Route::middleware(JwtMiddleware::class)->group(function () {
         Route::get('me', [AuthController::class, 'me']);
         Route::post('refresh', [AuthController::class, 'refresh']);
+    });
+});
+
+Route::prefix('v1/store/auth')->middleware('throttle:45,1')->group(function () {
+    Route::post('login', [StorefrontAuthController::class, 'login']);
+    Route::post('register', [StorefrontAuthController::class, 'register']);
+    Route::middleware('customer.jwt')->group(function () {
+        Route::get('me', [StorefrontAuthController::class, 'me']);
+        Route::post('refresh', [StorefrontAuthController::class, 'refresh']);
+        Route::post('social/link-session', [StorefrontAuthController::class, 'socialLinkSession']);
     });
 });
 
