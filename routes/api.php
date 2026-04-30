@@ -538,6 +538,11 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::patch('delivery-integrations/{name}', [\App\Http\Controllers\Api\CrmDeliveryIntegrationController::class, 'update']);
         Route::post('delivery-integrations/{name}/test', [\App\Http\Controllers\Api\CrmDeliveryIntegrationController::class, 'test']);
 
+        Route::get('sms-integrations', [\App\Http\Controllers\Api\CrmSmsIntegrationController::class, 'index']);
+        Route::post('sms-integrations/{name}/test', [\App\Http\Controllers\Api\CrmSmsIntegrationController::class, 'test']);
+        Route::get('sms-integrations/{name}', [\App\Http\Controllers\Api\CrmSmsIntegrationController::class, 'show']);
+        Route::patch('sms-integrations/{name}', [\App\Http\Controllers\Api\CrmSmsIntegrationController::class, 'update']);
+
         Route::get('ai-providers', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'index']);
         Route::post('ai-providers/active-agent', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'setActiveAgent']);
         Route::get('ai-providers/token-usage', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'tokenUsage']);
