@@ -97,7 +97,32 @@ final class AiProviderCatalog
                 ['id' => 'bytedance/seedance-1-pro', 'label' => 'ByteDance Seedance 1 Pro'],
             ],
         ],
+        // Локальный inference: OpenAI-совместимый POST …/v1/chat/completions; тег модели — из `ollama list`.
+        'ollama' => [
+            'title' => 'Ollama',
+            'description' => 'Локальные модели; укажите базовый URL (например http://127.0.0.1:11434) и тег модели из списка Ollama на вашей машине.',
+            'docs_url' => 'https://github.com/ollama/ollama/blob/main/docs/openai.md',
+            'models' => [
+                ['id' => 'llama3.2', 'label' => 'Llama 3.2'],
+                ['id' => 'llama3.1', 'label' => 'Llama 3.1'],
+                ['id' => 'mistral', 'label' => 'Mistral'],
+                ['id' => 'qwen2.5', 'label' => 'Qwen 2.5'],
+                ['id' => 'deepseek-r1', 'label' => 'DeepSeek R1'],
+                ['id' => 'gemma3', 'label' => 'Gemma 3'],
+            ],
+        ],
     ];
+
+    /**
+     * Провайдеры, которыми можно пользоваться как источником текста для CRM-агента (чат).
+     * Replicate здесь нет — это в основном predictions/медиа, не чат для описаний.
+     *
+     * @return list<string>
+     */
+    public static function agentChatProviderKeys(): array
+    {
+        return array_values(array_diff(self::providerKeys(), ['replicate']));
+    }
 
     public static function providerKeys(): array
     {
@@ -129,6 +154,9 @@ final class AiProviderCatalog
         $modelId = trim($modelId);
         if ($modelId === '') {
             return false;
+        }
+        if ($name === 'ollama') {
+            return preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.:\\/-]{0,127}$/', $modelId) === 1;
         }
         foreach (self::models($name) as $m) {
             if ($m['id'] === $modelId) {

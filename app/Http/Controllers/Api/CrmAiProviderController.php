@@ -4,9 +4,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\AiProviderIntegration;
+use App\Models\AiTokenUsageLog;
+use App\Models\Setting;
 use App\Support\AiProviderCatalog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class CrmAiProviderController extends Controller
 {
@@ -27,7 +30,61 @@ class CrmAiProviderController extends Controller
             $out[] = $this->serializeProvider($row->name, $row);
         }
 
-        return response()->json(['data' => $out, 'catalog_updated_at' => self::CATALOG_UPDATED_AT]);
+        $active = Setting::get('crm_active_ai_agent_provider');
+        $activeStr = is_string($active) && $active !== '' ? $active : 'site_al';
+
+        return response()->json([
+            'data' => $out,
+            'catalog_updated_at' => self::CATALOG_UPDATED_AT,
+            'active_agent_provider' => $activeStr,
+            'active_agent_options' => $this->activeAgentOptions(),
+        ]);
+    }
+
+    public function setActiveAgent(Request $request): JsonResponse
+    {
+        $allowed = array_merge(['site_al'], AiProviderCatalog::agentChatProviderKeys());
+        $data = $request->validate([
+            'provider' => ['required', 'string', 'max:64', Rule::in($allowed)],
+        ]);
+
+        Setting::set('crm_active_ai_agent_provider', $data['provider'], 'crm');
+
+        return response()->json([
+            'active_agent_provider' => $data['provider'],
+            'active_agent_options' => $this->activeAgentOptions(),
+        ]);
+    }
+
+    public function tokenUsage(Request $request): JsonResponse
+    {
+        $perPage = min(100, max(10, (int) $request->query('per_page', 40)));
+        $page = max(1, (int) $request->query('page', 1));
+
+        $paginator = AiTokenUsageLog::query()
+            ->orderByDesc('id')
+            ->paginate($perPage, ['*'], 'page', $page);
+
+        return response()->json([
+            'data' => collect($paginator->items())->map(function (AiTokenUsageLog $row) {
+                return [
+                    'id' => $row->id,
+                    'provider' => $row->provider,
+                    'model' => $row->model,
+                    'prompt_tokens' => $row->prompt_tokens,
+                    'completion_tokens' => $row->completion_tokens,
+                    'total_tokens' => $row->total_tokens,
+                    'cost_usd' => $row->cost_usd !== null ? (string) $row->cost_usd : null,
+                    'created_at' => $row->created_at?->toIso8601String(),
+                ];
+            })->values()->all(),
+            'meta' => [
+                'current_page' => $paginator->currentPage(),
+                'last_page' => $paginator->lastPage(),
+                'per_page' => $paginator->perPage(),
+                'total' => $paginator->total(),
+            ],
+        ]);
     }
 
     public function update(Request $request, string $name): JsonResponse
@@ -42,6 +99,7 @@ class CrmAiProviderController extends Controller
             'is_active' => 'nullable|boolean',
             'api_key' => 'nullable|string|max:8192',
             'default_model' => 'nullable|string|max:512',
+            'base_url' => 'nullable|string|max:512',
         ]);
 
         if (array_key_exists('is_active', $data)) {
@@ -63,6 +121,15 @@ class CrmAiProviderController extends Controller
                 return response()->json(['error' => 'Неизвестная модель для этого провайдера'], 422);
             }
             $config['default_model'] = $mid;
+        }
+
+        if (array_key_exists('base_url', $data) && $data['base_url'] !== null) {
+            $bu = trim((string) $data['base_url']);
+            if ($bu === '') {
+                unset($config['base_url']);
+            } else {
+                $config['base_url'] = $bu;
+            }
         }
 
         $row->config = $config;
@@ -102,12 +169,38 @@ class CrmAiProviderController extends Controller
             'description' => $meta['description'] ?? '',
             'docs_url' => $meta['docs_url'] ?? '',
             'is_active' => $row->is_active,
+            'agent_chat_capable' => in_array($name, AiProviderCatalog::agentChatProviderKeys(), true),
             'has_api_key' => $hasKey,
             'api_key_hint' => $hasKey ? $this->maskKeyTail((string) $config['api_key']) : null,
             'default_model' => $defaultModel,
+            'base_url' => trim((string) ($config['base_url'] ?? '')),
             'models' => AiProviderCatalog::models($name),
             'catalog_updated_at' => self::CATALOG_UPDATED_AT,
         ];
+    }
+
+    /**
+     * @return list<array{value: string, title: string, description: string}>
+     */
+    private function activeAgentOptions(): array
+    {
+        $opts = [
+            [
+                'value' => 'site_al',
+                'title' => 'Site-al',
+                'description' => 'Внешний агент (переменные SITE_AL_* на сервере). Диалоги с conversationId.',
+            ],
+        ];
+        foreach (AiProviderCatalog::agentChatProviderKeys() as $key) {
+            $meta = AiProviderCatalog::meta($key);
+            $opts[] = [
+                'value' => $key,
+                'title' => (string) ($meta['title'] ?? $key),
+                'description' => (string) ($meta['description'] ?? ''),
+            ];
+        }
+
+        return $opts;
     }
 
     private function maskKeyTail(string $key): string
