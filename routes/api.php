@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CrmSocialOauthIntegrationController;
+use App\Http\Controllers\Api\SocialOAuthPublicController;
 use App\Http\Controllers\Api\AiMetricsController;
 use App\Http\Controllers\Api\CategorySyncController;
 use Illuminate\Support\Facades\DB;
@@ -447,6 +449,14 @@ Route::prefix('v1/auth')->group(function () {
     });
 });
 
+Route::prefix('v1')->middleware('throttle:120,1')->group(function () {
+    Route::get('auth/social/meta', [SocialOAuthPublicController::class, 'meta']);
+    Route::get('auth/social/{provider}/redirect', [SocialOAuthPublicController::class, 'redirect'])
+        ->where('provider', 'vk|yandex|ok');
+    Route::get('auth/social/{provider}/callback', [SocialOAuthPublicController::class, 'callback'])
+        ->where('provider', 'vk|yandex|ok');
+});
+
 // =====================================================================
 // ADMIN API — требует JWT
 // =====================================================================
@@ -542,6 +552,12 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('sms-integrations/{name}/test', [\App\Http\Controllers\Api\CrmSmsIntegrationController::class, 'test']);
         Route::get('sms-integrations/{name}', [\App\Http\Controllers\Api\CrmSmsIntegrationController::class, 'show']);
         Route::patch('sms-integrations/{name}', [\App\Http\Controllers\Api\CrmSmsIntegrationController::class, 'update']);
+
+        Route::get('social-oauth-integrations', [CrmSocialOauthIntegrationController::class, 'index']);
+        Route::get('social-oauth-integrations/{name}', [CrmSocialOauthIntegrationController::class, 'show'])
+            ->where('name', 'vk|yandex|ok');
+        Route::patch('social-oauth-integrations/{name}', [CrmSocialOauthIntegrationController::class, 'update'])
+            ->where('name', 'vk|yandex|ok');
 
         Route::get('ai-providers', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'index']);
         Route::post('ai-providers/active-agent', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'setActiveAgent']);

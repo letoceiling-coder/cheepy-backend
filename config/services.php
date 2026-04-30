@@ -59,4 +59,12 @@ return [
         'timeout' => (int) env('OLLAMA_TIMEOUT', 120),
     ],
 
+    /**
+     * Базовый URL витрины после OAuth (редирект с callback API).
+     * Пример: https://siteaacess.store
+     */
+    'social_oauth' => [
+        'frontend_base_url' => rtrim(env('SOCIAL_OAUTH_FRONTEND_BASE', env('FRONTEND_URL', '')), '/'),
+    ],
+
 ];
