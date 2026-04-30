@@ -537,6 +537,10 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::get('delivery-integrations/{name}', [\App\Http\Controllers\Api\CrmDeliveryIntegrationController::class, 'show']);
         Route::patch('delivery-integrations/{name}', [\App\Http\Controllers\Api\CrmDeliveryIntegrationController::class, 'update']);
         Route::post('delivery-integrations/{name}/test', [\App\Http\Controllers\Api\CrmDeliveryIntegrationController::class, 'test']);
+
+        Route::get('ai-providers', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'index']);
+        Route::patch('ai-providers/{name}', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'update']);
+        Route::post('ai-providers/{name}/clear-key', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'clearKey']);
     });
 
     // Attribute Rules & Synonyms
