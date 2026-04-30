@@ -532,6 +532,11 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('payment-providers/{name}/test', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'test']);
         Route::post('payment-providers/{name}/test-payment', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'createTestPayment']);
         Route::get('payment-providers/{name}/logs', [\App\Http\Controllers\Api\CrmPaymentProviderController::class, 'logs']);
+
+        Route::get('delivery-integrations', [\App\Http\Controllers\Api\CrmDeliveryIntegrationController::class, 'index']);
+        Route::get('delivery-integrations/{name}', [\App\Http\Controllers\Api\CrmDeliveryIntegrationController::class, 'show']);
+        Route::patch('delivery-integrations/{name}', [\App\Http\Controllers\Api\CrmDeliveryIntegrationController::class, 'update']);
+        Route::post('delivery-integrations/{name}/test', [\App\Http\Controllers\Api\CrmDeliveryIntegrationController::class, 'test']);
     });
 
     // Attribute Rules & Synonyms

@@ -53,5 +53,6 @@ class DatabaseSeeder extends Seeder
         $this->command->info('Seeder: создан admin + ' . count($defaults) . ' настроек');
 
         $this->call(ConstructorLayoutTemplatesSeeder::class);
+        $this->call(DeliveryIntegrationSeeder::class);
     }
 }
