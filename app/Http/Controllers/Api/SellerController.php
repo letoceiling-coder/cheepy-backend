@@ -30,7 +30,8 @@ class SellerController extends Controller
             $query->where('products_count', '>', 0);
         }
 
-        $perPage = min((int) $request->input('per_page', 20), 100);
+        // Админские селекты/исключения: нужны полные справочники (несколько страниц на фронте).
+        $perPage = min(max((int) $request->input('per_page', 20), 1), 10000);
         $sellers = $query->orderBy('name')->paginate($perPage);
 
         return response()->json([

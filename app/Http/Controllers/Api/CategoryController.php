@@ -25,19 +25,27 @@ class CategoryController extends Controller
         }
 
         if ($tree) {
-            // Только корневые, с дочерними
+            // Полное дерево произвольной глубины (фильтры, парсер, админка).
             $categories = $query->whereNull('parent_id')
                 ->orderBy('sort_order')
-                ->with(['children' => fn($q) => $q->orderBy('sort_order')
-                    ->with(['children' => fn($q2) => $q2->orderBy('sort_order')])])
+                ->with(self::categoryNestedChildrenWith(40))
                 ->get();
+
             return response()->json(['data' => $categories->map(fn($c) => $this->formatCategoryTree($c))]);
         }
 
-        $categories = $query->orderBy('sort_order')->paginate($request->input('per_page', 100));
+        $perPage = min(max((int) $request->input('per_page', 100), 1), 2000);
+        $categories = $query->orderBy('sort_order')->paginate($perPage);
+
         return response()->json([
-            'data' => $categories->map(fn($c) => $this->formatCategory($c)),
+            'data' => $categories->map(fn($c) => $this->formatCategory($c))->values(),
             'total' => $categories->total(),
+            'meta' => [
+                'total' => $categories->total(),
+                'per_page' => $categories->perPage(),
+                'current_page' => $categories->currentPage(),
+                'last_page' => $categories->lastPage(),
+            ],
         ]);
     }
 
@@ -106,6 +114,22 @@ class CategoryController extends Controller
             'category_name' => $category->name,
             'attributes' => $attrs,
         ]);
+    }
+
+    /**
+     * Вложенная eager-load связь children до заданной глубины.
+     *
+     * @return array<string, mixed>
+     */
+    private static function categoryNestedChildrenWith(int $depth): array
+    {
+        if ($depth <= 0) {
+            return [];
+        }
+
+        return [
+            'children' => fn ($q) => $q->orderBy('sort_order')->with(self::categoryNestedChildrenWith($depth - 1)),
+        ];
     }
 
     private function formatCategory(Category $c): array
