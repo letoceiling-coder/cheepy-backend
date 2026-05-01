@@ -66,7 +66,10 @@ class SystemProductController extends Controller
         if ($status = $request->input('status')) {
             $query->where('status', $status);
         }
-        if ($request->filled('category_id')) {
+        $categoryIdsFilter = $this->parseCategoryIdsQuery($request);
+        if ($categoryIdsFilter !== null && $categoryIdsFilter !== []) {
+            $query->whereIn('category_id', $categoryIdsFilter);
+        } elseif ($request->filled('category_id')) {
             $query->where('category_id', (int) $request->input('category_id'));
         }
         $sellerIdsFilter = $this->parseSellerIdsQuery($request);
@@ -95,6 +98,39 @@ class SystemProductController extends Controller
                 'last_page' => $items->lastPage(),
             ],
         ]);
+    }
+
+    /**
+     * CRM list: category_ids=1,2,3 или повтор category_ids[]=…
+     *
+     * @return list<int>|null null — параметр не передан; [] — пустой фильтр
+     */
+    private function parseCategoryIdsQuery(Request $request): ?array
+    {
+        $query = $request->query();
+        if (! array_key_exists('category_ids', $query)) {
+            return null;
+        }
+        $raw = $query['category_ids'];
+        if (is_array($raw)) {
+            return array_values(array_unique(array_filter(
+                array_map(static fn ($v) => (int) $v, $raw),
+                static fn (int $id) => $id > 0
+            )));
+        }
+        $str = trim((string) $raw);
+        if ($str === '') {
+            return [];
+        }
+        $parts = preg_split('/[\s,]+/', $str, -1, PREG_SPLIT_NO_EMPTY);
+        if ($parts === false || $parts === []) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(
+            array_map(static fn ($v) => (int) $v, $parts),
+            static fn (int $id) => $id > 0
+        )));
     }
 
     /**

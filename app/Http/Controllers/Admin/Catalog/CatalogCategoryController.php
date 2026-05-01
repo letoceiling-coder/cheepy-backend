@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin\Catalog;
 
 use App\Http\Controllers\Controller;
 use App\Models\CatalogCategory;
+use App\Models\SystemProduct;
 use App\Services\Catalog\CatalogCategoryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -31,6 +32,71 @@ class CatalogCategoryController extends Controller
                 'last_page' => $paginated->lastPage(),
             ],
         ]);
+    }
+
+    /**
+     * Дерево витринных категорий с агрегатами по CRM-товарам (для фильтров).
+     * approved: published + approved; review: pending + needs_review.
+     * Счётчики на узле — сумма по поддереву (свои товары + потомки).
+     */
+    public function treeWithProductStats(): JsonResponse
+    {
+        $statsRows = SystemProduct::query()
+            ->select('category_id')
+            ->selectRaw("SUM(CASE WHEN status IN ('approved', 'published') THEN 1 ELSE 0 END) as approved")
+            ->selectRaw("SUM(CASE WHEN status IN ('pending', 'needs_review') THEN 1 ELSE 0 END) as review")
+            ->whereNotNull('category_id')
+            ->groupBy('category_id')
+            ->get()
+            ->keyBy('category_id');
+
+        $categories = CatalogCategory::query()
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+
+        $normalizeParentId = static function ($parentId): ?int {
+            if ($parentId === null || $parentId === 0) {
+                return null;
+            }
+
+            return (int) $parentId;
+        };
+
+        $childrenOf = $categories->groupBy(static fn ($c) => $normalizeParentId($c->parent_id));
+
+        $buildTree = function (?int $parentId) use (&$buildTree, $childrenOf, $statsRows): array {
+            $out = [];
+            foreach ($childrenOf->get($parentId, collect()) as $c) {
+                $s = $statsRows->get($c->id);
+                $directApproved = (int) ($s->approved ?? 0);
+                $directReview = (int) ($s->review ?? 0);
+                $children = $buildTree((int) $c->id);
+                $sumApproved = $directApproved;
+                $sumReview = $directReview;
+                foreach ($children as $ch) {
+                    $sumApproved += $ch['counts']['approved'];
+                    $sumReview += $ch['counts']['review'];
+                }
+                $out[] = [
+                    'id' => (int) $c->id,
+                    'name' => $c->name,
+                    'slug' => $c->slug,
+                    'parent_id' => $c->parent_id,
+                    'sort_order' => (int) $c->sort_order,
+                    'is_active' => (bool) $c->is_active,
+                    'counts' => [
+                        'approved' => $sumApproved,
+                        'review' => $sumReview,
+                    ],
+                    'children' => $children,
+                ];
+            }
+
+            return $out;
+        };
+
+        return response()->json(['data' => $buildTree(null)]);
     }
 
     public function store(Request $request): JsonResponse
