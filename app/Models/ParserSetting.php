@@ -30,6 +30,7 @@ class ParserSetting extends Model
         'default_linked_only',
         'default_category_ids',
         'default_no_details',
+        'excluded_seller_slugs',
     ];
 
     protected $casts = [
@@ -53,6 +54,7 @@ class ParserSetting extends Model
         'default_linked_only' => 'boolean',
         'default_category_ids' => 'array',
         'default_no_details' => 'boolean',
+        'excluded_seller_slugs' => 'array',
     ];
 
     public static function current(): self
@@ -94,6 +96,7 @@ class ParserSetting extends Model
             'default_linked_only' => false,
             'default_category_ids' => [],
             'default_no_details' => false,
+            'excluded_seller_slugs' => [],
         ];
     }
 }

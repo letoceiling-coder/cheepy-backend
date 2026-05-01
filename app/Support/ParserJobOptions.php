@@ -50,6 +50,7 @@ class ParserJobOptions
             'update_availability_only' => $updateAvailabilityOnly,
             'save_to_db' => true,
             'queue_threshold' => (int) $s->queue_threshold,
+            'excluded_seller_slugs' => ParserExcludedSellers::normalizeList($s->excluded_seller_slugs ?? []),
             'runtime' => self::runtimePayload($s),
         ];
 
@@ -115,6 +116,9 @@ class ParserJobOptions
         }
         if (array_key_exists('seller_slug', $overrides)) {
             $base['seller_slug'] = $overrides['seller_slug'];
+        }
+        if (array_key_exists('excluded_seller_slugs', $overrides)) {
+            $base['excluded_seller_slugs'] = ParserExcludedSellers::normalizeList($overrides['excluded_seller_slugs']);
         }
 
         $s = $setting ?? ParserSetting::current();

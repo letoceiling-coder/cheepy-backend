@@ -24,6 +24,7 @@ use App\Jobs\DownloadPhotoJob;
 use App\Jobs\ParseCategoryJob;
 use App\Services\SadovodParser\Parsers\SellerParser;
 use App\Services\Parser\ParserLogger;
+use App\Support\ParserExcludedSellers;
 use App\Support\ParserJobOptions;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -58,6 +59,12 @@ class DatabaseParserService
         'products' => 0,
     ];
 
+    /** @var array<string, true> slug нижний регистр → true */
+    private array $excludedSellerSlugSet = [];
+
+    /** @var list<int> id продавцов из sellers по исключённым slug */
+    private array $excludedSellerIds = [];
+
     public function __construct(ParserJob $job)
     {
         $this->job = $job;
@@ -70,6 +77,12 @@ class DatabaseParserService
         }
         ParserJobOptions::assertWorkerOptions($opts);
         $this->options = $opts;
+
+        $this->excludedSellerSlugSet = array_fill_keys(
+            ParserExcludedSellers::normalizeList($this->options['excluded_seller_slugs'] ?? []),
+            true
+        );
+        $this->excludedSellerIds = $this->resolveExcludedSellerIds();
 
         $this->assertCoreOptionsStrict();
 
@@ -163,6 +176,59 @@ class DatabaseParserService
         if (! is_array($this->options['categories'])) {
             throw new RuntimeException('CRITICAL: categories must be array');
         }
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function resolveExcludedSellerIds(): array
+    {
+        if ($this->excludedSellerSlugSet === []) {
+            return [];
+        }
+        $keys = array_keys($this->excludedSellerSlugSet);
+        $placeholders = implode(',', array_fill(0, count($keys), '?'));
+
+        return Seller::query()
+            ->whereRaw('LOWER(slug) IN ('.$placeholders.')', $keys)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+    }
+
+    private function extractSellerSlugFromProductData(array $pData): string
+    {
+        $seller = $pData['seller'] ?? [];
+        if (! is_array($seller)) {
+            return '';
+        }
+
+        return strtolower(trim((string) ($seller['seller_slug'] ?? $seller['slug'] ?? '')));
+    }
+
+    /**
+     * Убираем external_id, привязанные к исключённым продавцам (batch relevance).
+     *
+     * @param  list<string>  $externalIds
+     * @return list<string>
+     */
+    private function filterExternalIdsForAvailabilityBatch(array $externalIds): array
+    {
+        if ($externalIds === [] || $this->excludedSellerIds === []) {
+            return $externalIds;
+        }
+        $blocked = Product::query()
+            ->whereIn('external_id', $externalIds)
+            ->whereIn('seller_id', $this->excludedSellerIds)
+            ->pluck('external_id')
+            ->map(fn ($v) => (string) $v)
+            ->all();
+        if ($blocked === []) {
+            return $externalIds;
+        }
+        $flip = array_flip($blocked);
+
+        return array_values(array_filter($externalIds, fn ($id) => ! isset($flip[(string) $id])));
     }
 
     private function requestDelayMicros(): int
@@ -678,6 +744,9 @@ class DatabaseParserService
                     try {
                         $existingOnPage = array_values(array_intersect($pageIds, array_keys($existingIds)));
                         if ($existingOnPage !== []) {
+                            $existingOnPage = $this->filterExternalIdsForAvailabilityBatch($existingOnPage);
+                        }
+                        if ($existingOnPage !== []) {
                             Product::whereIn('external_id', $existingOnPage)->update([
                                 'is_relevant' => true,
                                 'relevance_checked_at' => now(),
@@ -1018,6 +1087,15 @@ class DatabaseParserService
                 throw new RuntimeException('INVALID PRODUCT: SHORT TITLE');
             }
 
+            $sellerSlugNorm = $this->extractSellerSlugFromProductData($pData);
+            if ($sellerSlugNorm !== '' && isset($this->excludedSellerSlugSet[$sellerSlugNorm])) {
+                $this->log('info', "Товар {$externalId}: продавец исключён из парсинга ({$sellerSlugNorm})", [
+                    'parser_job_id' => $this->job->id,
+                ]);
+
+                return false;
+            }
+
             // Продавец: по slug с продукта — переиспользуем или парсим страницу /s/{slug}
             $seller = $this->getOrCreateSellerForProduct($pData['seller'] ?? []);
 
@@ -1306,6 +1384,15 @@ class DatabaseParserService
 
     private function runSingleSeller(string $slug): void
     {
+        $slugNorm = strtolower(trim($slug));
+        if ($slugNorm !== '' && isset($this->excludedSellerSlugSet[$slugNorm])) {
+            $this->log('info', "Продавец {$slug} в списке исключений — парсинг карточки пропущен", [
+                'parser_job_id' => $this->job->id,
+            ]);
+
+            return;
+        }
+
         $this->updateAction("Продавец: {$slug}");
         try {
             $data = $this->sellerParser->parse('/s/' . $slug);

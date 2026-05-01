@@ -14,6 +14,7 @@ use App\Jobs\ParserDaemonJob;
 use App\Jobs\RunParserJob;
 use App\Services\Parser\ParserLogger;
 use App\Services\DatabaseParserService;
+use App\Support\ParserExcludedSellers;
 use App\Support\ParserJobOptions;
 use App\Support\ParserProxyState;
 use App\Support\QueueWorkerDiagnostics;
@@ -110,7 +111,13 @@ class ParserController extends Controller
             'default_category_ids' => ['nullable', 'array'],
             'default_category_ids.*' => ['integer', 'min:1'],
             'default_no_details' => ['nullable', 'boolean'],
+            'excluded_seller_slugs' => ['nullable', 'array'],
+            'excluded_seller_slugs.*' => ['string', 'max:191'],
         ]);
+
+        if (array_key_exists('excluded_seller_slugs', $validated)) {
+            $validated['excluded_seller_slugs'] = ParserExcludedSellers::normalizeList($validated['excluded_seller_slugs'] ?? []);
+        }
 
         if (array_key_exists('proxy_urls', $validated) && is_array($validated['proxy_urls'])) {
             $urls = array_values(array_filter(array_map('trim', $validated['proxy_urls'])));
