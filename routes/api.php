@@ -417,6 +417,7 @@ Route::prefix('v1/public')->group(function () {
     Route::get('layout/page/{pageKey}', [PublicConstructorLayoutController::class, 'page']);
     Route::get('media/files/{id}/content', [CrmMediaController::class, 'publicStreamContent'])->whereNumber('id');
     Route::get('categories/{slug}/products', [PublicController::class, 'categoryProducts']);
+    Route::post('products/storefront-cards', [PublicController::class, 'productsStorefrontCards'])->middleware('throttle:120,1');
     Route::get('products/{externalId}', [PublicController::class, 'product']);
     Route::get('sellers', [PublicController::class, 'sellers']);
     Route::get('sellers/{slug}/reviews', [PublicSellerReviewController::class, 'index']);

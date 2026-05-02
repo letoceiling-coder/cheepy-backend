@@ -3,6 +3,7 @@
 namespace App\Services\Catalog;
 
 use App\Models\CatalogCategory;
+use App\Http\Resources\PublicSystemProductStorefrontCardResource;
 use App\Models\ProductSource;
 use App\Models\Seller;
 use App\Models\SellerReview;
@@ -159,7 +160,7 @@ class PublicSystemCatalogService
                 'slug' => $category->slug,
             ],
             'filters' => $filters,
-            'data' => $page->getCollection()->map(fn (SystemProduct $sp) => $this->formatSystemProductCard($sp))->values(),
+            'data' => $page->getCollection()->map(fn (SystemProduct $sp) => $this->storefrontCard($sp))->values(),
             'meta' => [
                 'total' => $page->total(),
                 'per_page' => $page->perPage(),
@@ -191,7 +192,7 @@ class PublicSystemCatalogService
                 ->with(['photos' => $this->enabledPhotos(), 'productSources.donorProduct:id,external_id'])
                 ->limit(12)
                 ->get()
-                ->map(fn (SystemProduct $p) => $this->formatSystemProductCard($p));
+                ->map(fn (SystemProduct $p) => $this->storefrontCard($p));
         }
 
         return response()->json([
@@ -270,7 +271,7 @@ class PublicSystemCatalogService
                     'positive_percent' => $positivePercent,
                 ],
             ],
-            'data' => $products->getCollection()->map(fn (SystemProduct $sp) => $this->formatSystemProductCard($sp))->values(),
+            'data' => $products->getCollection()->map(fn (SystemProduct $sp) => $this->storefrontCard($sp))->values(),
             'meta' => [
                 'total' => $products->total(),
                 'per_page' => $products->perPage(),
@@ -373,7 +374,7 @@ class PublicSystemCatalogService
 
         return response()->json([
             'query' => $q,
-            'data' => $products->getCollection()->map(fn (SystemProduct $sp) => $this->formatSystemProductCard($sp))->values(),
+            'data' => $products->getCollection()->map(fn (SystemProduct $sp) => $this->storefrontCard($sp))->values(),
             'meta' => [
                 'total' => $products->total(),
                 'per_page' => $products->perPage(),
@@ -394,7 +395,157 @@ class PublicSystemCatalogService
             ->with(['seller:id,name,slug', 'photos' => $this->enabledPhotos(), 'productSources.donorProduct:id,external_id'])
             ->get();
 
-        return response()->json(['data' => $products->map(fn (SystemProduct $sp) => $this->formatSystemProductCard($sp))]);
+        return response()->json(['data' => $products->map(fn (SystemProduct $sp) => $this->storefrontCard($sp))]);
+    }
+
+    /**
+     * POST /api/v1/public/products/storefront-cards
+     * Карточки с ценой витрины (комиссия уже в price / price_raw) по списку id, как в URL товара.
+     */
+    public function storefrontCardsBatch(Request $request): JsonResponse
+    {
+        $ids = $request->input('ids');
+        if (! is_array($ids)) {
+            return response()->json([
+                'message' => 'Поле ids обязательно и должно быть массивом идентификаторов (как в /product/{id}).',
+            ], 422);
+        }
+
+        $normalized = collect($ids)
+            ->map(fn ($x) => trim((string) $x))
+            ->filter(fn ($x) => $x !== '')
+            ->unique()
+            ->take(50)
+            ->values()
+            ->all();
+
+        if ($normalized === []) {
+            return response()->json(['by_id' => (object) []]);
+        }
+
+        $resolved = $this->resolveVisibleSystemProductsByRequestedIds($normalized);
+        $byId = [];
+        foreach ($normalized as $reqId) {
+            if (! isset($resolved[$reqId])) {
+                continue;
+            }
+            $byId[$reqId] = (new PublicSystemProductStorefrontCardResource($resolved[$reqId]))->toArray($request);
+        }
+
+        return response()->json(['by_id' => empty($byId) ? (object) [] : $byId]);
+    }
+
+    /**
+     * Eager-load для батча карточек (без лишних N+1).
+     *
+     * @return array<string, mixed>
+     */
+    private function storefrontCardBatchRelations(): array
+    {
+        return [
+            'photos' => $this->enabledPhotos(),
+            'category:id,name,slug',
+            'seller:id,name,slug,pavilion',
+            'productSources.donorProduct:id,external_id',
+        ];
+    }
+
+    /**
+     * Сопоставляет строки из запроса (как в маршруте товара) с видимыми system_products.
+     *
+     * @param  list<string>  $requestedIds
+     * @return array<string, SystemProduct>
+     */
+    private function resolveVisibleSystemProductsByRequestedIds(array $requestedIds): array
+    {
+        $visible = $this->visibleStatuses();
+        $resolved = [];
+
+        $bySpPrefix = [];
+        foreach ($requestedIds as $rid) {
+            if (str_starts_with($rid, 'sp-')) {
+                $pk = (int) substr($rid, 3);
+                if ($pk > 0) {
+                    $bySpPrefix[$rid] = $pk;
+                }
+            }
+        }
+        if ($bySpPrefix !== []) {
+            $rows = SystemProduct::query()
+                ->whereIn('status', $visible)
+                ->whereIn('id', array_values($bySpPrefix))
+                ->with($this->storefrontCardBatchRelations())
+                ->get()
+                ->keyBy('id');
+            foreach ($bySpPrefix as $rid => $pk) {
+                $sp = $rows->get($pk);
+                if ($sp !== null) {
+                    $resolved[$rid] = $sp;
+                }
+            }
+        }
+
+        $remaining = array_values(array_filter($requestedIds, fn (string $rid) => ! isset($resolved[$rid])));
+
+        $numericRids = [];
+        foreach ($remaining as $rid) {
+            if (ctype_digit($rid)) {
+                $numericRids[$rid] = (int) $rid;
+            }
+        }
+        if ($numericRids !== []) {
+            $rows = SystemProduct::query()
+                ->whereIn('status', $visible)
+                ->whereIn('id', array_values($numericRids))
+                ->with($this->storefrontCardBatchRelations())
+                ->get()
+                ->keyBy('id');
+            foreach ($numericRids as $rid => $pk) {
+                $sp = $rows->get($pk);
+                if ($sp !== null) {
+                    $resolved[$rid] = $sp;
+                }
+            }
+        }
+
+        $remaining = array_values(array_filter($requestedIds, fn (string $rid) => ! isset($resolved[$rid])));
+        if ($remaining === []) {
+            return $resolved;
+        }
+
+        $products = SystemProduct::query()
+            ->whereIn('status', $visible)
+            ->whereHas('productSources', function ($q) use ($remaining): void {
+                $q->where('source', ProductSource::SOURCE_PARSER)
+                    ->whereHas('donorProduct', fn ($q2) => $q2->whereIn('external_id', $remaining));
+            })
+            ->with($this->storefrontCardBatchRelations())
+            ->get();
+
+        $byExternal = [];
+        foreach ($products as $sp) {
+            foreach ($sp->productSources as $ps) {
+                if ($ps->source !== ProductSource::SOURCE_PARSER) {
+                    continue;
+                }
+                $ext = $ps->donorProduct?->external_id;
+                if ($ext === null || $ext === '') {
+                    continue;
+                }
+                $key = (string) $ext;
+                if (in_array($key, $remaining, true) && ! isset($byExternal[$key])) {
+                    $byExternal[$key] = $sp;
+                }
+            }
+        }
+
+        foreach ($remaining as $rid) {
+            if (! isset($resolved[$rid]) && isset($byExternal[$rid])) {
+                $resolved[$rid] = $byExternal[$rid];
+            }
+        }
+
+        return $resolved;
     }
 
     private function findVisibleSystemProductByPublicId(string $externalId): SystemProduct
@@ -552,7 +703,11 @@ class PublicSystemCatalogService
         return 'sp-'.$sp->id;
     }
 
-    private function formatSystemProductCard(SystemProduct $sp): array
+    /**
+     * Публичная карточка товара: price / price_raw уже с комиссией маркетплейса.
+     * Используется списками, деталкой и батч-эндпоинтом витрины.
+     */
+    public function storefrontCard(SystemProduct $sp): array
     {
         $sp->loadMissing(['photos', 'category:id,name,slug', 'seller:id,name,slug', 'productSources.donorProduct:id,external_id']);
         $urls = $sp->photos->pluck('url')->filter()->values()->all();

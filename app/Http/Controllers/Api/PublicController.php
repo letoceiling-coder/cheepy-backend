@@ -121,6 +121,19 @@ class PublicController extends Controller
     }
 
     /**
+     * POST /api/v1/public/products/storefront-cards
+     * Карточки с ценой витрины (комиссия в price / price_raw) по списку id из URL товара.
+     */
+    public function productsStorefrontCards(Request $request): JsonResponse
+    {
+        if ($this->useSystemProductCatalog()) {
+            return app(PublicSystemCatalogService::class)->storefrontCardsBatch($request);
+        }
+
+        return response()->json(['by_id' => (object) []], 501);
+    }
+
+    /**
      * GET /api/v1/public/products/{externalId}
      * Детальная карточка товара
      */
