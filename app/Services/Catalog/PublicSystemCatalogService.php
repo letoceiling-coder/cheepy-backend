@@ -9,6 +9,7 @@ use App\Models\SellerReview;
 use App\Models\SystemProduct;
 use App\Models\SystemProductAttribute;
 use App\Services\CatalogAttributeNormalizer;
+use App\Services\MarketplaceSettingsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -556,11 +557,13 @@ class PublicSystemCatalogService
         $sp->loadMissing(['photos', 'category:id,name,slug', 'seller:id,name,slug', 'productSources.donorProduct:id,external_id']);
         $urls = $sp->photos->pluck('url')->filter()->values()->all();
         $thumb = $urls[0] ?? null;
+        $price = $this->priceForStorefront($sp);
 
         return [
             'id' => $this->publicId($sp),
             'title' => $sp->name,
-            'price' => $sp->price,
+            'price' => $price > 0 ? number_format($price, 0, '.', ' ').' ₽' : $sp->price,
+            'price_raw' => $price,
             'thumbnail' => $thumb,
             'photos_count' => count($urls),
             'list_position' => (int) ($sp->list_position ?? 0),
@@ -572,11 +575,13 @@ class PublicSystemCatalogService
     private function formatSystemProductFull(SystemProduct $sp): array
     {
         $urls = $sp->photos->map(fn ($p) => $p->url)->filter()->values()->all();
+        $price = $this->priceForStorefront($sp);
 
         return [
             'id' => $this->publicId($sp),
             'title' => $sp->name,
-            'price' => $sp->price,
+            'price' => $price > 0 ? number_format($price, 0, '.', ' ').' ₽' : $sp->price,
+            'price_raw' => $price,
             'list_position' => (int) ($sp->list_position ?? 0),
             'description' => $sp->description,
             'photos' => $urls,
@@ -611,6 +616,20 @@ class PublicSystemCatalogService
                 'logo_url' => $sp->brand->logo_url,
             ] : null,
         ];
+    }
+
+    private function priceForStorefront(SystemProduct $sp): int
+    {
+        return app(MarketplaceSettingsService::class)->priceWithCommission(
+            $sp->price_raw ?: $this->parsePrice($sp->price),
+            $sp->category_id ? (int) $sp->category_id : null
+        );
+    }
+
+    private function parsePrice(?string $price): int
+    {
+        $digits = preg_replace('/[^\d]/', '', (string) $price);
+        return $digits ? (int) $digits : 0;
     }
 
     /**

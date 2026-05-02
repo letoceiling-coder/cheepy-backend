@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\MarketplaceSettingsService;
 use App\Support\PhoneNormalizer;
 use App\Support\SocialOauthCatalog;
 use App\Support\StorefrontSmsGate;
@@ -26,6 +27,8 @@ class StorefrontAuthController extends Controller
             'name' => $user->name,
             'email' => $user->email,
             'phone' => $user->phone,
+            'account_role' => $user->account_role ?? 'customer',
+            'seller_status' => $user->seller_status,
             'linked_social_providers' => $user->socialAccounts()->pluck('provider')->values()->all(),
         ];
     }
@@ -142,6 +145,7 @@ class StorefrontAuthController extends Controller
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'string', 'min:8', 'max:255'],
             'phone' => ['nullable', 'string', 'max:32'],
+            'account_type' => ['nullable', 'string', 'in:customer,seller'],
         ];
 
         if ($smsOn) {
@@ -160,10 +164,19 @@ class StorefrontAuthController extends Controller
             return response()->json(['error' => 'Этот телефон уже зарегистрирован'], 422);
         }
 
+        $accountType = $data['account_type'] ?? 'customer';
+        $sellerRegistrationEnabled = (bool) app(MarketplaceSettingsService::class)->all()['seller_registration_enabled'];
+        if ($accountType === 'seller' && ! $sellerRegistrationEnabled) {
+            return response()->json(['error' => 'Регистрация продавцов временно закрыта'], 422);
+        }
+
         $user = User::query()->create([
             'name' => $data['name'],
             'email' => $data['email'],
             'phone' => $phoneNorm,
+            'account_role' => $accountType === 'seller' ? 'seller' : 'customer',
+            'seller_status' => $accountType === 'seller' ? 'pending' : null,
+            'seller_requested_at' => $accountType === 'seller' ? now() : null,
             'password' => $data['password'],
         ]);
 

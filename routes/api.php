@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\ExcludedController;
 use App\Http\Controllers\Api\FilterController;
 use App\Http\Controllers\Api\LogController;
+use App\Http\Controllers\Api\MarketplaceSettingsController;
 use App\Http\Controllers\Api\ParserController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\PublicController;
@@ -409,6 +410,7 @@ Route::prefix('v1')->group(function () {
 // PUBLIC API — без авторизации (для пользовательских страниц Cheepy)
 // =====================================================================
 Route::prefix('v1/public')->group(function () {
+    Route::get('marketplace-settings', [MarketplaceSettingsController::class, 'publicSettings']);
     Route::get('menu', [PublicController::class, 'menu']);
     Route::get('categories/by-ids', [PublicController::class, 'categoriesByIds']);
     Route::get('layout/global', [PublicConstructorLayoutController::class, 'global']);
@@ -662,6 +664,12 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::get('/', [SettingController::class, 'index']);
         Route::put('/', [SettingController::class, 'update']);
         Route::put('{key}', [SettingController::class, 'updateOne']);
+    });
+
+    Route::prefix('marketplace-settings')->group(function () {
+        Route::get('/', [MarketplaceSettingsController::class, 'show']);
+        Route::put('/', [MarketplaceSettingsController::class, 'update']);
+        Route::post('currencies/refresh', [MarketplaceSettingsController::class, 'refreshCurrencies']);
     });
 
     // Catalog Phase 1 — dual category system (CATALOG_ARCHITECTURE_V2)
