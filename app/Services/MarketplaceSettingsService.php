@@ -68,6 +68,19 @@ class MarketplaceSettingsService
     public function update(array $data): array
     {
         $current = $this->all();
+        $wasMaintenanceEnabled = (bool) ($current['maintenance_enabled'] ?? false);
+        $currentMaintenanceDelay = (int) ($current['maintenance_delay_minutes'] ?? 10);
+        $nextMaintenanceEnabled = array_key_exists('maintenance_enabled', $data)
+            ? (bool) $this->normalizeValue('maintenance_enabled', $data['maintenance_enabled'])
+            : $wasMaintenanceEnabled;
+        $nextMaintenanceDelay = array_key_exists('maintenance_delay_minutes', $data)
+            ? (int) $this->normalizeValue('maintenance_delay_minutes', $data['maintenance_delay_minutes'])
+            : $currentMaintenanceDelay;
+        $shouldResetMaintenanceTimer = $nextMaintenanceEnabled && (
+            ! $wasMaintenanceEnabled
+            || empty($current['maintenance_started_at'])
+            || $nextMaintenanceDelay !== $currentMaintenanceDelay
+        );
         $allowed = [
             'marketplace_name',
             'support_emails',
@@ -86,19 +99,17 @@ class MarketplaceSettingsService
             }
             $value = $this->normalizeValue($key, $data[$key]);
             if ($key === 'maintenance_enabled') {
-                $wasEnabled = (bool) ($current['maintenance_enabled'] ?? false);
-                $enabled = (bool) $value;
-                $this->set($key, $enabled, 'bool');
-                if ($enabled && ! $wasEnabled) {
-                    $this->set('maintenance_started_at', now()->toIso8601String(), 'string');
-                }
-                if (! $enabled) {
-                    $this->set('maintenance_started_at', null, 'string');
-                }
+                $this->set($key, (bool) $value, 'bool');
                 continue;
             }
 
             $this->set($key, $value, $this->typeFor($key));
+        }
+
+        if (! $nextMaintenanceEnabled) {
+            $this->set('maintenance_started_at', null, 'string');
+        } elseif ($shouldResetMaintenanceTimer) {
+            $this->set('maintenance_started_at', now()->toIso8601String(), 'string');
         }
 
         return $this->all();
