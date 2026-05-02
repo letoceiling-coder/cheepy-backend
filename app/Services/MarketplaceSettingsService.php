@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Events\MarketplaceSettingsUpdated;
 use App\Models\CatalogCategory;
 use App\Models\Setting;
 use Illuminate\Support\Facades\Http;
@@ -49,20 +50,7 @@ class MarketplaceSettingsService
         $this->refreshCurrencyRatesIfStale($settings);
         $settings = $this->all();
 
-        return [
-            'marketplace_name' => $settings['marketplace_name'],
-            'support_emails' => $settings['support_emails'],
-            'support_phones' => $settings['support_phones'],
-            'default_currency' => $settings['default_currency'],
-            'maintenance' => [
-                'enabled' => (bool) $settings['maintenance_enabled'],
-                'delay_minutes' => (int) $settings['maintenance_delay_minutes'],
-                'started_at' => $settings['maintenance_started_at'],
-                'active_at' => $this->maintenanceActiveAt($settings),
-            ],
-            'seller_registration_enabled' => (bool) $settings['seller_registration_enabled'],
-            'currency_rates' => $settings['currency_rates'],
-        ];
+        return $this->publicPayload($settings);
     }
 
     public function update(array $data): array
@@ -112,7 +100,10 @@ class MarketplaceSettingsService
             $this->set('maintenance_started_at', now()->toIso8601String(), 'string');
         }
 
-        return $this->all();
+        $updated = $this->all();
+        MarketplaceSettingsUpdated::dispatch($this->publicPayload($updated));
+
+        return $updated;
     }
 
     public function refreshCurrencyRates(): array
@@ -259,5 +250,23 @@ class MarketplaceSettingsService
         return \Carbon\Carbon::parse($settings['maintenance_started_at'])
             ->addMinutes((int) ($settings['maintenance_delay_minutes'] ?? 10))
             ->toIso8601String();
+    }
+
+    private function publicPayload(array $settings): array
+    {
+        return [
+            'marketplace_name' => $settings['marketplace_name'],
+            'support_emails' => $settings['support_emails'],
+            'support_phones' => $settings['support_phones'],
+            'default_currency' => $settings['default_currency'],
+            'maintenance' => [
+                'enabled' => (bool) $settings['maintenance_enabled'],
+                'delay_minutes' => (int) $settings['maintenance_delay_minutes'],
+                'started_at' => $settings['maintenance_started_at'],
+                'active_at' => $this->maintenanceActiveAt($settings),
+            ],
+            'seller_registration_enabled' => (bool) $settings['seller_registration_enabled'],
+            'currency_rates' => $settings['currency_rates'],
+        ];
     }
 }
