@@ -367,9 +367,9 @@ Route::prefix('v1')->group(function () {
         }
 
         $hasReverbCredentials =
-            !empty(env('REVERB_APP_KEY')) &&
-            !empty(env('REVERB_APP_SECRET')) &&
-            !empty(env('REVERB_APP_ID'));
+            !empty(config('broadcasting.connections.reverb.key')) &&
+            !empty(config('broadcasting.connections.reverb.secret')) &&
+            !empty(config('broadcasting.connections.reverb.app_id'));
         $broadcastDriver = (string) config('broadcasting.default', 'log');
         $broadcastHealthy = $broadcastDriver === 'log' || $hasReverbCredentials;
 
