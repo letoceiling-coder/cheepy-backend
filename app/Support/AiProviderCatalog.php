@@ -97,18 +97,15 @@ final class AiProviderCatalog
                 ['id' => 'bytedance/seedance-1-pro', 'label' => 'ByteDance Seedance 1 Pro'],
             ],
         ],
-        // Локальный inference: OpenAI-совместимый POST …/v1/chat/completions; тег модели — из `ollama list`.
+        // Ollama behind our HTTPS tunnel: OpenAI-compatible POST …/v1/chat/completions.
         'ollama' => [
             'title' => 'Ollama',
-            'description' => 'Локальные модели; укажите базовый URL (например http://127.0.0.1:11434) и тег модели из списка Ollama на вашей машине.',
-            'docs_url' => 'https://github.com/ollama/ollama/blob/main/docs/openai.md',
+            'description' => 'OpenAI-compatible Ollama через reverse SSH tunnel; укажите Base URL https://ollama.siteaacess.store/v1, Bearer Token и модель из /v1/models.',
+            'docs_url' => 'https://ollama.siteaacess.store/v1/models',
             'models' => [
-                ['id' => 'llama3.2', 'label' => 'Llama 3.2'],
-                ['id' => 'llama3.1', 'label' => 'Llama 3.1'],
-                ['id' => 'mistral', 'label' => 'Mistral'],
-                ['id' => 'qwen2.5', 'label' => 'Qwen 2.5'],
-                ['id' => 'deepseek-r1', 'label' => 'DeepSeek R1'],
-                ['id' => 'gemma3', 'label' => 'Gemma 3'],
+                ['id' => 'qwen2.5-coder:7b', 'label' => 'Qwen 2.5 Coder 7B'],
+                ['id' => 'qwen2.5vl:7b', 'label' => 'Qwen 2.5 VL 7B'],
+                ['id' => 'llama3:latest', 'label' => 'Llama 3'],
             ],
         ],
     ];

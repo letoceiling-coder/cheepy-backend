@@ -53,9 +53,9 @@ return [
         'photo_verify_timeout' => (int) env('SITE_AL_PHOTO_VERIFY_TIMEOUT', 180),
     ],
 
-    /** Локальный Ollama (OpenAI-совместимый /v1/chat/completions). Базовый URL можно переопределить в карточке интеграции CRM. */
+    /** Ollama (OpenAI-compatible /v1/chat/completions). Base URL and Bearer token can be stored in CRM integrations. */
     'ollama' => [
-        'base_url' => rtrim(env('OLLAMA_BASE_URL', 'http://127.0.0.1:11434'), '/'),
+        'base_url' => rtrim(env('OLLAMA_BASE_URL', 'https://ollama.siteaacess.store/v1'), '/'),
         'timeout' => (int) env('OLLAMA_TIMEOUT', 120),
     ],
 

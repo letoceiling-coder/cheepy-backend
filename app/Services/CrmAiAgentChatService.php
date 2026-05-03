@@ -138,9 +138,11 @@ TXT;
 
         $config = $row->config ?? [];
         $apiKey = trim((string) ($config['api_key'] ?? ''));
-        if ($provider !== 'ollama' && $apiKey === '') {
+        if ($apiKey === '') {
             return response()->json([
-                'message' => 'Для '.$provider.' не сохранён API-ключ в CRM → Интеграции → ИИ.',
+                'message' => $provider === 'ollama'
+                    ? 'Для Ollama не сохранён Token в CRM → Интеграции → ИИ.'
+                    : 'Для '.$provider.' не сохранён API-ключ в CRM → Интеграции → ИИ.',
             ], 503);
         }
 
@@ -152,9 +154,7 @@ TXT;
             'Content-Type' => 'application/json',
             'Accept' => 'application/json',
         ];
-        if ($apiKey !== '') {
-            $headers['Authorization'] = 'Bearer '.$apiKey;
-        }
+        $headers['Authorization'] = 'Bearer '.$apiKey;
 
         $timeout = $provider === 'ollama'
             ? (int) config('services.ollama.timeout', 120)
