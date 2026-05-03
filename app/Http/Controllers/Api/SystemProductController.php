@@ -63,8 +63,13 @@ class SystemProductController extends Controller
                     ->orWhere('description', 'like', "%{$search}%");
             });
         }
-        if ($status = $request->input('status')) {
-            $query->where('status', $status);
+        if ($request->filled('status')) {
+            $query->where('status', (string) $request->input('status'));
+        } elseif ($request->boolean('exclude_approved')) {
+            $query->whereNotIn('status', [
+                SystemProduct::STATUS_APPROVED,
+                SystemProduct::STATUS_PUBLISHED,
+            ]);
         }
         $categoryIdsFilter = $this->parseCategoryIdsQuery($request);
         if ($categoryIdsFilter !== null && $categoryIdsFilter !== []) {
