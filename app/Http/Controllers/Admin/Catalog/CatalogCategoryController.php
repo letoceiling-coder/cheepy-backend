@@ -36,13 +36,15 @@ class CatalogCategoryController extends Controller
 
     /**
      * Дерево витринных категорий с агрегатами по CRM-товарам (для фильтров).
-     * approved: published + approved; review: pending + needs_review.
+     * total: все записи по поддереву; approved: published + approved;
+     * review: pending + needs_review («на модерации»).
      * Счётчики на узле — сумма по поддереву (свои товары + потомки).
      */
     public function treeWithProductStats(): JsonResponse
     {
         $statsRows = SystemProduct::query()
             ->select('category_id')
+            ->selectRaw('COUNT(*) as total')
             ->selectRaw("SUM(CASE WHEN status IN ('approved', 'published') THEN 1 ELSE 0 END) as approved")
             ->selectRaw("SUM(CASE WHEN status IN ('pending', 'needs_review') THEN 1 ELSE 0 END) as review")
             ->whereNotNull('category_id')
@@ -69,12 +71,15 @@ class CatalogCategoryController extends Controller
             $out = [];
             foreach ($childrenOf->get($parentId, collect()) as $c) {
                 $s = $statsRows->get($c->id);
+                $directTotal = (int) ($s->total ?? 0);
                 $directApproved = (int) ($s->approved ?? 0);
                 $directReview = (int) ($s->review ?? 0);
                 $children = $buildTree((int) $c->id);
+                $sumTotal = $directTotal;
                 $sumApproved = $directApproved;
                 $sumReview = $directReview;
                 foreach ($children as $ch) {
+                    $sumTotal += $ch['counts']['total'];
                     $sumApproved += $ch['counts']['approved'];
                     $sumReview += $ch['counts']['review'];
                 }
@@ -86,6 +91,7 @@ class CatalogCategoryController extends Controller
                     'sort_order' => (int) $c->sort_order,
                     'is_active' => (bool) $c->is_active,
                     'counts' => [
+                        'total' => $sumTotal,
                         'approved' => $sumApproved,
                         'review' => $sumReview,
                     ],
