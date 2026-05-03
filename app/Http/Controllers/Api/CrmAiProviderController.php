@@ -9,6 +9,7 @@ use App\Models\Setting;
 use App\Support\AiProviderCatalog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\Rule;
 
 class CrmAiProviderController extends Controller
@@ -84,6 +85,85 @@ class CrmAiProviderController extends Controller
                 'per_page' => $paginator->perPage(),
                 'total' => $paginator->total(),
             ],
+        ]);
+    }
+
+    /**
+     * GET /api/v1/crm/ai-providers/ollama/models
+     * Список моделей с сохранённого OpenAI-compatible Ollama (Bearer из CRM).
+     */
+    public function ollamaModels(): JsonResponse
+    {
+        $row = AiProviderIntegration::where('name', 'ollama')->firstOrFail();
+        $config = $row->config ?? [];
+
+        $base = trim((string) ($config['base_url'] ?? ''));
+        if ($base === '') {
+            $base = rtrim((string) config('services.ollama.base_url', ''), '/');
+        } else {
+            $base = rtrim($base, '/');
+        }
+
+        $token = trim((string) ($config['api_key'] ?? ''));
+        if ($token === '') {
+            return response()->json([
+                'message' => 'Сохраните Token для Ollama в CRM → Интеграции → ИИ, затем обновите список моделей.',
+            ], 422);
+        }
+
+        $url = $base.'/models';
+
+        try {
+            $response = Http::timeout(45)
+                ->withHeaders([
+                    'Authorization' => 'Bearer '.$token,
+                    'Accept' => 'application/json',
+                ])
+                ->get($url);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'message' => 'Не удалось запросить Ollama ('.$url.'): '.$e->getMessage(),
+            ], 502);
+        }
+
+        $body = $response->json();
+
+        if (! $response->successful()) {
+            $msg = is_array($body) && isset($body['message']) && is_string($body['message'])
+                ? $body['message']
+                : ('Ollama вернула HTTP '.$response->status());
+
+            return response()->json([
+                'message' => $msg,
+                'details' => $body ?? $response->body(),
+            ], $response->status() >= 400 && $response->status() < 600 ? $response->status() : 502);
+        }
+
+        $ids = [];
+
+        // OpenAI-совместимый ответ { data: [{ id, object }] }
+        if (is_array($body) && isset($body['data']) && is_array($body['data'])) {
+            foreach ($body['data'] as $item) {
+                if (is_array($item) && isset($item['id']) && is_string($item['id'])) {
+                    $id = trim($item['id']);
+                    if ($id !== '') {
+                        $ids[] = $id;
+                    }
+                }
+            }
+        }
+
+        $ids = array_values(array_unique($ids));
+        natcasesort($ids);
+
+        $out = [];
+        foreach ($ids as $id) {
+            $out[] = ['id' => $id, 'label' => $id];
+        }
+
+        return response()->json([
+            'data' => array_values($out),
+            'endpoint' => $url,
         ]);
     }
 
