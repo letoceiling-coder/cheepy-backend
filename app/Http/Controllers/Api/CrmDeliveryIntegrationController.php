@@ -12,6 +12,7 @@ class CrmDeliveryIntegrationController extends Controller
 {
     private const TITLE_MAP = [
         'cdek' => 'СДЭК',
+        'yandex_maps' => 'Яндекс Карты',
         'nova_poshta' => 'Новая Почта',
         'dhl' => 'DHL',
     ];
@@ -19,8 +20,8 @@ class CrmDeliveryIntegrationController extends Controller
     public function index(): JsonResponse
     {
         $rows = DeliveryIntegration::query()
-            ->whereIn('name', ['cdek', 'nova_poshta', 'dhl'])
-            ->orderByRaw("FIELD(name, 'cdek', 'nova_poshta', 'dhl')")
+            ->whereIn('name', ['cdek', 'yandex_maps', 'nova_poshta', 'dhl'])
+            ->orderByRaw("FIELD(name, 'cdek', 'yandex_maps', 'nova_poshta', 'dhl')")
             ->get();
 
         $data = $rows->map(fn (DeliveryIntegration $r) => [
@@ -64,7 +65,7 @@ class CrmDeliveryIntegrationController extends Controller
             $row->update(['is_active' => (bool) $data['is_active']]);
         }
 
-        $sensitive = ['client_secret'];
+        $sensitive = ['client_secret', 'api_key'];
         $config = $row->config ?? [];
         foreach ($data as $key => $value) {
             if ($key === 'is_active' || ! in_array($key, $allowed, true)) {
@@ -96,6 +97,17 @@ class CrmDeliveryIntegrationController extends Controller
     {
         $row = DeliveryIntegration::where('name', $name)->firstOrFail();
 
+        if ($name === 'yandex_maps') {
+            $config = $row->config ?? [];
+
+            return response()->json([
+                'success' => $row->is_active && ! empty($config['api_key']),
+                'message' => $row->is_active && ! empty($config['api_key'])
+                    ? 'Интеграция Яндекс Карт настроена'
+                    : 'Включите интеграцию и укажите API key',
+            ]);
+        }
+
         if ($name !== 'cdek') {
             return response()->json([
                 'success' => false,
@@ -126,6 +138,7 @@ class CrmDeliveryIntegrationController extends Controller
 
         return match ($r->name) {
             'cdek' => ! empty($c['client_id']) && ! empty($c['client_secret']),
+            'yandex_maps' => ! empty($c['api_key']),
             default => false,
         };
     }
@@ -134,7 +147,7 @@ class CrmDeliveryIntegrationController extends Controller
     {
         $out = [];
         foreach ($config as $k => $v) {
-            if ($k === 'client_secret' && is_string($v) && strlen($v) > 0) {
+            if (in_array($k, ['client_secret', 'api_key'], true) && is_string($v) && strlen($v) > 0) {
                 $out[$k] = '***';
             } else {
                 $out[$k] = $v;
@@ -151,6 +164,12 @@ class CrmDeliveryIntegrationController extends Controller
      */
     private function hintsFor(string $name, array $config): array
     {
+        if ($name === 'yandex_maps') {
+            return [
+                'suggest_url' => 'https://suggest-maps.yandex.ru/v1/suggest',
+            ];
+        }
+
         if ($name !== 'cdek') {
             return [];
         }
@@ -174,6 +193,7 @@ class CrmDeliveryIntegrationController extends Controller
     {
         return match ($name) {
             'cdek' => 'https://apidoc.cdek.ru/',
+            'yandex_maps' => 'https://yandex.com/maps-api/docs/suggest-api/index.html',
             default => null,
         };
     }
@@ -207,6 +227,10 @@ class CrmDeliveryIntegrationController extends Controller
                 ['key' => 'default_tariff_code', 'label' => 'Тариф по умолчанию (код тарифа СДЭК для типовых отправлений)', 'type' => 'text'],
                 ['key' => 'default_shipment_point', 'label' => 'Код пункта приёма / ПВЗ отправителя (если отгрузка с ПВЗ)', 'type' => 'text'],
                 ['key' => 'additional_order_types', 'label' => 'Доп. тип заказа / пометки для ЛК (необязательно, текст)', 'type' => 'textarea'],
+            ],
+            'yandex_maps' => [
+                ['key' => 'api_key', 'label' => 'API key Geosuggest', 'type' => 'password', 'required' => true],
+                ['key' => 'suggest_url', 'label' => 'Endpoint подсказок (только чтение)', 'type' => 'text', 'readonly' => true],
             ],
             'nova_poshta' => [],
             'dhl' => [],

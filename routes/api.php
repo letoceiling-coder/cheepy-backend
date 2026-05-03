@@ -3,7 +3,10 @@
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\SmsAuthPublicController;
 use App\Http\Controllers\Api\StorefrontAuthController;
+use App\Http\Controllers\Api\StorefrontAccountController;
 use App\Http\Controllers\Api\CrmSocialOauthIntegrationController;
+use App\Http\Controllers\Api\CrmCouponController;
+use App\Http\Controllers\Api\CrmBonusRuleController;
 use App\Http\Controllers\Api\SocialOAuthPublicController;
 use App\Http\Controllers\Api\AiMetricsController;
 use App\Http\Controllers\Api\CategorySyncController;
@@ -465,6 +468,29 @@ Route::prefix('v1/store/auth')->middleware('throttle:45,1')->group(function () {
     });
 });
 
+Route::prefix('v1/store/account')->middleware(['throttle:120,1', 'customer.jwt'])->group(function () {
+    Route::get('summary', [StorefrontAccountController::class, 'summary']);
+    Route::patch('profile', [StorefrontAccountController::class, 'updateProfile']);
+    Route::post('password', [StorefrontAccountController::class, 'changePassword']);
+    Route::get('addresses', [StorefrontAccountController::class, 'addresses']);
+    Route::post('addresses', [StorefrontAccountController::class, 'storeAddress']);
+    Route::patch('addresses/{id}', [StorefrontAccountController::class, 'updateAddress']);
+    Route::delete('addresses/{id}', [StorefrontAccountController::class, 'deleteAddress']);
+    Route::get('address-suggest', [StorefrontAccountController::class, 'addressSuggest']);
+    Route::get('pickup-points', [StorefrontAccountController::class, 'pickupPoints']);
+    Route::get('pickup-points/search', [StorefrontAccountController::class, 'searchPickupPoints']);
+    Route::post('pickup-points', [StorefrontAccountController::class, 'storePickupPoint']);
+    Route::delete('pickup-points/{id}', [StorefrontAccountController::class, 'deletePickupPoint']);
+    Route::get('payment-methods', [StorefrontAccountController::class, 'paymentMethods']);
+    Route::delete('payment-methods/{id}', [StorefrontAccountController::class, 'deletePaymentMethod']);
+    Route::get('orders', [StorefrontAccountController::class, 'orders']);
+    Route::get('receipts', [StorefrontAccountController::class, 'receipts']);
+    Route::get('wallet', [StorefrontAccountController::class, 'wallet']);
+    Route::get('coupons', [StorefrontAccountController::class, 'coupons']);
+    Route::get('referral', [StorefrontAccountController::class, 'referral']);
+    Route::get('social-providers', [StorefrontAccountController::class, 'socialProviders']);
+});
+
 Route::prefix('v1')->middleware('throttle:120,1')->group(function () {
     Route::get('auth/social/meta', [SocialOAuthPublicController::class, 'meta']);
     Route::get('auth/social/{provider}/redirect', [SocialOAuthPublicController::class, 'redirect'])
@@ -574,6 +600,13 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
             ->where('name', 'vk|yandex|ok');
         Route::patch('social-oauth-integrations/{name}', [CrmSocialOauthIntegrationController::class, 'update'])
             ->where('name', 'vk|yandex|ok');
+
+        Route::get('coupons', [CrmCouponController::class, 'index']);
+        Route::post('coupons', [CrmCouponController::class, 'store']);
+        Route::patch('coupons/{id}', [CrmCouponController::class, 'update']);
+        Route::get('coupons-analytics', fn (CrmCouponController $controller) => response()->json($controller->analytics()));
+        Route::get('bonus-rules', [CrmBonusRuleController::class, 'index']);
+        Route::patch('bonus-rules/{key}', [CrmBonusRuleController::class, 'update']);
 
         Route::get('ai-providers', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'index']);
         Route::post('ai-providers/active-agent', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'setActiveAgent']);
