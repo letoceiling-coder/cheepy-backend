@@ -41,6 +41,8 @@ class MarketplaceSettingsController extends Controller
             'maintenance_enabled' => ['sometimes', 'boolean'],
             'maintenance_delay_minutes' => ['sometimes', 'integer', 'min:1', 'max:1440'],
             'seller_registration_enabled' => ['sometimes', 'boolean'],
+            'free_delivery_threshold_enabled' => ['sometimes', 'boolean'],
+            'free_delivery_threshold_rub' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:999999999'],
             'default_commission_percent' => ['sometimes', 'numeric', 'min:0', 'max:100'],
             'category_commissions' => ['sometimes', 'array'],
         ]);

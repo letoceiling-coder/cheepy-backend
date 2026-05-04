@@ -20,8 +20,6 @@ use Illuminate\Support\Str;
  */
 class StorefrontCheckoutController extends Controller
 {
-    private const FREE_DELIVERY_THRESHOLD_RUB = 3000;
-
     private const DELIVERY_FLAT_RUB = 299;
 
     public function store(
@@ -29,6 +27,7 @@ class StorefrontCheckoutController extends Controller
         PublicSystemCatalogService $catalog,
         PaymentProviderManager $manager,
         StorefrontDeliveryQuoteService $deliveryQuotes,
+        MarketplaceSettingsService $marketplaceSettings,
     ): JsonResponse {
         $user = $request->attributes->get('storefront_user');
         if (! $user instanceof User) {
@@ -102,13 +101,15 @@ class StorefrontCheckoutController extends Controller
             ], 422);
         }
 
-        if ($subtotalRub >= self::FREE_DELIVERY_THRESHOLD_RUB) {
+        $freeThresholdRub = $marketplaceSettings->effectiveFreeDeliveryThresholdRub();
+        $snapshotThreshold = $freeThresholdRub !== null ? ['threshold_rub' => $freeThresholdRub] : [];
+
+        if ($freeThresholdRub !== null && $subtotalRub >= $freeThresholdRub) {
             $deliveryRub = 0;
             $deliveryType = 'free_threshold';
-            $deliverySnapshot = [
+            $deliverySnapshot = array_merge([
                 'mode' => 'free_threshold',
-                'threshold_rub' => self::FREE_DELIVERY_THRESHOLD_RUB,
-            ];
+            ], $snapshotThreshold);
         } else {
             $cheapest = $qb['cheapest_price_rub'] ?? null;
             if ($cheapest !== null) {
@@ -119,23 +120,21 @@ class StorefrontCheckoutController extends Controller
                     $deliveryProvider = null;
                 }
                 $deliveryType = $deliveryProvider ?: 'carrier';
-                $deliverySnapshot = [
+                $deliverySnapshot = array_merge([
                     'mode' => 'integrations_min',
                     'integration' => $deliveryProvider,
                     'provider_title' => is_array($cq) ? ($cq['provider_title'] ?? null) : null,
                     'service_code' => is_array($cq) ? ($cq['service_code'] ?? null) : null,
                     'quoted_price_rub' => round((float) $cheapest, 2),
-                    'threshold_rub' => self::FREE_DELIVERY_THRESHOLD_RUB,
-                ];
+                ], $snapshotThreshold);
             } else {
                 $deliveryRub = self::DELIVERY_FLAT_RUB;
                 $deliveryType = 'flat_fallback';
-                $deliverySnapshot = [
+                $deliverySnapshot = array_merge([
                     'mode' => 'flat_fallback',
                     'flat_rub' => self::DELIVERY_FLAT_RUB,
-                    'threshold_rub' => self::FREE_DELIVERY_THRESHOLD_RUB,
                     'reason' => 'no_carrier_quotes',
-                ];
+                ], $snapshotThreshold);
             }
         }
 

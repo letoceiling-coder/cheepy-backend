@@ -22,6 +22,8 @@ class MarketplaceSettingsService
             'maintenance_delay_minutes' => 10,
             'maintenance_started_at' => null,
             'seller_registration_enabled' => true,
+            // Бесплатная доставка от суммы заказа — только из CRM (вкл. + порог ≥ 1 ₽)
+            'free_delivery_threshold_enabled' => false,
             'default_commission_percent' => 10,
             'category_commissions' => [],
             'currency_rates' => [
@@ -77,6 +79,8 @@ class MarketplaceSettingsService
             'maintenance_enabled',
             'maintenance_delay_minutes',
             'seller_registration_enabled',
+            'free_delivery_threshold_enabled',
+            'free_delivery_threshold_rub',
             'default_commission_percent',
             'category_commissions',
         ];
@@ -87,6 +91,10 @@ class MarketplaceSettingsService
             }
             $value = $this->normalizeValue($key, $data[$key]);
             if ($key === 'maintenance_enabled') {
+                $this->set($key, (bool) $value, 'bool');
+                continue;
+            }
+            if ($key === 'free_delivery_threshold_enabled') {
                 $this->set($key, (bool) $value, 'bool');
                 continue;
             }
@@ -183,6 +191,23 @@ class MarketplaceSettingsService
         return (int) max(1, round($withCommission / 10) * 10);
     }
 
+    /**
+     * Порог «бесплатно от суммы»: только если включено в CRM и задано ≥ 1 ₽; без статического дефолта.
+     */
+    public function effectiveFreeDeliveryThresholdRub(): ?int
+    {
+        $s = $this->all();
+        if (! ($s['free_delivery_threshold_enabled'] ?? false)) {
+            return null;
+        }
+        if (! array_key_exists('free_delivery_threshold_rub', $s)) {
+            return null;
+        }
+        $n = (int) $s['free_delivery_threshold_rub'];
+
+        return $n >= 1 ? min(999_999_999, $n) : null;
+    }
+
     private function set(string $key, mixed $value, string $type): void
     {
         Setting::query()->updateOrCreate(
@@ -206,8 +231,8 @@ class MarketplaceSettingsService
     {
         return match ($key) {
             'support_emails', 'support_phones', 'category_commissions', 'currency_rates' => 'json',
-            'maintenance_enabled', 'seller_registration_enabled' => 'bool',
-            'maintenance_delay_minutes' => 'int',
+            'maintenance_enabled', 'seller_registration_enabled', 'free_delivery_threshold_enabled' => 'bool',
+            'maintenance_delay_minutes', 'free_delivery_threshold_rub' => 'int',
             'default_commission_percent' => 'float',
             default => 'string',
         };
@@ -236,6 +261,7 @@ class MarketplaceSettingsService
                 ->mapWithKeys(fn ($v, $k) => [(string) $k => max(0, (float) $v)])
                 ->all(),
             'maintenance_delay_minutes' => max(1, min(1440, (int) $value)),
+            'free_delivery_threshold_rub' => max(0, min(999_999_999, (int) $value)),
             'default_commission_percent' => max(0, (float) $value),
             default => $value,
         };
@@ -266,6 +292,8 @@ class MarketplaceSettingsService
                 'active_at' => $this->maintenanceActiveAt($settings),
             ],
             'seller_registration_enabled' => (bool) $settings['seller_registration_enabled'],
+            'free_delivery_threshold_enabled' => (bool) ($settings['free_delivery_threshold_enabled'] ?? false),
+            'free_delivery_threshold_rub' => $this->effectiveFreeDeliveryThresholdRub(),
             'currency_rates' => $settings['currency_rates'],
         ];
     }

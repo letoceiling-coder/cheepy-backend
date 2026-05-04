@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Services\Catalog\PublicSystemCatalogService;
+use App\Services\MarketplaceSettingsService;
 use App\Services\Storefront\StorefrontDeliveryQuoteService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,6 +19,7 @@ class StorefrontCartDeliveryQuoteController extends Controller
         Request $request,
         PublicSystemCatalogService $catalog,
         StorefrontDeliveryQuoteService $quotes,
+        MarketplaceSettingsService $marketplaceSettings,
     ): JsonResponse {
         $user = $request->attributes->get('storefront_user');
         if (! $user instanceof User) {
@@ -47,6 +49,10 @@ class StorefrontCartDeliveryQuoteController extends Controller
             ];
         }
 
-        return response()->json($quotes->buildQuotesForCartLines($user, $lines));
-    }
+        $payload = $quotes->buildQuotesForCartLines($user, $lines);
+        $m = $marketplaceSettings->all();
+        $payload['free_delivery_threshold_enabled'] = (bool) ($m['free_delivery_threshold_enabled'] ?? false);
+        $payload['free_delivery_threshold_rub'] = $marketplaceSettings->effectiveFreeDeliveryThresholdRub();
+
+        return response()->json($payload);    }
 }
