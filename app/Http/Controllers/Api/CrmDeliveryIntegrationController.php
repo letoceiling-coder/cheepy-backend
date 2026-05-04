@@ -139,6 +139,9 @@ class CrmDeliveryIntegrationController extends Controller
 
         if ($result['success']) {
             $row->update(['last_successful_auth_at' => now()]);
+            if (! $row->is_active) {
+                $result['message'] .= ' Внимание: интеграция выключена — расчёт доставки на витрине не выполняется. Включите интеграцию (флаг активности) и сохраните.';
+            }
         }
 
         return response()->json($result);
