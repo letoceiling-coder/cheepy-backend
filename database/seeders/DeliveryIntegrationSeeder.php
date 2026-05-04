@@ -10,7 +10,11 @@ class DeliveryIntegrationSeeder extends Seeder
     public function run(): void
     {
         foreach (['cdek', 'nova_poshta', 'dhl', 'russian_post'] as $name) {
-            DeliveryIntegration::updateOrCreate(
+            /*
+             * firstOrCreate: только строки создание — не перетирать config из CRM (ключи СДЭК и т.д.).
+             * Раньше updateOrCreate сбрасывал client_id/client_secret при любом повторном db:seed на деплое.
+             */
+            DeliveryIntegration::firstOrCreate(
                 ['name' => $name],
                 [
                     'is_active' => false,

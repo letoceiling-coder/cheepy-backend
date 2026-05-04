@@ -7,6 +7,7 @@ use App\Models\SystemProduct;
 use App\Models\UserAddress;
 use Carbon\Carbon;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Оркестратор расчёта доставки для карточки товара.
@@ -46,8 +47,6 @@ class StorefrontDeliveryQuoteService
             ];
         }
 
-        $warnings = [];
-
         [$weightG, $l, $w, $h] = $this->packageDimensions($product, $quantity);
         $shipment = $this->shipmentSlice($product, $quantity);
 
@@ -69,7 +68,11 @@ class StorefrontDeliveryQuoteService
         if (! empty($cdekRes['ok']) && isset($cdekRes['quote']) && is_array($cdekRes['quote'])) {
             $quotes[] = $this->enrichPresentation($cdekRes['quote'], 'Курьерская доставка');
         } elseif (($cdekRes['message'] ?? '') !== '') {
-            $warnings[] = 'СДЭК: '.$cdekRes['message'];
+            Log::debug('storefront_delivery_quote:cdek_failed', [
+                'user_id' => $user->getAuthIdentifier(),
+                'system_product_id' => $product->id ?? null,
+                'message' => $cdekRes['message'],
+            ]);
         }
 
         $originIndex = preg_replace('/\D/', '', (string) config('delivery.origin.postal_index', '101000'));
@@ -84,10 +87,12 @@ class StorefrontDeliveryQuoteService
             if (! empty($rp['ok']) && isset($rp['quote']) && is_array($rp['quote'])) {
                 $quotes[] = $this->enrichPresentation($rp['quote'], 'Курьерская доставка');
             } elseif (($rp['message'] ?? '') !== '') {
-                $warnings[] = 'Почта России: '.$rp['message'];
+                Log::debug('storefront_delivery_quote:russian_post_failed', [
+                    'user_id' => $user->getAuthIdentifier(),
+                    'system_product_id' => $product->id ?? null,
+                    'message' => $rp['message'],
+                ]);
             }
-        } else {
-            $warnings[] = 'Почта России: для расчёта укажите индекс в адресе доставки.';
         }
 
         return [
@@ -95,7 +100,7 @@ class StorefrontDeliveryQuoteService
             'address' => $this->addressSlice($address),
             'shipment' => $shipment,
             'quotes' => $quotes,
-            'warnings' => $warnings,
+            'warnings' => [],
         ];
     }
 

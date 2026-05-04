@@ -4,6 +4,7 @@ namespace App\Services\Storefront;
 
 use App\Models\DeliveryIntegration;
 use App\Services\Delivery\CdekOAuthService;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 
@@ -45,54 +46,62 @@ class CdekTariffService
             return ['ok' => false, 'message' => 'Не удалось авторизоваться в СДЭК'];
         }
 
-        $toLocation = $this->resolveToLocation($token, $env, $toCity, $toPostalCode);
-        if ($toLocation === null) {
+        $destinationCandidates = $this->resolveToLocationCandidates($token, $env, $toCity, $toPostalCode);
+        if ($destinationCandidates === []) {
             return ['ok' => false, 'message' => 'Не удалось определить получателя в справочнике СДЭК'];
         }
 
         $base = $this->oauth->apiBase($env);
-        $body = [
-            'type' => 1,
-            'currency' => 1,
-            'lang' => 'ru',
-            'from_location' => ['code' => $fromCityCode],
-            'to_location' => $toLocation,
-            'packages' => [
-                array_filter([
-                    'weight' => max(1, $weightG),
-                    'length' => $lengthCm > 0 ? $lengthCm : null,
-                    'width' => $widthCm > 0 ? $widthCm : null,
-                    'height' => $heightCm > 0 ? $heightCm : null,
-                ], fn ($v) => $v !== null),
-            ],
+        $packages = [
+            array_filter([
+                'weight' => max(1, $weightG),
+                'length' => $lengthCm > 0 ? $lengthCm : null,
+                'width' => $widthCm > 0 ? $widthCm : null,
+                'height' => $heightCm > 0 ? $heightCm : null,
+            ], fn ($v) => $v !== null),
         ];
 
-        try {
-            $res = Http::withToken($token)
-                ->acceptJson()
-                ->timeout(25)
-                ->post($base.'/v2/calculator/tarifflist', $body);
-        } catch (\Throwable $e) {
-            return ['ok' => false, 'message' => 'СДЭК: '.$e->getMessage()];
-        }
+        $res = null;
+        foreach ($destinationCandidates as $idx => $toLocation) {
+            $body = [
+                'type' => 1,
+                'currency' => 1,
+                'lang' => 'rus',
+                'date' => now()->format('Y-m-d'),
+                'from_location' => ['code' => $fromCityCode],
+                'to_location' => $toLocation,
+                'packages' => $packages,
+            ];
 
-        if (! $res->successful()) {
-            $msg = 'СДЭК HTTP '.$res->status();
-            $j = $res->json();
-            if (is_array($j)) {
-                $sub = $j['message'] ?? $j['error'] ?? null;
-                if (is_string($sub) && $sub !== '') {
-                    $msg .= ': '.$sub;
-                }
+            try {
+                $res = Http::withToken($token)
+                    ->acceptJson()
+                    ->timeout(25)
+                    ->post($base.'/v2/calculator/tarifflist', $body);
+            } catch (\Throwable $e) {
+                return ['ok' => false, 'message' => 'СДЭК: '.$e->getMessage()];
             }
 
-            return ['ok' => false, 'message' => $msg];
+            if ($res->successful()) {
+                break;
+            }
+
+            $isRetryablePostal = ($res->status() === 400 && $idx === 0 && isset($toLocation['postal_code']));
+            if ($isRetryablePostal && isset($destinationCandidates[1])) {
+                continue;
+            }
+
+            return ['ok' => false, 'message' => $this->formatCdekTariffError($res)];
+        }
+
+        if ($res === null || ! $res->successful()) {
+            return ['ok' => false, 'message' => $res !== null ? $this->formatCdekTariffError($res) : 'СДЭК: пустой ответ'];
         }
 
         $json = $res->json();
         $rows = [];
         if (is_array($json)) {
-            $rows = $json['tariff_codes'] ?? $json['tariffs'] ?? [];
+            $rows = $json['tariff_codes'] ?? $json['tariffCodes'] ?? $json['tariffs'] ?? [];
             if (! is_array($rows)) {
                 $rows = [];
             }
@@ -103,7 +112,7 @@ class CdekTariffService
             if (! is_array($row)) {
                 continue;
             }
-            $mode = (int) ($row['delivery_mode'] ?? 0);
+            $mode = (int) ($row['delivery_mode'] ?? $row['deliveryMode'] ?? 0);
             if ($mode !== 1) {
                 continue;
             }
@@ -141,21 +150,69 @@ class CdekTariffService
     }
 
     /**
-     * @return array<string, int|string>|null
+     * Варианты «куда»: сначала индекс (если указан), затем код города по названию для повторного расчёта при 400.
+     *
+     * @return list<array<string, int|string>>
      */
-    private function resolveToLocation(string $token, string $env, string $toCity, ?string $toPostalCode): ?array
+    private function resolveToLocationCandidates(string $token, string $env, string $toCity, ?string $toPostalCode): array
     {
+        $candidates = [];
         $pc = $toPostalCode !== null ? preg_replace('/\D/', '', $toPostalCode) : '';
         if (strlen($pc) === 6) {
-            return ['postal_code' => $pc, 'country_code' => 'RU'];
+            $candidates[] = ['postal_code' => $pc, 'country_code' => 'RU'];
         }
-
         $code = $this->resolveCityCode($token, $env, $toCity);
         if ($code !== null) {
-            return ['code' => $code, 'country_code' => 'RU'];
+            $candidates[] = ['code' => $code, 'country_code' => 'RU'];
         }
 
-        return null;
+        return $candidates;
+    }
+
+    private function formatCdekTariffError(Response $res): string
+    {
+        $msg = 'СДЭК HTTP '.$res->status();
+        $j = $res->json();
+        if (! is_array($j)) {
+            return $msg;
+        }
+
+        $parts = [];
+        foreach (['message', 'error'] as $k) {
+            $v = $j[$k] ?? null;
+            if (is_string($v) && $v !== '') {
+                $parts[] = $v;
+            }
+        }
+
+        $reqs = $j['requests'] ?? null;
+        if (is_array($reqs)) {
+            foreach ($reqs as $req) {
+                if (! is_array($req)) {
+                    continue;
+                }
+                $errs = $req['errors'] ?? [];
+                if (! is_array($errs)) {
+                    continue;
+                }
+                foreach ($errs as $e) {
+                    if (! is_array($e)) {
+                        continue;
+                    }
+                    $m = $e['message'] ?? $e['code'] ?? null;
+                    if (is_string($m) && $m !== '') {
+                        $parts[] = $m;
+                    }
+                }
+            }
+        }
+
+        $parts = array_values(array_unique($parts));
+        if ($parts !== []) {
+            $msg .= ': '.implode('; ', $parts);
+        }
+
+        return $msg;
     }
 
     private function resolveCityCode(string $token, string $env, string $city): ?int
