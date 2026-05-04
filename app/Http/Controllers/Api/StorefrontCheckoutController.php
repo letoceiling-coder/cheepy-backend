@@ -11,6 +11,7 @@ use App\Services\Catalog\PublicSystemCatalogService;
 use App\Services\MarketplaceSettingsService;
 use App\Services\Payments\PaymentProviderManager;
 use App\Services\Storefront\StorefrontDeliveryQuoteService;
+use App\Support\FrontendUrl;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -217,11 +218,15 @@ class StorefrontCheckoutController extends Controller
                 ]);
 
                 $providerService = $manager->getProvider($provider);
+                $feBase = FrontendUrl::base();
+                $tokQ = $returnToken !== '' ? '&return_token=' . urlencode($returnToken) : '';
                 $checkout = $providerService->createCheckout(null, $totalFloat, [
                     'payment_id' => $payment->id,
                     'return_token' => $returnToken,
                     'description' => 'Заказ '.$order->number,
                     'line_item_name' => 'Заказ '.$order->number,
+                    'success_url' => $feBase.'/payment/success?payment_id='.$payment->id.$tokQ,
+                    'cancel_url' => $feBase.'/payment/fail?payment_id='.$payment->id.$tokQ,
                 ]);
 
                 $payment->update([

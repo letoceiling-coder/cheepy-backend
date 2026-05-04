@@ -4,6 +4,7 @@ namespace App\Services\Storefront;
 
 use App\Models\ReferralCode;
 use App\Models\User;
+use App\Support\FrontendUrl;
 use Illuminate\Support\Str;
 
 class ReferralService
@@ -29,7 +30,7 @@ class ReferralService
     public function linkFor(User $user): string
     {
         $code = $this->codeFor($user)->code;
-        $base = rtrim((string) config('app.frontend_url', 'https://siteaacess.store'), '/');
+        $base = FrontendUrl::base();
 
         return $base.'/?ref='.rawurlencode($code);
     }

@@ -3,6 +3,7 @@
 namespace App\Services\Payments;
 
 use App\Models\SaasApiKey;
+use App\Support\FrontendUrl;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -142,11 +143,7 @@ class TinkoffProvider implements PaymentProviderInterface
 
     private function buildReturnUrls(int $paymentId, string $returnToken = ''): array
     {
-        $base = config('app.frontend_url');
-        if (!$base) {
-            throw new \RuntimeException('FRONTEND_URL is required in .env');
-        }
-        $base = rtrim($base, '/');
+        $base = FrontendUrl::base();
         $tokenQuery = $returnToken !== '' ? '&return_token=' . urlencode($returnToken) : '';
         return [
             'success' => $base . '/payment/success?payment_id=' . $paymentId . $tokenQuery,

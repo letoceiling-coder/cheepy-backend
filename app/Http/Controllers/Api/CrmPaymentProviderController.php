@@ -7,6 +7,7 @@ use App\Models\Payment;
 use App\Models\PaymentProvider;
 use App\Models\PaymentWebhookLog;
 use App\Models\SaasApiKey;
+use App\Support\FrontendUrl;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -256,10 +257,7 @@ class CrmPaymentProviderController extends Controller
         $sberBase = ($config['mode'] ?? 'prod') === 'test'
             ? 'https://3dsec.sberbank.ru'
             : 'https://securepayments.sberbank.ru';
-        $frontendUrl = rtrim((string) config('app.frontend_url', ''), '/');
-        if ($frontendUrl === '') {
-            throw new \RuntimeException('FRONTEND_URL is required for Sber test');
-        }
+        $frontendUrl = FrontendUrl::base();
         $formData = [
             'userName' => $config['merchant_login'],
             'password' => $config['password'],

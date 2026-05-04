@@ -64,7 +64,9 @@ return [
      * Пример: https://siteaacess.store
      */
     'social_oauth' => [
-        'frontend_base_url' => rtrim(env('SOCIAL_OAUTH_FRONTEND_BASE', env('FRONTEND_URL', '')), '/'),
+        'frontend_base_url' => \App\Support\FrontendUrl::tryBase(
+            (string) (env('SOCIAL_OAUTH_FRONTEND_BASE') ?: env('FRONTEND_URL', ''))
+        ) ?? rtrim((string) env('SOCIAL_OAUTH_FRONTEND_BASE', env('FRONTEND_URL', '')), '/'),
     ],
 
 ];
