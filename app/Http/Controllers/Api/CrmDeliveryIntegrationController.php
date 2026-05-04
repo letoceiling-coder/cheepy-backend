@@ -113,12 +113,14 @@ class CrmDeliveryIntegrationController extends Controller
             if ($key === '') {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Укажите API‑ключ (HTTP API Яндекс.Карт, см. документацию Suggest).',
+                    'message' => 'Укажите API‑ключ (HTTPS Geocoder и при необходимости Геосаджест для Suggest, см. подсказки ниже).',
                 ]);
             }
 
+            $suggestResponse = null;
+            $suggestNetworkError = null;
             try {
-                $response = Http::timeout(15)
+                $suggestResponse = Http::timeout(15)
                     ->acceptJson()
                     ->get('https://suggest-maps.yandex.ru/v1/suggest', [
                         'apikey' => $key,
@@ -128,33 +130,68 @@ class CrmDeliveryIntegrationController extends Controller
                         'lang' => 'ru_RU',
                     ]);
             } catch (\Throwable $e) {
+                $suggestNetworkError = $e->getMessage();
+            }
+
+            $suggestOk = $suggestResponse !== null && $suggestResponse->successful();
+            $suggestResultsCount = null;
+            if ($suggestOk) {
+                $body = $suggestResponse->json();
+                $results = is_array($body) ? ($body['results'] ?? null) : null;
+                if (! is_array($results)) {
+                    $suggestOk = false;
+                } else {
+                    $suggestResultsCount = count($results);
+                }
+            }
+
+            if ($suggestOk && $suggestResultsCount !== null) {
+                $row->update(['last_successful_auth_at' => now()]);
+
                 return response()->json([
-                    'success' => false,
-                    'message' => 'Сеть: '.$e->getMessage(),
+                    'success' => true,
+                    'message' => 'Suggest API: OK ('.$suggestResultsCount.' подсказок). Geocoder можно проверить тем же ключом.',
                 ]);
             }
 
-            if (! $response->successful()) {
+            $geoProbe = $this->probeYandexGeocoderHttps($key);
+
+            if ($geoProbe['ok']) {
+                $row->update(['last_successful_auth_at' => now()]);
+
+                $suggestPart = $suggestNetworkError !== null
+                    ? ('Suggest: сбой сети — '.$suggestNetworkError.'. ')
+                    : ($suggestResponse !== null
+                        ? ('Suggest: HTTP '.$suggestResponse->status().'. ')
+                        : 'Suggest: нет ответа. ');
+
+                $explain = (($suggestResponse?->status() ?? 0) === 403)
+                    ? 'HTTP 403 на Suggest обычно значит: ключ действителен для геокодера, но в кабинете не подключён отдельный продукт «Геосаджест» (HTTP-подсказки для suggest-maps.yandex.ru). Раздел «JavaScript API и HTTP Геокодер» сам по себе не открывает Suggest.'
+                    : 'Подсказки в форме адреса могут не работать, пока Suggest недоступен с этим ключом. Автоподстановка индекса через Geocoder на сервере уже может работать.';
+
                 return response()->json([
-                    'success' => false,
-                    'message' => 'Suggest HTTP '.$response->status().'. Проверьте ключ и доступ к Suggest API в кабинете разработчика.',
+                    'success' => true,
+                    'message' => trim($suggestPart).'Geocoder HTTPS: OK. '.$explain,
                 ]);
             }
 
-            $body = $response->json();
-            $results = is_array($body) ? ($body['results'] ?? null) : null;
-            if (! is_array($results)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Неожиданный формат ответа Suggest API (нет results).',
-                ]);
+            $parts = [];
+            if ($suggestNetworkError !== null) {
+                $parts[] = 'Suggest: сеть — '.$suggestNetworkError;
+            } elseif ($suggestResponse !== null) {
+                $parts[] = 'Suggest: HTTP '.$suggestResponse->status();
             }
-
-            $row->update(['last_successful_auth_at' => now()]);
+            if (isset($geoProbe['status']) && $geoProbe['status'] !== null) {
+                $parts[] = 'Geocoder: HTTP '.$geoProbe['status'];
+            } elseif (! empty($geoProbe['error'])) {
+                $parts[] = 'Geocoder: '.$geoProbe['error'];
+            } else {
+                $parts[] = 'Geocoder: ответ без подходящих объектов или ошибка разбора';
+            }
 
             return response()->json([
-                'success' => true,
-                'message' => 'Suggest API: OK ('.count($results).' подсказок). Этот же ключ должен быть разрешён для Geocoder (см. поле ниже и документацию Geocoder API).',
+                'success' => false,
+                'message' => implode('. ', $parts).'. Проверьте ключ и в кабинете разработчика доступ к Geocoder и (для подсказок) к продукту «Геосаджест».',
             ]);
         }
 
@@ -234,6 +271,7 @@ class CrmDeliveryIntegrationController extends Controller
                 'suggest_url' => 'https://suggest-maps.yandex.ru/v1/suggest',
                 'geocoder_url' => 'https://geocode-maps.yandex.ru/1.x',
                 'postal_note' => 'Подстановка почтовых индексов: сервер дергает Geocoder HTTPS (тот же API‑ключ должен быть разрешён в кабинете).',
+                'geosuggest_note' => 'Подсказки при вводе адреса: endpoint Suggest часто требует отдельного подключения «Геосаджест» в кабинете, это не то же самое, что только «JavaScript API и HTTP Геокодер».',
                 'developer_console' => 'https://developer.tech.yandex.ru/',
             ];
         }
@@ -268,7 +306,7 @@ class CrmDeliveryIntegrationController extends Controller
     {
         return match ($name) {
             'cdek' => 'https://apidoc.cdek.ru/',
-            'yandex_maps' => 'https://yandex.ru/maps-api/docs/suggest-api/',
+            'yandex_maps' => 'https://yandex.ru/dev/maps/geosuggest/',
             'russian_post' => 'https://otpravka.pochta.ru/specification',
             default => null,
         };
@@ -307,7 +345,7 @@ class CrmDeliveryIntegrationController extends Controller
             'yandex_maps' => [
                 [
                     'key' => 'api_key',
-                    'label' => 'API‑ключ (HTTP API: JavaScript API и HTTP Геокодер + доступ к Suggest)',
+                    'label' => 'API‑ключ (Geocoder HTTPS; для Suggest может понадобиться отдельно «Геосаджест» в кабинете)',
                     'type' => 'password',
                     'required' => true,
                 ],
@@ -327,6 +365,12 @@ class CrmDeliveryIntegrationController extends Controller
                     'key' => 'developer_console',
                     'label' => 'Регистрация ключа (кабинет разработчика, только чтение)',
                     'type' => 'text',
+                    'readonly' => true,
+                ],
+                [
+                    'key' => 'geosuggest_note',
+                    'label' => 'Важно: Suggest HTTPS и продукт «Геосаджест» (только чтение)',
+                    'type' => 'textarea',
                     'readonly' => true,
                 ],
             ],
@@ -355,5 +399,37 @@ class CrmDeliveryIntegrationController extends Controller
         return array_values(array_filter(
             array_map(fn ($f) => ($f['readonly'] ?? false) ? null : $f['key'], $schema)
         ));
+    }
+
+    /**
+     * @return array{ok: bool, status?: int|null, error?: string}
+     */
+    private function probeYandexGeocoderHttps(string $key): array
+    {
+        try {
+            $geoResponse = Http::timeout(15)
+                ->acceptJson()
+                ->get('https://geocode-maps.yandex.ru/1.x', [
+                    'apikey' => $key,
+                    'geocode' => 'Москва, Тверская',
+                    'format' => 'json',
+                    'results' => 1,
+                ]);
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'status' => null, 'error' => $e->getMessage()];
+        }
+
+        $status = $geoResponse->status();
+        if (! $geoResponse->successful()) {
+            return ['ok' => false, 'status' => $status];
+        }
+
+        $j = $geoResponse->json();
+        $members = is_array($j) ? (($j['response']['GeoObjectCollection']['featureMember'] ?? null)) : null;
+
+        return [
+            'ok' => is_array($members) && count($members) > 0,
+            'status' => $status,
+        ];
     }
 }
