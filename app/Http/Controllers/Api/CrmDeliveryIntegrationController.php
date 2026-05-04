@@ -100,12 +100,60 @@ class CrmDeliveryIntegrationController extends Controller
 
         if ($name === 'yandex_maps') {
             $config = $row->config ?? [];
+            $key = trim((string) ($config['api_key'] ?? ''));
+
+            if (! $row->is_active) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Включите интеграцию переключателем ниже.',
+                ]);
+            }
+
+            if ($key === '') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Укажите API‑ключ (HTTP API Яндекс.Карт, см. документацию Suggest).',
+                ]);
+            }
+
+            try {
+                $response = Http::timeout(15)
+                    ->acceptJson()
+                    ->get('https://suggest-maps.yandex.ru/v1/suggest', [
+                        'apikey' => $key,
+                        'text' => 'Москва, Тверская',
+                        'print_address' => 1,
+                        'results' => 2,
+                        'lang' => 'ru_RU',
+                    ]);
+            } catch (\Throwable $e) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Сеть: '.$e->getMessage(),
+                ]);
+            }
+
+            if (! $response->successful()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Suggest HTTP '.$response->status().'. Проверьте ключ и доступ к Suggest API в кабинете разработчика.',
+                ]);
+            }
+
+            $body = $response->json();
+            $results = is_array($body) ? ($body['results'] ?? null) : null;
+            if (! is_array($results)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Неожиданный формат ответа Suggest API (нет results).',
+                ]);
+            }
+
+            $row->update(['last_successful_auth_at' => now()]);
 
             return response()->json([
-                'success' => $row->is_active && ! empty($config['api_key']),
-                'message' => $row->is_active && ! empty($config['api_key'])
-                    ? 'Интеграция Яндекс Карт настроена'
-                    : 'Включите интеграцию и укажите API key',
+                'success' => true,
+                'message' => 'Suggest API: OK ('.count($results).' подсказок). Этот же ключ должен быть разрешён для Geocoder (см. поле ниже и документацию Geocoder API).',
             ]);
         }
 
@@ -183,7 +231,9 @@ class CrmDeliveryIntegrationController extends Controller
         if ($name === 'yandex_maps') {
             return [
                 'suggest_url' => 'https://suggest-maps.yandex.ru/v1/suggest',
-                'postal_note' => 'Тот же API key используется для геокодера (HTTPS geocode-maps.yandex.ru/1.x) — авто-подстановка индекса при сохранении адреса доставки.',
+                'geocoder_url' => 'https://geocode-maps.yandex.ru/1.x',
+                'postal_note' => 'Подстановка почтовых индексов: сервер дергает Geocoder HTTPS (тот же API‑ключ должен быть разрешён в кабинете).',
+                'developer_console' => 'https://developer.tech.yandex.ru/',
             ];
         }
 
@@ -217,7 +267,7 @@ class CrmDeliveryIntegrationController extends Controller
     {
         return match ($name) {
             'cdek' => 'https://apidoc.cdek.ru/',
-            'yandex_maps' => 'https://yandex.com/maps-api/docs/suggest-api/index.html',
+            'yandex_maps' => 'https://yandex.ru/maps-api/docs/suggest-api/',
             'russian_post' => 'https://otpravka.pochta.ru/specification',
             default => null,
         };
@@ -254,8 +304,30 @@ class CrmDeliveryIntegrationController extends Controller
                 ['key' => 'additional_order_types', 'label' => 'Доп. тип заказа / пометки для ЛК (необязательно, текст)', 'type' => 'textarea'],
             ],
             'yandex_maps' => [
-                ['key' => 'api_key', 'label' => 'API key Geosuggest', 'type' => 'password', 'required' => true],
-                ['key' => 'suggest_url', 'label' => 'Endpoint подсказок (только чтение)', 'type' => 'text', 'readonly' => true],
+                [
+                    'key' => 'api_key',
+                    'label' => 'API‑ключ (HTTP API: JavaScript API и HTTP Геокодер + доступ к Suggest)',
+                    'type' => 'password',
+                    'required' => true,
+                ],
+                [
+                    'key' => 'suggest_url',
+                    'label' => 'Suggest API — официальный endpoint (только чтение)',
+                    'type' => 'text',
+                    'readonly' => true,
+                ],
+                [
+                    'key' => 'geocoder_url',
+                    'label' => 'Geocoder API — base URL HTTPS (только чтение)',
+                    'type' => 'text',
+                    'readonly' => true,
+                ],
+                [
+                    'key' => 'developer_console',
+                    'label' => 'Регистрация ключа (кабинет разработчика, только чтение)',
+                    'type' => 'text',
+                    'readonly' => true,
+                ],
             ],
             'nova_poshta' => [],
             'dhl' => [],
