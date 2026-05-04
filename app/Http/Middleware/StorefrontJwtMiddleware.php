@@ -2,7 +2,9 @@
 
 namespace App\Http\Middleware;
 
+use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\StorefrontAuthController;
+use App\Models\AdminUser;
 use App\Models\User;
 use Closure;
 use Illuminate\Http\Request;
@@ -18,16 +20,43 @@ class StorefrontJwtMiddleware
         }
 
         $payload = StorefrontAuthController::verifyCustomerSessionToken($token);
-        if (! $payload) {
+        if ($payload) {
+            $user = User::query()->find($payload['sub']);
+            if (! $user) {
+                return response()->json(['error' => 'Пользователь не найден'], 401);
+            }
+
+            $request->attributes->set('storefront_user', $user);
+            $request->attributes->set('storefront_auth_role', $user->account_role ?? 'customer');
+
+            return $next($request);
+        }
+
+        $adminPayload = AuthController::verifyToken($token);
+        if (! $adminPayload) {
             return response()->json(['error' => 'Недействительный токен'], 401);
         }
 
-        $user = User::query()->find($payload['sub']);
-        if (! $user) {
-            return response()->json(['error' => 'Пользователь не найден'], 401);
+        $admin = AdminUser::query()->find((int) ($adminPayload['sub'] ?? 0));
+        if (! $admin || ! $admin->is_active || $admin->role !== 'admin') {
+            return response()->json(['error' => 'Недостаточно прав'], 403);
+        }
+
+        $user = User::query()->firstOrCreate(
+            ['email' => $admin->email],
+            [
+                'name' => $admin->name,
+                'phone' => null,
+                'account_role' => 'admin',
+                'password' => null,
+            ]
+        );
+        if ($user->account_role !== 'admin') {
+            $user->update(['account_role' => 'admin']);
         }
 
         $request->attributes->set('storefront_user', $user);
+        $request->attributes->set('storefront_auth_role', 'admin');
 
         return $next($request);
     }
