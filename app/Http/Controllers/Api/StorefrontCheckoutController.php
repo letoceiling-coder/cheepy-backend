@@ -9,6 +9,7 @@ use App\Models\Payment;
 use App\Models\User;
 use App\Services\Catalog\PublicSystemCatalogService;
 use App\Services\Payments\PaymentProviderManager;
+use App\Services\Storefront\StorefrontDeliveryQuoteService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -92,6 +93,15 @@ class StorefrontCheckoutController extends Controller
         $deliveryProvider = null;
         $deliveryType = 'flat';
 
+        $qb = $deliveryQuotes->buildQuotesForCartLines($user, $cartLinesOnly);
+
+        if ($qb['needs_address'] ?? false) {
+            return response()->json([
+                'error' => 'Добавьте адрес доставки в личном кабинете (раздел «Адреса доставки»), чтобы оформить заказ.',
+                'code' => 'needs_delivery_address',
+            ], 422);
+        }
+
         if ($subtotalRub >= self::FREE_DELIVERY_THRESHOLD_RUB) {
             $deliveryRub = 0;
             $deliveryType = 'free_threshold';
@@ -100,13 +110,6 @@ class StorefrontCheckoutController extends Controller
                 'threshold_rub' => self::FREE_DELIVERY_THRESHOLD_RUB,
             ];
         } else {
-            $qb = $deliveryQuotes->buildQuotesForCartLines($user, $cartLinesOnly);
-            if ($qb['needs_address'] ?? false) {
-                return response()->json([
-                    'error' => 'Добавьте адрес доставки в личном кабинете (раздел «Адреса доставки»), чтобы оформить заказ.',
-                    'code' => 'needs_delivery_address',
-                ], 422);
-            }
             $cheapest = $qb['cheapest_price_rub'] ?? null;
             if ($cheapest !== null) {
                 $deliveryRub = max(0, (int) round((float) $cheapest));
