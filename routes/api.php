@@ -614,6 +614,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
 
         Route::get('store-payments/summary', [CrmCommerceController::class, 'paymentSummary']);
         Route::get('store-payments', [CrmCommerceController::class, 'payments']);
+        Route::post('store-payments/{id}/refund', [CrmCommerceController::class, 'paymentRefund']);
 
         Route::get('store-payouts', [CrmCommerceController::class, 'payoutsPlaceholder']);
 

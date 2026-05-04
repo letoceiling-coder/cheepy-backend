@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\CustomerOrder;
 use App\Models\Payment;
+use App\Services\Payments\CrmPaymentRefundService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -156,6 +157,26 @@ class CrmCommerceController extends Controller
         ]);
     }
 
+    /** POST /crm/store-payments/{id}/refund */
+    public function paymentRefund(Request $request, int $id, CrmPaymentRefundService $refunds): JsonResponse
+    {
+        $validated = $request->validate([
+            /** null — полный остаток; иначе часть суммы платежа (крупные единицы, как в списке) */
+            'amount' => 'nullable|numeric|min:0.01',
+        ]);
+
+        try {
+            $amt = isset($validated['amount']) ? (float) $validated['amount'] : null;
+            $payment = $refunds->refund($id, $amt);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+
+        return response()->json(['data' => $this->serializePaymentRow($payment)]);
+    }
+
     /**
      * Заглушка маршрута без моковых строк: в кодовой базе нет таблицы seller_payouts.
      */
@@ -217,6 +238,7 @@ class CrmCommerceController extends Controller
         $row['payments'] = $o->payments->map(fn (Payment $p) => [
             'id' => $p->id,
             'amount' => (string) $p->amount,
+            'refunded_amount' => (string) ($p->refunded_amount ?? '0'),
             'provider' => $p->provider,
             'status' => $p->status,
             'provider_id' => $p->provider_id,

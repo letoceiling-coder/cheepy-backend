@@ -66,6 +66,55 @@ class TinkoffProvider implements PaymentProviderInterface
         ];
     }
 
+    /**
+     * Полный или частичный возврат (Cancel) через T‑Банк.
+     *
+     * @param  non-empty-string  $terminalPaymentId  PaymentId из Init
+     * @param  int|null  $amountKopecks  null — полный возврат; число — частичное в копейках
+     * @return array{ok:bool,message?:string,new_state?:string,raw:mixed}
+     */
+    public function cancelPayment(string $terminalPaymentId, ?int $amountKopecks): array
+    {
+        if (empty($this->config['terminal_key']) || empty($this->config['password'])) {
+            return ['ok' => false, 'message' => 'T‑Банк не настроен', 'raw' => null];
+        }
+        $terminalPaymentId = trim($terminalPaymentId);
+        if ($terminalPaymentId === '') {
+            return ['ok' => false, 'message' => 'Пустой PaymentId', 'raw' => null];
+        }
+
+        $payload = [
+            'TerminalKey' => $this->config['terminal_key'] ?? '',
+            'PaymentId' => $terminalPaymentId,
+        ];
+        if ($amountKopecks !== null && $amountKopecks > 0) {
+            $payload['Amount'] = $amountKopecks;
+        }
+        $payload['Token'] = $this->generateRequestToken($payload);
+
+        $base = ($this->config['mode'] ?? 'prod') === 'test'
+            ? 'https://rest-api-test.tinkoff.ru'
+            : 'https://securepay.tinkoff.ru';
+
+        $response = Http::asJson()->timeout(20)->post($base.'/v2/Cancel', $payload);
+        $body = $response->json();
+        if (! is_array($body)) {
+            return ['ok' => false, 'message' => 'Пустой ответ T‑Банка', 'raw' => null];
+        }
+        $ok = ($body['Success'] ?? false) === true;
+        if (! $ok) {
+            $message = trim((string) ($body['Message'] ?? $body['Details'] ?? 'Отмена платежа не удалась'));
+
+            return ['ok' => false, 'message' => $message ?: 'Отмена платежа не удалась', 'raw' => $body];
+        }
+
+        return [
+            'ok' => true,
+            'new_state' => strtoupper((string) ($body['Status'] ?? $body['NewState'] ?? '')),
+            'raw' => $body,
+        ];
+    }
+
     public function handleWebhook(Request $request): array
     {
         if (empty($this->config['terminal_key']) || empty($this->config['password'])) {

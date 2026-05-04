@@ -15,6 +15,19 @@ class PaymentProviderManager
             throw new \RuntimeException("Payment provider [{$name}] is not active");
         }
 
+        return $this->makeProviderFromRecord($record, $name);
+    }
+
+    /** Экземпляр провайдера из записи БД без проверки is_active (например CRM-возврат по старому платежу). */
+    public function getProviderIgnoreActive(string $name): PaymentProviderInterface
+    {
+        $record = $this->getProviderRecord($name);
+
+        return $this->makeProviderFromRecord($record, $name);
+    }
+
+    private function makeProviderFromRecord(PaymentProvider $record, string $name): PaymentProviderInterface
+    {
         $config = $record->config ?? [];
 
         return match (strtolower($name)) {

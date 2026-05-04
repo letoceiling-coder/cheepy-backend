@@ -11,6 +11,7 @@ class Payment extends Model
         'api_key_id',
         'customer_order_id',
         'amount',
+        'refunded_amount',
         'provider',
         'status',
         'provider_id',
@@ -23,6 +24,7 @@ class Payment extends Model
 
     protected $casts = [
         'amount' => 'decimal:4',
+        'refunded_amount' => 'decimal:4',
         'updated_at' => 'datetime',
     ];
 

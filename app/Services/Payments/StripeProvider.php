@@ -75,6 +75,64 @@ class StripeProvider implements PaymentProviderInterface
         ];
     }
 
+    /**
+     * Возврат по Stripe Checkout Session (provider_id платежа = id сессии cs_…).
+     *
+     * @param  int|null  $amountMinor  null — полный возврат; часть — в минорных единицах валюты платежа
+     * @return array{ok:bool,message?:string,status?:string,raw:mixed}
+     */
+    public function refundCheckoutSession(string $checkoutSessionId, ?int $amountMinor): array
+    {
+        $secret = trim((string) ($this->config['secret_key'] ?? env('STRIPE_SECRET_KEY', '')));
+        $checkoutSessionId = trim($checkoutSessionId);
+        if ($secret === '' || $checkoutSessionId === '') {
+            return ['ok' => false, 'message' => 'Stripe не настроен', 'raw' => null];
+        }
+
+        $sess = Http::withToken($secret)
+            ->timeout(15)
+            ->get('https://api.stripe.com/v1/checkout/sessions/'.$checkoutSessionId);
+        $sessionPayload = $sess->json();
+        if (! $sess->ok() || ! is_array($sessionPayload)) {
+            return ['ok' => false, 'message' => 'Не удалось прочитать сессию Stripe', 'raw' => $sessionPayload];
+        }
+
+        $paymentIntent = $sessionPayload['payment_intent'] ?? null;
+        if (! is_string($paymentIntent) || $paymentIntent === '') {
+            return ['ok' => false, 'message' => 'У сессии нет payment_intent', 'raw' => $sessionPayload];
+        }
+
+        $refundPayload = ['payment_intent' => $paymentIntent];
+        if ($amountMinor !== null && $amountMinor > 0) {
+            $refundPayload['amount'] = $amountMinor;
+        }
+
+        $ref = Http::asForm()->withToken($secret)
+            ->timeout(15)
+            ->post('https://api.stripe.com/v1/refunds', $refundPayload);
+        $refBody = $ref->json();
+
+        if (! $ref->ok() || ! is_array($refBody)) {
+            $stripeMsg = '';
+            if (is_array($refBody)) {
+                $err = is_array($refBody['error'] ?? null) ? $refBody['error'] : [];
+                $stripeMsg = trim((string) ($err['message'] ?? $refBody['message'] ?? ''));
+            }
+
+            return [
+                'ok' => false,
+                'message' => $stripeMsg !== '' ? $stripeMsg : 'Stripe refund не выполнен',
+                'raw' => $refBody,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'status' => (string) ($refBody['status'] ?? ''),
+            'raw' => $refBody,
+        ];
+    }
+
     public function handleWebhook(Request $request): array
     {
         $payload = $request->getContent();

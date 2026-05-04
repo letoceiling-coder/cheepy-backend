@@ -362,12 +362,6 @@ class SaasApiKeyController extends Controller
                 return;
             }
 
-            if ($payment->provider_event_id === $providerEventId || $payment->status === 'succeeded') {
-                \Illuminate\Support\Facades\Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'idempotent', 'payment_id' => $payment->id, 'provider_event_id' => $providerEventId]);
-                $this->markWebhookProcessed($webhookLog);
-                return;
-            }
-
             $allowed = self::STATUS_TRANSITIONS[$payment->status] ?? [];
             if (!in_array($newStatus, $allowed, true)) {
                 \Illuminate\Support\Facades\Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'status_skip', 'payment_id' => $payment->id, 'current_status' => $payment->status, 'new_status' => $newStatus, 'allowed' => $allowed]);
