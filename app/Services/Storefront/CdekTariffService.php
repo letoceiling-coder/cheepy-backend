@@ -66,7 +66,6 @@ class CdekTariffService
             $body = [
                 'type' => 1,
                 'lang' => 'rus',
-                'date' => now()->format('Y-m-d'),
                 'from_location' => ['code' => $fromCityCode],
                 'to_location' => $toLocation,
                 'packages' => $packages,
