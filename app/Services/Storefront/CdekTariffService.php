@@ -65,7 +65,6 @@ class CdekTariffService
         foreach ($destinationCandidates as $idx => $toLocation) {
             $body = [
                 'type' => 1,
-                'currency' => 1,
                 'lang' => 'rus',
                 'date' => now()->format('Y-m-d'),
                 'from_location' => ['code' => $fromCityCode],
@@ -174,7 +173,9 @@ class CdekTariffService
         $msg = 'СДЭК HTTP '.$res->status();
         $j = $res->json();
         if (! is_array($j)) {
-            return $msg;
+            $raw = trim((string) $res->body());
+
+            return $raw !== '' ? $msg.' | '.mb_substr($raw, 0, 600) : $msg;
         }
 
         $parts = [];
@@ -186,6 +187,17 @@ class CdekTariffService
         }
 
         $reqs = $j['requests'] ?? null;
+        if (isset($j['errors']) && is_array($j['errors'])) {
+            foreach ($j['errors'] as $e) {
+                if (! is_array($e)) {
+                    continue;
+                }
+                $m = $e['message'] ?? $e['code'] ?? null;
+                if (is_string($m) && $m !== '') {
+                    $parts[] = $m;
+                }
+            }
+        }
         if (is_array($reqs)) {
             foreach ($reqs as $req) {
                 if (! is_array($req)) {
@@ -210,6 +222,11 @@ class CdekTariffService
         $parts = array_values(array_unique($parts));
         if ($parts !== []) {
             $msg .= ': '.implode('; ', $parts);
+        } else {
+            $raw = trim((string) $res->body());
+            if ($raw !== '') {
+                $msg .= ' | '.mb_substr($raw, 0, 600);
+            }
         }
 
         return $msg;
