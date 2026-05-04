@@ -113,6 +113,11 @@ class StorefrontDeliveryQuoteService
         $fmt = $this->formatEstimatedWindow($pMin, $pMax);
         $price = (float) ($quote['price_rub'] ?? 0);
 
+        $priceStr = number_format($price, 2, '.', ' ');
+        $summaryDate = $fmt['iso_from'] === $fmt['iso_to']
+            ? $fmt['ru_from']
+            : sprintf('с %s по %s', $fmt['ru_from'], $fmt['ru_to']);
+
         return array_merge($quote, [
             'display_service_label' => $serviceLabel,
             'date_from' => $fmt['iso_from'],
@@ -120,11 +125,10 @@ class StorefrontDeliveryQuoteService
             'date_from_label_ru' => $fmt['ru_from'],
             'date_to_label_ru' => $fmt['ru_to'],
             'summary_line_ru' => sprintf(
-                '%s: %s ₽ с %s по %s',
+                '%s: %s ₽, %s',
                 $serviceLabel,
-                number_format($price, 2, '.', ' '),
-                $fmt['ru_from'],
-                $fmt['ru_to']
+                $priceStr,
+                $summaryDate
             ),
         ]);
     }
