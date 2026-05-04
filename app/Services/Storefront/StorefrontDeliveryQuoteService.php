@@ -47,6 +47,8 @@ class StorefrontDeliveryQuoteService
             ];
         }
 
+        $address = $this->persistPostalFromGeocodeWhenMissing($address);
+
         [$weightG, $l, $w, $h] = $this->packageDimensions($product, $quantity);
         $shipment = $this->shipmentSlice($product, $quantity);
 
@@ -207,5 +209,47 @@ class StorefrontDeliveryQuoteService
         }
 
         return $fallback > 0 ? $fallback : 44;
+    }
+
+    /**
+     * Если индекс пустой — один раз подставляем через Яндекс (кэш сервиса), сохраняем в user_addresses.
+     */
+    private function persistPostalFromGeocodeWhenMissing(UserAddress $address): UserAddress
+    {
+        $digits = preg_replace('/\D/', '', (string) ($address->postal_code ?? ''));
+        if (strlen($digits) === 6) {
+            return $address;
+        }
+
+        $enrich = app(YandexRuAddressEnrichmentService::class);
+        $payload = $enrich->enrichValidatedAddress([
+            'country' => $address->country,
+            'region' => $address->region,
+            'city' => (string) $address->city,
+            'line1' => (string) $address->line1,
+            'line2' => $address->line2,
+            'postal_code' => $address->postal_code,
+            'lat' => $address->lat,
+            'lng' => $address->lng,
+            'provider_payload' => is_array($address->provider_payload) ? $address->provider_payload : null,
+            'source' => (string) ($address->source ?? 'manual'),
+        ]);
+
+        $newPc = preg_replace('/\D/', '', (string) ($payload['postal_code'] ?? ''));
+        if (strlen($newPc) !== 6) {
+            return $address;
+        }
+
+        $address->update([
+            'postal_code' => $newPc,
+            'region' => $payload['region'] ?? $address->region,
+            'city' => $payload['city'] ?? $address->city,
+            'lat' => $payload['lat'] ?? $address->lat,
+            'lng' => $payload['lng'] ?? $address->lng,
+            'provider_payload' => $payload['provider_payload'] ?? $address->provider_payload,
+            'source' => $payload['source'] ?? $address->source,
+        ]);
+
+        return $address->refresh();
     }
 }

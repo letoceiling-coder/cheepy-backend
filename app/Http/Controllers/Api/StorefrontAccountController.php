@@ -18,6 +18,7 @@ use App\Models\UserPickupPoint;
 use App\Services\Storefront\CdekOfficeService;
 use App\Services\Storefront\CustomerWalletService;
 use App\Services\Storefront\ReferralService;
+use App\Services\Storefront\YandexRuAddressEnrichmentService;
 use App\Services\Storefront\YandexSuggestService;
 use App\Support\SocialOauthCatalog;
 use Illuminate\Http\JsonResponse;
@@ -102,7 +103,7 @@ class StorefrontAccountController extends Controller
         return response()->json(['data' => $this->addressList($this->user($request))]);
     }
 
-    public function storeAddress(Request $request): JsonResponse
+    public function storeAddress(Request $request, YandexRuAddressEnrichmentService $addressEnrich): JsonResponse
     {
         $user = $this->user($request);
         $data = $request->validate([
@@ -119,6 +120,7 @@ class StorefrontAccountController extends Controller
             'is_default' => ['nullable', 'boolean'],
             'provider_payload' => ['nullable', 'array'],
         ]);
+        $data = $addressEnrich->enrichValidatedAddress($data);
         $address = DB::transaction(function () use ($user, $data) {
             if ((bool) ($data['is_default'] ?? false)) {
                 UserAddress::query()->where('user_id', $user->id)->update(['is_default' => false]);
@@ -135,7 +137,7 @@ class StorefrontAccountController extends Controller
         return response()->json(['data' => $address], 201);
     }
 
-    public function updateAddress(Request $request, int $id): JsonResponse
+    public function updateAddress(Request $request, int $id, YandexRuAddressEnrichmentService $addressEnrich): JsonResponse
     {
         $user = $this->user($request);
         $address = UserAddress::query()->where('user_id', $user->id)->findOrFail($id);
@@ -153,6 +155,7 @@ class StorefrontAccountController extends Controller
             'is_default' => ['nullable', 'boolean'],
             'provider_payload' => ['nullable', 'array'],
         ]);
+        $data = $addressEnrich->enrichValidatedAddress($data);
         DB::transaction(function () use ($user, $address, $data) {
             if ((bool) ($data['is_default'] ?? false)) {
                 UserAddress::query()->where('user_id', $user->id)->update(['is_default' => false]);

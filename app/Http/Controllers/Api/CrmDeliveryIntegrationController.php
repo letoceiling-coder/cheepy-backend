@@ -183,6 +183,7 @@ class CrmDeliveryIntegrationController extends Controller
         if ($name === 'yandex_maps') {
             return [
                 'suggest_url' => 'https://suggest-maps.yandex.ru/v1/suggest',
+                'postal_note' => 'Тот же API key используется для геокодера (HTTPS geocode-maps.yandex.ru/1.x) — авто-подстановка индекса при сохранении адреса доставки.',
             ];
         }
 
