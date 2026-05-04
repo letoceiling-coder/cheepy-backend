@@ -20,7 +20,10 @@ class StripeProvider implements PaymentProviderInterface
 
     public function createCheckout(?SaasApiKey $apiKey, float $amount, array $context = []): array
     {
-        $secret = (string) env('STRIPE_SECRET_KEY', '');
+        $secret = trim((string) ($this->config['secret_key'] ?? env('STRIPE_SECRET_KEY', '')));
+        if ($secret === '') {
+            throw new \RuntimeException('Stripe не настроен: укажите secret key в CRM или STRIPE_SECRET_KEY в .env');
+        }
         $successUrl = (string) ($context['success_url'] ?? env('STRIPE_SUCCESS_URL', 'https://example.com/success'));
         $cancelUrl = (string) ($context['cancel_url'] ?? env('STRIPE_CANCEL_URL', 'https://example.com/cancel'));
         $currency = strtolower((string) config('payments.stripe.currency', 'usd'));
@@ -51,8 +54,17 @@ class StripeProvider implements PaymentProviderInterface
             ->withToken($secret)
             ->post('https://api.stripe.com/v1/checkout/sessions', $form);
 
-        if (!$res->ok()) {
-            throw new \RuntimeException('Stripe checkout creation failed');
+        if (! $res->ok()) {
+            $decoded = $res->json();
+            $stripeMsg = '';
+            if (is_array($decoded)) {
+                $err = is_array($decoded['error'] ?? null) ? $decoded['error'] : [];
+                $stripeMsg = trim((string) ($err['message'] ?? $decoded['message'] ?? ''));
+            }
+
+            throw new \RuntimeException(
+                $stripeMsg !== '' ? $stripeMsg : 'Stripe checkout creation failed'
+            );
         }
 
         $payload = (array) $res->json();

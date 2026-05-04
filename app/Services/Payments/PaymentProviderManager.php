@@ -39,12 +39,36 @@ class PaymentProviderManager
         return $record;
     }
 
+    /**
+     * Активные провайдеры в стабильном порядке приоритета для витрины:
+     * российские эквайринги раньше Stripe (в сидере Stripe часто id=1 и иначе «съедал» дефолт).
+     */
     public function getActiveProviderNames(): array
     {
-        return PaymentProvider::where('is_active', true)
+        $active = PaymentProvider::where('is_active', true)
             ->pluck('name')
-            ->map(fn ($n) => strtolower($n))
+            ->map(fn ($n) => strtolower((string) $n))
+            ->unique()
             ->values()
             ->all();
+
+        if ($active === []) {
+            return [];
+        }
+
+        $priority = ['tinkoff', 'sber', 'atol', 'stripe'];
+        $ordered = [];
+        foreach ($priority as $name) {
+            if (in_array($name, $active, true)) {
+                $ordered[] = $name;
+            }
+        }
+        foreach ($active as $name) {
+            if (! in_array($name, $ordered, true)) {
+                $ordered[] = $name;
+            }
+        }
+
+        return $ordered;
     }
 }
