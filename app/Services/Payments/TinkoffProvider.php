@@ -42,7 +42,7 @@ class TinkoffProvider implements PaymentProviderInterface
             'FailURL' => $urls['fail'],
         ];
 
-        $payload['Token'] = $this->generateInitToken($payload);
+        $payload['Token'] = $this->generateRequestToken($payload);
 
         $base = ($this->config['mode'] ?? 'prod') === 'test'
             ? 'https://rest-api-test.tinkoff.ru'
@@ -65,23 +65,6 @@ class TinkoffProvider implements PaymentProviderInterface
         ];
     }
 
-    private function generateInitToken(array $data): string
-    {
-        $tokenData = [
-            'Amount' => $data['Amount'],
-            'OrderId' => $data['OrderId'],
-            'TerminalKey' => $data['TerminalKey'],
-        ];
-        if (!empty($data['Description'])) {
-            $tokenData['Description'] = $data['Description'];
-        }
-        $tokenData['Password'] = $this->config['password'] ?? '';
-
-        ksort($tokenData);
-
-        return hash('sha256', implode('', $tokenData));
-    }
-
     public function handleWebhook(Request $request): array
     {
         if (empty($this->config['terminal_key']) || empty($this->config['password'])) {
@@ -99,7 +82,7 @@ class TinkoffProvider implements PaymentProviderInterface
             return ['ok' => false, 'return_ok' => true, 'provider_id' => null, 'provider_event_id' => null, 'status' => null, 'amount_total' => null, 'currency' => null];
         }
 
-        $expectedToken = $this->generateNotificationToken($data);
+        $expectedToken = $this->generateRequestToken($data);
         Log::info('Tinkoff WEBHOOK TOKEN CHECK', [
             'incoming' => $receivedToken,
             'calculated' => $expectedToken,
@@ -132,7 +115,13 @@ class TinkoffProvider implements PaymentProviderInterface
         ];
     }
 
-    private function generateNotificationToken(array $data): string
+    /**
+     * Подпись для Init и уведомлений T-Bank: все корневые скалярные поля, кроме Token
+     * и вложенных объектов (Receipt, DATA, Shops).
+     *
+     * @see https://www.tbank.ru/kassa/develop/api/notifications/https/
+     */
+    private function generateRequestToken(array $data): string
     {
         $exclude = ['Token', 'Receipt', 'DATA', 'Shops'];
         $tokenData = [];
@@ -143,9 +132,9 @@ class TinkoffProvider implements PaymentProviderInterface
             if (is_array($value) || is_object($value)) {
                 continue;
             }
-            $tokenData[$key] = (string) $value;
+            $tokenData[$key] = is_bool($value) ? (($value ? 'true' : 'false')) : (string) $value;
         }
-        $tokenData['Password'] = $this->config['password'] ?? '';
+        $tokenData['Password'] = (string) ($this->config['password'] ?? '');
         ksort($tokenData);
 
         return hash('sha256', implode('', $tokenData));

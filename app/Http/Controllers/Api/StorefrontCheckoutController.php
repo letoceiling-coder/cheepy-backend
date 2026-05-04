@@ -241,7 +241,15 @@ class StorefrontCheckoutController extends Controller
         } catch (\Throwable $e) {
             report($e);
 
-            return response()->json(['error' => 'Не удалось создать оплату'], 422);
+            $payload = ['error' => 'Не удалось создать оплату'];
+            if ($e instanceof \RuntimeException) {
+                $detail = trim($e->getMessage());
+                if ($detail !== '') {
+                    $payload['details'] = $detail;
+                }
+            }
+
+            return response()->json($payload, 422);
         }
 
         if (empty($responsePayload['checkout_url'])) {
