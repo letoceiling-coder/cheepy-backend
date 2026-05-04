@@ -39,7 +39,7 @@ class StorefrontDeliveryQuoteService
         if ($address === null) {
             return [
                 'needs_address' => true,
-                'message' => 'Добавьте адрес доставки в личном кабинете, чтобы видеть расчёт.',
+                'message' => 'Добавьте адрес доставки в личном кабинете (раздел «Адреса доставки»). Для ориентировочного расчёта берётся адрес по умолчанию или первый сохранённый.',
                 'address' => null,
                 'shipment' => $this->shipmentSlice($product, $quantity),
                 'quotes' => [],
