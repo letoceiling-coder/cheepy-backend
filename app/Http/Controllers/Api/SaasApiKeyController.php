@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\CustomerOrder;
 use App\Models\Payment;
 use App\Models\PaymentWebhookLog;
 use App\Models\SaasApiKey;
@@ -414,10 +415,20 @@ class SaasApiKeyController extends Controller
             }
 
             \Illuminate\Support\Facades\Log::info('Tinkoff WEBHOOK SUCCESS', ['payment_id' => $payment->id, 'amount' => $payment->amount]);
-            $key = SaasApiKey::query()->whereKey($payment->api_key_id)->lockForUpdate()->first();
-            if ($key) {
-                $key->balance = (float) $key->balance + (float) $payment->amount;
-                $key->save();
+            if ($payment->customer_order_id !== null) {
+                CustomerOrder::query()->whereKey($payment->customer_order_id)->update([
+                    'payment_status' => 'paid',
+                    'status' => 'confirmed',
+                    'paid_at' => now(),
+                ]);
+            } else {
+                $key = $payment->api_key_id !== null
+                    ? SaasApiKey::query()->whereKey($payment->api_key_id)->lockForUpdate()->first()
+                    : null;
+                if ($key) {
+                    $key->balance = (float) $key->balance + (float) $payment->amount;
+                    $key->save();
+                }
             }
 
             $payment->update([

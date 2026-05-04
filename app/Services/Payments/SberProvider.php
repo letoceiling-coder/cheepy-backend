@@ -23,7 +23,7 @@ class SberProvider implements PaymentProviderInterface
         return (int) round($amount * 100);
     }
 
-    public function createCheckout(SaasApiKey $apiKey, float $amount, array $context = []): array
+    public function createCheckout(?SaasApiKey $apiKey, float $amount, array $context = []): array
     {
         if (empty($this->config['merchant_login']) || empty($this->config['password'])) {
             throw new \RuntimeException('Invalid provider config: merchant_login and password required');
@@ -43,7 +43,7 @@ class SberProvider implements PaymentProviderInterface
             'amount' => $amountKopecks,
             'returnUrl' => $urls['success'],
             'failUrl' => $urls['fail'],
-            'description' => $context['description'] ?? 'Payment #' . $paymentId,
+            'description' => $context['description'] ?? ($apiKey !== null ? 'Payment #' . $paymentId : 'Оплата #' . $paymentId),
         ];
 
         $base = ($this->config['mode'] ?? 'prod') === 'test' ? self::BASE_TEST : self::BASE_PROD;

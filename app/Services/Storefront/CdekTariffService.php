@@ -33,6 +33,9 @@ class CdekTariffService
     ): array {
         $integration = DeliveryIntegration::query()->where('name', 'cdek')->first();
         $config = $integration?->config ?? [];
+        if ($integration === null || ! $integration->is_active) {
+            return ['ok' => false, 'message' => 'СДЭК отключён'];
+        }
         if (empty($config['client_id']) || empty($config['client_secret'])) {
             return ['ok' => false, 'message' => 'СДЭК не подключён'];
         }

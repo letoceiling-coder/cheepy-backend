@@ -19,7 +19,7 @@ class TinkoffProvider implements PaymentProviderInterface
         return (int) round($amount * 100);
     }
 
-    public function createCheckout(SaasApiKey $apiKey, float $amount, array $context = []): array
+    public function createCheckout(?SaasApiKey $apiKey, float $amount, array $context = []): array
     {
         if (empty($this->config['terminal_key']) || empty($this->config['password'])) {
             throw new \RuntimeException('Invalid provider config');
@@ -29,13 +29,14 @@ class TinkoffProvider implements PaymentProviderInterface
         $orderId = 'pay_' . $paymentId;
 
         $notificationUrl = $this->config['notification_url'] ?? rtrim(config('app.url', ''), '/') . '/api/v1/webhook/tinkoff';
-        $urls = $this->buildReturnUrls($paymentId);
+        $returnToken = (string) ($context['return_token'] ?? '');
+        $urls = $this->buildReturnUrls($paymentId, $returnToken);
 
         $payload = [
             'TerminalKey' => $this->config['terminal_key'] ?? '',
             'Amount' => (int) round($amount * 100),
             'OrderId' => $orderId,
-            'Description' => $context['description'] ?? 'API Key Top-up #' . $apiKey->id,
+            'Description' => $context['description'] ?? ($apiKey !== null ? 'API Key Top-up #' . $apiKey->id : 'Оплата заказа'),
             'NotificationURL' => $notificationUrl,
             'SuccessURL' => $urls['success'],
             'FailURL' => $urls['fail'],

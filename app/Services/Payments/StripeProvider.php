@@ -18,7 +18,7 @@ class StripeProvider implements PaymentProviderInterface
         return (int) round($amount * 100);
     }
 
-    public function createCheckout(SaasApiKey $apiKey, float $amount, array $context = []): array
+    public function createCheckout(?SaasApiKey $apiKey, float $amount, array $context = []): array
     {
         $secret = (string) env('STRIPE_SECRET_KEY', '');
         $successUrl = (string) ($context['success_url'] ?? env('STRIPE_SUCCESS_URL', 'https://example.com/success'));
@@ -26,21 +26,30 @@ class StripeProvider implements PaymentProviderInterface
         $currency = strtolower((string) config('payments.stripe.currency', 'usd'));
         $unitAmount = $this->normalizeAmount($amount);
 
+        $lineName = $context['line_item_name']
+            ?? $context['description']
+            ?? ($apiKey !== null ? 'API Key Top-up #' . $apiKey->id : 'Payment');
+
+        $form = [
+            'mode' => 'payment',
+            'success_url' => $successUrl,
+            'cancel_url' => $cancelUrl,
+            'line_items[0][price_data][currency]' => $currency,
+            'line_items[0][price_data][unit_amount]' => $unitAmount,
+            'line_items[0][price_data][product_data][name]' => $lineName,
+            'line_items[0][quantity]' => 1,
+            'metadata[payment_id]' => (string) ($context['payment_id'] ?? ''),
+        ];
+
+        if ($apiKey !== null) {
+            $form['metadata[api_key_id]'] = (string) $apiKey->id;
+        }
+
         $res = Http::asForm()
             ->timeout(8)
             ->connectTimeout(5)
             ->withToken($secret)
-            ->post('https://api.stripe.com/v1/checkout/sessions', [
-                'mode' => 'payment',
-                'success_url' => $successUrl,
-                'cancel_url' => $cancelUrl,
-                'line_items[0][price_data][currency]' => $currency,
-                'line_items[0][price_data][unit_amount]' => $unitAmount,
-                'line_items[0][price_data][product_data][name]' => 'API Key Top-up #' . $apiKey->id,
-                'line_items[0][quantity]' => 1,
-                'metadata[api_key_id]' => (string) $apiKey->id,
-                'metadata[payment_id]' => (string) ($context['payment_id'] ?? ''),
-            ]);
+            ->post('https://api.stripe.com/v1/checkout/sessions', $form);
 
         if (!$res->ok()) {
             throw new \RuntimeException('Stripe checkout creation failed');

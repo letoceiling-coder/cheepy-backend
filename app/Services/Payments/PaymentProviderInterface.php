@@ -12,7 +12,7 @@ interface PaymentProviderInterface
     /**
      * @return array{provider_id:string,checkout_url:?string,raw:array}
      */
-    public function createCheckout(SaasApiKey $apiKey, float $amount, array $context = []): array;
+    public function createCheckout(?SaasApiKey $apiKey, float $amount, array $context = []): array;
 
     /**
      * @return array{

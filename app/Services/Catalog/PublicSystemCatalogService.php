@@ -773,7 +773,10 @@ class PublicSystemCatalogService
         ];
     }
 
-    private function priceForStorefront(SystemProduct $sp): int
+    /**
+     * Цена строки заказа (как на витрине): базовый price_raw + комиссия по категории.
+     */
+    public function priceForStorefront(SystemProduct $sp): int
     {
         return app(MarketplaceSettingsService::class)->priceWithCommission(
             $sp->price_raw ?: $this->parsePrice($sp->price),

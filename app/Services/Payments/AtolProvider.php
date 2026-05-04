@@ -17,7 +17,7 @@ class AtolProvider implements PaymentProviderInterface
         return (int) round($amount * 100);
     }
 
-    public function createCheckout(SaasApiKey $apiKey, float $amount, array $context = []): array
+    public function createCheckout(?SaasApiKey $apiKey, float $amount, array $context = []): array
     {
         throw new \RuntimeException('Atol provider is not implemented');
     }

@@ -9,6 +9,7 @@ class Payment extends Model
 {
     protected $fillable = [
         'api_key_id',
+        'customer_order_id',
         'amount',
         'provider',
         'status',
@@ -28,5 +29,10 @@ class Payment extends Model
     public function apiKey(): BelongsTo
     {
         return $this->belongsTo(SaasApiKey::class, 'api_key_id');
+    }
+
+    public function customerOrder(): BelongsTo
+    {
+        return $this->belongsTo(CustomerOrder::class, 'customer_order_id');
     }
 }

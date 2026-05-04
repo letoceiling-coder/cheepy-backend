@@ -106,6 +106,234 @@ class StorefrontDeliveryQuoteService
         ];
     }
 
+    /**
+     * Корзина: суммарный вес/габариты, затем те же интеграции, что для одной позиции (СДЭК, Почта РФ при активности).
+     *
+     * @param list<array{product: SystemProduct, quantity: int}> $lines
+     * @return array{
+     *   needs_address: bool,
+     *   message?: ?string,
+     *   address?: ?array,
+     *   shipment: array<string, mixed>,
+     *   quotes: list<array<string, mixed>>,
+     *   cheapest_quote: ?array,
+     *   cheapest_price_rub: ?float,
+     *   warnings: list<string>,
+     * }
+     */
+    public function buildQuotesForCartLines(Authenticatable $user, array $lines): array
+    {
+        /** @var list<array{product: SystemProduct, quantity: int}> $lines */
+        $lines = array_values(array_filter(
+            $lines,
+            static fn ($row) => is_array($row)
+                && isset($row['product'], $row['quantity'])
+                && $row['product'] instanceof SystemProduct
+        ));
+
+        $emptyShipment = [
+            'weight_g' => 0,
+            'length_cm' => 0,
+            'width_cm' => 0,
+            'height_cm' => 0,
+            'declared_value_kopeks' => null,
+            'lines_count' => 0,
+        ];
+
+        if ($lines === []) {
+            return [
+                'needs_address' => false,
+                'message' => null,
+                'address' => null,
+                'shipment' => $emptyShipment,
+                'quotes' => [],
+                'cheapest_quote' => null,
+                'cheapest_price_rub' => null,
+                'warnings' => [],
+            ];
+        }
+
+        $shipmentSlice = $this->mergedShipmentSliceFromLines($lines);
+
+        $address = UserAddress::query()
+            ->where('user_id', $user->getAuthIdentifier())
+            ->orderByDesc('is_default')
+            ->orderBy('id')
+            ->first();
+
+        if ($address === null) {
+            return [
+                'needs_address' => true,
+                'message' => 'Добавьте адрес доставки в личном кабинете (раздел «Адреса доставки»).',
+                'address' => null,
+                'shipment' => $shipmentSlice,
+                'quotes' => [],
+                'cheapest_quote' => null,
+                'cheapest_price_rub' => null,
+                'warnings' => [],
+            ];
+        }
+
+        $address = $this->persistPostalFromGeocodeWhenMissing($address);
+
+        [$weightG, $l, $w, $h] = $this->mergedPackageDimensionsFromLines($lines);
+
+        $fromCdek = $this->resolveSenderCdekCityCode();
+
+        /** @var list<array<string, mixed>> $quotes */
+        $quotes = [];
+
+        $cdekRes = $this->cdek->quoteDoorToDoor(
+            $fromCdek,
+            (string) $address->city,
+            $address->postal_code,
+            $weightG,
+            $l,
+            $w,
+            $h,
+        );
+
+        if (! empty($cdekRes['ok']) && isset($cdekRes['quote']) && is_array($cdekRes['quote'])) {
+            $quotes[] = $this->enrichPresentation($cdekRes['quote'], 'СДЭК · курьер');
+        } elseif (($cdekRes['message'] ?? '') !== '') {
+            Log::debug('storefront_cart_delivery_quote:cdek_failed', [
+                'user_id' => $user->getAuthIdentifier(),
+                'message' => $cdekRes['message'],
+            ]);
+        }
+
+        $originIndex = preg_replace('/\D/', '', (string) config('delivery.origin.postal_index', '101000'));
+        $destinationIndex = $address->postal_code !== null ? preg_replace('/\D/', '', (string) $address->postal_code) : '';
+        $declaredKop = $this->mergedDeclaredKopeksFromLines($lines);
+
+        if (strlen($destinationIndex) === 6) {
+            $rp = $this->pochta->quote($originIndex, $destinationIndex, $weightG, $declaredKop);
+            if (! empty($rp['ok']) && isset($rp['quote']) && is_array($rp['quote'])) {
+                $quotes[] = $this->enrichPresentation($rp['quote'], 'Почта России');
+            } elseif (($rp['message'] ?? '') !== '') {
+                Log::debug('storefront_cart_delivery_quote:russian_post_failed', [
+                    'user_id' => $user->getAuthIdentifier(),
+                    'message' => $rp['message'],
+                ]);
+            }
+        }
+
+        $picked = $this->pickCheapestQuote($quotes);
+
+        return [
+            'needs_address' => false,
+            'message' => null,
+            'address' => $this->addressSlice($address),
+            'shipment' => $shipmentSlice,
+            'quotes' => $quotes,
+            'cheapest_quote' => $picked['cheapest_quote'],
+            'cheapest_price_rub' => $picked['cheapest_price_rub'],
+            'warnings' => [],
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $quotes
+     * @return array{cheapest_quote: ?array<string, mixed>, cheapest_price_rub: ?float}
+     */
+    private function pickCheapestQuote(array $quotes): array
+    {
+        $best = null;
+        $bestPrice = PHP_FLOAT_MAX;
+
+        foreach ($quotes as $q) {
+            if (! is_array($q)) {
+                continue;
+            }
+            $p = (float) ($q['price_rub'] ?? 0);
+            if ($p <= 0) {
+                continue;
+            }
+            if ($p < $bestPrice) {
+                $bestPrice = $p;
+                $best = $q;
+            }
+        }
+
+        if ($best === null) {
+            return ['cheapest_quote' => null, 'cheapest_price_rub' => null];
+        }
+
+        return ['cheapest_quote' => $best, 'cheapest_price_rub' => round($bestPrice, 2)];
+    }
+
+    /**
+     * @param list<array{product: SystemProduct, quantity: int}> $lines
+     * @return array{0: int, 1: int, 2: int, 3: int}
+     */
+    private function mergedPackageDimensionsFromLines(array $lines): array
+    {
+        $totalWeight = 0;
+        $maxL = 1;
+        $maxW = 1;
+        $sumH = 0;
+
+        foreach ($lines as $row) {
+            $qty = max(1, min(99, (int) $row['quantity']));
+            [$wgt, $l, $w, $h] = $this->packageDimensions($row['product'], $qty);
+            $totalWeight += $wgt;
+            $maxL = max($maxL, $l);
+            $maxW = max($maxW, $w);
+            $sumH += $h;
+        }
+
+        $hFinal = min(200, max(10, $sumH));
+
+        return [max(1, $totalWeight), $maxL, $maxW, $hFinal];
+    }
+
+    /**
+     * @param list<array{product: SystemProduct, quantity: int}> $lines
+     */
+    private function mergedDeclaredKopeksFromLines(array $lines): ?int
+    {
+        $kop = 0;
+        foreach ($lines as $row) {
+            /** @var SystemProduct $p */
+            $p = $row['product'];
+            $qty = max(1, min(99, (int) $row['quantity']));
+            if ($p->price_raw !== null && (int) $p->price_raw > 0) {
+                $kop += (int) $p->price_raw * 100 * $qty;
+            }
+        }
+
+        return $kop > 0 ? $kop : null;
+    }
+
+    /**
+     * @param list<array{product: SystemProduct, quantity: int}> $lines
+     * @return array{weight_g: int, length_cm: int, width_cm: int, height_cm: int, declared_value_kopeks: ?int, lines_count: int}
+     */
+    private function mergedShipmentSliceFromLines(array $lines): array
+    {
+        if ($lines === []) {
+            return [
+                'weight_g' => 0,
+                'length_cm' => 0,
+                'width_cm' => 0,
+                'height_cm' => 0,
+                'declared_value_kopeks' => null,
+                'lines_count' => 0,
+            ];
+        }
+
+        [$weightG, $l, $w, $h] = $this->mergedPackageDimensionsFromLines($lines);
+
+        return [
+            'weight_g' => $weightG,
+            'length_cm' => $l,
+            'width_cm' => $w,
+            'height_cm' => $h,
+            'declared_value_kopeks' => $this->mergedDeclaredKopeksFromLines($lines),
+            'lines_count' => count($lines),
+        ];
+    }
+
     private function enrichPresentation(array $quote, string $serviceLabel): array
     {
         $pMin = (int) ($quote['period_min_days'] ?? 0);
