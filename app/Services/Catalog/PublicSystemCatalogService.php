@@ -548,7 +548,7 @@ class PublicSystemCatalogService
         return $resolved;
     }
 
-    private function findVisibleSystemProductByPublicId(string $externalId): SystemProduct
+    public function findVisibleSystemProductByPublicId(string $externalId): SystemProduct
     {
         if (str_starts_with($externalId, 'sp-')) {
             $id = (int) substr($externalId, 3);

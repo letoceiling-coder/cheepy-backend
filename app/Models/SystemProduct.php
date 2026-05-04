@@ -30,11 +30,19 @@ class SystemProduct extends Model
         'category_id',
         'brand_id',
         'list_position',
+        'shipping_weight_g',
+        'shipping_length_cm',
+        'shipping_width_cm',
+        'shipping_height_cm',
     ];
 
     protected $casts = [
         'price_raw' => 'integer',
         'list_position' => 'integer',
+        'shipping_weight_g' => 'integer',
+        'shipping_length_cm' => 'integer',
+        'shipping_width_cm' => 'integer',
+        'shipping_height_cm' => 'integer',
     ];
 
     public function category(): BelongsTo

@@ -15,13 +15,14 @@ class CrmDeliveryIntegrationController extends Controller
         'yandex_maps' => 'Яндекс Карты',
         'nova_poshta' => 'Новая Почта',
         'dhl' => 'DHL',
+        'russian_post' => 'Почта России',
     ];
 
     public function index(): JsonResponse
     {
         $rows = DeliveryIntegration::query()
-            ->whereIn('name', ['cdek', 'yandex_maps', 'nova_poshta', 'dhl'])
-            ->orderByRaw("FIELD(name, 'cdek', 'yandex_maps', 'nova_poshta', 'dhl')")
+            ->whereIn('name', ['cdek', 'yandex_maps', 'nova_poshta', 'dhl', 'russian_post'])
+            ->orderByRaw("FIELD(name, 'cdek', 'yandex_maps', 'nova_poshta', 'dhl', 'russian_post')")
             ->get();
 
         $data = $rows->map(fn (DeliveryIntegration $r) => [
@@ -65,7 +66,7 @@ class CrmDeliveryIntegrationController extends Controller
             $row->update(['is_active' => (bool) $data['is_active']]);
         }
 
-        $sensitive = ['client_secret', 'api_key'];
+        $sensitive = ['client_secret', 'api_key', 'access_token', 'auth_password'];
         $config = $row->config ?? [];
         foreach ($data as $key => $value) {
             if ($key === 'is_active' || ! in_array($key, $allowed, true)) {
@@ -108,6 +109,17 @@ class CrmDeliveryIntegrationController extends Controller
             ]);
         }
 
+        if ($name === 'russian_post') {
+            $config = $row->config ?? [];
+
+            return response()->json([
+                'success' => $row->is_active && ! empty(trim((string) ($config['access_token'] ?? ''))),
+                'message' => $row->is_active && ! empty(trim((string) ($config['access_token'] ?? '')))
+                    ? 'Токен указан — можно запрашивать тариф'
+                    : 'Укажите токен в ЛК отправки Почты России и включите интеграцию',
+            ]);
+        }
+
         if ($name !== 'cdek') {
             return response()->json([
                 'success' => false,
@@ -139,6 +151,7 @@ class CrmDeliveryIntegrationController extends Controller
         return match ($r->name) {
             'cdek' => ! empty($c['client_id']) && ! empty($c['client_secret']),
             'yandex_maps' => ! empty($c['api_key']),
+            'russian_post' => ! empty(trim((string) ($c['access_token'] ?? ''))),
             default => false,
         };
     }
@@ -147,7 +160,7 @@ class CrmDeliveryIntegrationController extends Controller
     {
         $out = [];
         foreach ($config as $k => $v) {
-            if (in_array($k, ['client_secret', 'api_key'], true) && is_string($v) && strlen($v) > 0) {
+            if (in_array($k, ['client_secret', 'api_key', 'access_token', 'auth_password'], true) && is_string($v) && strlen($v) > 0) {
                 $out[$k] = '***';
             } else {
                 $out[$k] = $v;
@@ -167,6 +180,13 @@ class CrmDeliveryIntegrationController extends Controller
         if ($name === 'yandex_maps') {
             return [
                 'suggest_url' => 'https://suggest-maps.yandex.ru/v1/suggest',
+            ];
+        }
+
+        if ($name === 'russian_post') {
+            return [
+                'tariff_endpoint' => 'POST https://otpravka-api.pochta.ru/1.0/tariff',
+                'note' => 'Для курьерских режимов задайте mail_type из спецификации отправки.',
             ];
         }
 
@@ -194,6 +214,7 @@ class CrmDeliveryIntegrationController extends Controller
         return match ($name) {
             'cdek' => 'https://apidoc.cdek.ru/',
             'yandex_maps' => 'https://yandex.com/maps-api/docs/suggest-api/index.html',
+            'russian_post' => 'https://otpravka.pochta.ru/specification',
             default => null,
         };
     }
@@ -234,6 +255,15 @@ class CrmDeliveryIntegrationController extends Controller
             ],
             'nova_poshta' => [],
             'dhl' => [],
+            'russian_post' => [
+                ['key' => 'sender_postal_index', 'label' => 'Индекс места отправления (6 цифр)', 'type' => 'text'],
+                ['key' => 'access_token', 'label' => 'Токен (Authorization: AccessToken …)', 'type' => 'password', 'required' => true],
+                ['key' => 'auth_login', 'label' => 'Логин для X-User-Authorization (опционально)', 'type' => 'text'],
+                ['key' => 'auth_password', 'label' => 'Пароль для X-User-Authorization', 'type' => 'password'],
+                ['key' => 'mail_type', 'label' => 'Вид РПО (mail-type), например POSTAL_PARCEL или из спецификации', 'type' => 'text', 'required' => true],
+                ['key' => 'mail_category', 'label' => 'Категория отправления (mail-category)', 'type' => 'text', 'required' => true],
+                ['key' => 'payment_method', 'label' => 'Способ расчёта (payment-method), например CASHLESS', 'type' => 'text', 'required' => true],
+            ],
             default => [],
         };
     }

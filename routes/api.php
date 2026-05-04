@@ -468,6 +468,10 @@ Route::prefix('v1/store/auth')->middleware('throttle:45,1')->group(function () {
     });
 });
 
+Route::prefix('v1/store')->middleware(['throttle:120,1', 'customer.jwt'])->group(function () {
+    Route::get('delivery-quote', [\App\Http\Controllers\Api\StorefrontDeliveryQuoteController::class, 'show']);
+});
+
 Route::prefix('v1/store/account')->middleware(['throttle:120,1', 'customer.jwt'])->group(function () {
     Route::get('summary', [StorefrontAccountController::class, 'summary']);
     Route::patch('profile', [StorefrontAccountController::class, 'updateProfile']);
