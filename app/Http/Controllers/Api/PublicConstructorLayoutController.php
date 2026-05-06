@@ -67,6 +67,11 @@ class PublicConstructorLayoutController extends Controller
             return response()->json($this->emptyResponse());
         }
 
+        // Storefront historically requested `home`; constructor templates use `system:homepage`.
+        if (strcasecmp($key, 'home') === 0) {
+            $key = 'system:homepage';
+        }
+
         $query = ConstructorLayoutTemplate::query()
             ->where('page_scope', 'page')
             ->where('is_active', true)
