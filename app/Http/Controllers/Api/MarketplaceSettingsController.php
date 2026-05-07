@@ -31,6 +31,7 @@ class MarketplaceSettingsController extends Controller
     {
         $data = $request->validate([
             'marketplace_name' => ['sometimes', 'string', 'max:255'],
+            'marketplace_logo_url' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'support_emails' => ['sometimes', 'array'],
             'support_emails.*.email' => ['nullable', 'email', 'max:255'],
             'support_emails.*.description' => ['nullable', 'string', 'max:255'],

@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\Catalog\PublicSystemCatalogService;
 use App\Services\MarketplaceSettingsService;
 use App\Services\Payments\PaymentProviderManager;
+use App\Services\Marketing\TransactionalMarketingMail;
 use App\Services\Storefront\StorefrontDeliveryQuoteService;
 use App\Support\FrontendUrl;
 use Illuminate\Http\JsonResponse;

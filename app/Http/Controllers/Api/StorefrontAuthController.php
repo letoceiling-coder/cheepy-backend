@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\Marketing\TransactionalMarketingMail;
 use App\Services\MarketplaceSettingsService;
 use App\Support\PhoneNormalizer;
 use App\Support\SocialOauthCatalog;
@@ -179,6 +180,12 @@ class StorefrontAuthController extends Controller
             'seller_requested_at' => $accountType === 'seller' ? now() : null,
             'password' => $data['password'],
         ]);
+
+        try {
+            app(TransactionalMarketingMail::class)->trySendTrigger('registration', $user);
+        } catch (\Throwable) {
+            // Отправка письма не должна ломать регистрацию
+        }
 
         $token = self::encodeCustomerSessionToken($user);
 

@@ -15,6 +15,7 @@ class MarketplaceSettingsService
     {
         return [
             'marketplace_name' => 'Cheepy',
+            'marketplace_logo_url' => '',
             'support_emails' => [['email' => 'support@cheepy.ru', 'description' => 'Основная поддержка']],
             'support_phones' => [['phone' => '+7 (800) 123-45-67', 'description' => 'Основной телефон']],
             'default_currency' => 'RUB',
@@ -73,6 +74,7 @@ class MarketplaceSettingsService
         );
         $allowed = [
             'marketplace_name',
+            'marketplace_logo_url',
             'support_emails',
             'support_phones',
             'default_currency',
@@ -263,6 +265,7 @@ class MarketplaceSettingsService
             'maintenance_delay_minutes' => max(1, min(1440, (int) $value)),
             'free_delivery_threshold_rub' => max(0, min(999_999_999, (int) $value)),
             'default_commission_percent' => max(0, (float) $value),
+            'marketplace_logo_url' => trim((string) $value),
             default => $value,
         };
     }
@@ -282,6 +285,7 @@ class MarketplaceSettingsService
     {
         return [
             'marketplace_name' => $settings['marketplace_name'],
+            'marketplace_logo_url' => $settings['marketplace_logo_url'] ?? '',
             'support_emails' => $settings['support_emails'],
             'support_phones' => $settings['support_phones'],
             'default_currency' => $settings['default_currency'],

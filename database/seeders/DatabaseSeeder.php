@@ -55,5 +55,6 @@ class DatabaseSeeder extends Seeder
         $this->call(ConstructorLayoutTemplatesSeeder::class);
         $this->call(DeliveryIntegrationSeeder::class);
         $this->call(AiProviderIntegrationSeeder::class);
+        $this->call(MarketingMailSeeder::class);
     }
 }
