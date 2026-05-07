@@ -93,7 +93,7 @@ class CrmMarketingCampaignController extends Controller
             if ($email === '') {
                 continue;
             }
-            $vars = $mailer->previewVars($user, []);
+            $vars = $mailer->mergeVarsForCampaign($user);
             $subj = $mailer->merge($subject, $vars);
             $body = $mailer->merge($html, $vars);
             if (MarketplaceMailDispatcher::sendHtml($email, $subj, $body)) {

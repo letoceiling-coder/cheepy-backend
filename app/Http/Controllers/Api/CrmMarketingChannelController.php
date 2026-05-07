@@ -37,8 +37,8 @@ MD,
 
 1. Создайте бота через [@BotFather](https://t.me/BotFather), получите токен API.
 2. Включите режим **Privacy** по необходимости (для рассылки в личные чаты нужны явные подписки пользователей через `/start`).
-3. Настройте вебхук на отдельный endpoint (в разработке). Пока счётчик подписчиков в CRM не ведётся — отображается **0** до появления синхронизации в БД.
-4. Рекомендуем выделить отдельный бот для транзакций (заказы) и отдельный для промо.
+3. Настройки бота: **Интеграции → Email → Telegram** (токен, опционально chat_id для теста).
+4. Массовые рассылки в Telegram требуют явных chat_id подписчиков — учёт подписок подключается отдельно.
 MD,
         ];
     }
@@ -52,8 +52,8 @@ MD,
 ### WhatsApp Cloud API / Business
 
 1. Зарегистрируйте приложение в **Meta for Developers** и подключите номер к WhatsApp Business Platform.
-2. Получите постоянный токен и ID телефона отправителя — интеграция в CRM находится в дорожной карте.
-3. До внедрения API в продукт статус канала остаётся **не подключён**, подписчиков **0**.
+2. Получите постоянный токен и **Phone number ID** — сохраните их в **Интеграции → Email → WhatsApp Cloud API**.
+3. Массовые рассылки через Cloud API требуют шаблонов у Meta; для CRM — этап «шаблоны и очередь».
 MD,
         ];
     }
@@ -67,7 +67,7 @@ MD,
 ### VK: сообщества и уведомления
 
 1. Используйте **API сообщества** (ключ доступа в настройках сообщества) или **VK Ads / рассылки** для массовых акций.
-2. Подсчёт аудитории в CRM синхронизируется после добавления соответствующей интеграции (этап roadmap). Сейчас отображается **0** до подключения.
+2. Подсчёт подписчиков в CRM привяжем к подпискам и вебхукам; пока **0** — укажите ключи в **Интеграции → VK**.
 3. Для OAuth-входа пользователей уже доступен раздел **Интеграции → ВКонтакте (OAuth)** — это отдельно от маркетинговых рассылок.
 MD,
         ];
@@ -94,6 +94,10 @@ MD,
             })
             ->count();
 
+        $tg = MailIntegration::query()->where('name', 'telegram')->first();
+        $wa = MailIntegration::query()->where('name', 'whatsapp')->first();
+        $vk = MailIntegration::query()->where('name', 'vk')->first();
+
         $channels = [
             [
                 'key' => 'email',
@@ -107,7 +111,7 @@ MD,
                 'key' => 'telegram',
                 'name' => 'Telegram',
                 'icon' => '✈️',
-                'connected' => false,
+                'connected' => $this->integrationConnected($tg, 'telegram'),
                 'subscriber_count' => 0,
                 ...$this->docTelegram(),
             ],
@@ -115,7 +119,7 @@ MD,
                 'key' => 'whatsapp',
                 'name' => 'WhatsApp',
                 'icon' => '💬',
-                'connected' => false,
+                'connected' => $this->integrationConnected($wa, 'whatsapp'),
                 'subscriber_count' => 0,
                 ...$this->docWhatsapp(),
             ],
@@ -123,12 +127,27 @@ MD,
                 'key' => 'vk',
                 'name' => 'VK',
                 'icon' => '🔵',
-                'connected' => false,
+                'connected' => $this->integrationConnected($vk, 'vk'),
                 'subscriber_count' => 0,
                 ...$this->docVk(),
             ],
         ];
 
         return response()->json(['data' => $channels]);
+    }
+
+    private function integrationConnected(?MailIntegration $row, string $name): bool
+    {
+        if ($row === null) {
+            return false;
+        }
+        $c = $row->config ?? [];
+
+        return match ($name) {
+            'telegram' => trim((string) ($c['bot_token'] ?? '')) !== '',
+            'whatsapp' => trim((string) ($c['phone_number_id'] ?? '')) !== '' && trim((string) ($c['access_token'] ?? '')) !== '',
+            'vk' => trim((string) ($c['group_access_token'] ?? '')) !== '' && trim((string) ($c['group_id'] ?? '')) !== '',
+            default => false,
+        };
     }
 }

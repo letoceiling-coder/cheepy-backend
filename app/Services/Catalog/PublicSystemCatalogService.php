@@ -692,6 +692,11 @@ class PublicSystemCatalogService
         return fn ($q) => $q->where('is_enabled', true)->orderBy('sort_order');
     }
 
+    public function storefrontPublicProductId(SystemProduct $sp): string
+    {
+        return $this->publicId($sp);
+    }
+
     private function publicId(SystemProduct $sp): string
     {
         $sp->loadMissing('productSources.donorProduct:id,external_id');

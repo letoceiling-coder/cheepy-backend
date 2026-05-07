@@ -65,6 +65,9 @@ class StorefrontAccountController extends Controller
             'phone' => ['nullable', 'string', 'max:32'],
             'birthday' => ['nullable', 'date'],
             'marketing_opt_in' => ['nullable', 'boolean'],
+            'preferences' => ['nullable', 'array'],
+            'preferences.catalog_category_ids' => ['nullable', 'array', 'max:40'],
+            'preferences.catalog_category_ids.*' => ['integer', 'min:1'],
         ]);
 
         $user->update([
@@ -72,11 +75,25 @@ class StorefrontAccountController extends Controller
             'email' => $data['email'] ?? null,
             'phone' => $data['phone'] ?? null,
         ]);
+
+        $profileRow = CustomerProfile::query()->firstOrCreate(['user_id' => $user->id]);
+        $nextPrefs = $profileRow->preferences ?? [];
+        if (array_key_exists('preferences', $data) && array_key_exists('catalog_category_ids', $data['preferences'] ?? [])) {
+            $raw = $data['preferences']['catalog_category_ids'];
+            $ids = is_array($raw)
+                ? array_values(array_unique(array_filter(array_map('intval', $raw), fn ($x) => $x > 0)))
+                : [];
+            $nextPrefs['catalog_category_ids'] = array_slice($ids, 0, 40);
+        }
+
         $profile = CustomerProfile::query()->updateOrCreate(
             ['user_id' => $user->id],
             [
-                'birthday' => $data['birthday'] ?? null,
-                'marketing_opt_in' => (bool) ($data['marketing_opt_in'] ?? false),
+                'birthday' => array_key_exists('birthday', $data) ? $data['birthday'] : $profileRow->birthday,
+                'marketing_opt_in' => array_key_exists('marketing_opt_in', $data)
+                    ? (bool) $data['marketing_opt_in']
+                    : (bool) $profileRow->marketing_opt_in,
+                'preferences' => $nextPrefs,
             ]
         );
 
@@ -366,6 +383,7 @@ class StorefrontAccountController extends Controller
             'phone' => $user->phone,
             'birthday' => $profile->birthday?->format('Y-m-d'),
             'marketing_opt_in' => $profile->marketing_opt_in,
+            'preferences' => is_array($profile->preferences) ? $profile->preferences : [],
             'linked_social_providers' => $user->socialAccounts()->pluck('provider')->values()->all(),
         ];
     }

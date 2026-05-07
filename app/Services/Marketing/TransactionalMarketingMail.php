@@ -3,18 +3,21 @@
 namespace App\Services\Marketing;
 
 use App\Models\MarketingEmailTemplate;
+use App\Models\SystemProduct;
 use App\Models\User;
 use App\Services\MarketplaceSettingsService;
 use App\Support\FrontendUrl;
 
 class TransactionalMarketingMail
 {
-    public function __construct(private MarketplaceSettingsService $settings)
-    {
+    public function __construct(
+        private MarketplaceSettingsService $settings,
+        private MarketingDigestContentService $digest,
+    ) {
     }
 
     /**
-     * @param  array<string, string>  $extra  Доп. плейсхолдеры {{key}}
+     * @param  array<string, string>  $extra  Доп. плейсхолдеры {{key}}, перебивают авто-блоки
      */
     public function trySendTrigger(string $sendTrigger, User $user, array $extra = []): bool
     {
@@ -38,16 +41,19 @@ class TransactionalMarketingMail
             return false;
         }
 
-        $vars = $this->baseVars($user, $extra);
+        $auto = match ($sendTrigger) {
+            'promotions', 'preference_new_products' => $this->digestExtrasForTrigger($sendTrigger, $user),
+            default => [],
+        };
+
+        $vars = $this->baseVars($user, array_merge($auto, $extra));
         $subject = $this->merge($tpl->subject, $vars);
         $html = $this->merge($tpl->body_html, $vars);
 
         return MarketplaceMailDispatcher::sendHtml($email, $subject, $html);
     }
 
-    /**
-     * @return array<string, string>
-     */
+    /** @return array<string, string> */
     public function previewVars(?User $user = null, array $extra = []): array
     {
         $u = $user ?? new User(['name' => 'Иван Покупатель', 'email' => 'client@example.com']);
@@ -55,8 +61,56 @@ class TransactionalMarketingMail
             'order_number' => 'CH-PREVIEW',
             'order_total' => '4 990 ₽',
         ];
+        $digest = $this->digest->digestPlaceholderVars();
 
-        return $this->baseVars($u, array_merge($demo, $extra));
+        /** @var MarketingProductEmailBlockBuilder $blocks */
+        $blocks = app(MarketingProductEmailBlockBuilder::class);
+        /** @var MarketingInterestProductBlock $interest */
+        $interest = app(MarketingInterestProductBlock::class);
+        try {
+            $sample = SystemProduct::query()
+                ->whereIn('status', [SystemProduct::STATUS_APPROVED, SystemProduct::STATUS_PUBLISHED])
+                ->with(['photos' => fn ($q) => $q->where('is_enabled', true)->orderBy('sort_order')])
+                ->orderByDesc('updated_at')
+                ->first();
+            $digest['products_block'] = $sample
+                ? $blocks->buildFromCheckoutLines([
+                    ['product' => $sample, 'quantity' => 2],
+                ])
+                : '<p style="color:#616187;font-size:14px">Пример блока заказов/корзины: добавьте товары на витрине.</p>';
+        } catch (\Throwable) {
+            $digest['products_block'] = $blocks->buildFromCheckoutLines([]);
+        }
+        try {
+            $digest['preference_sample_block'] = $interest->htmlBlockForUser($u);
+        } catch (\Throwable) {
+            $digest['preference_sample_block'] = $digest['products_block'];
+        }
+
+        return $this->baseVars($u, array_merge($demo, $digest, $extra));
+    }
+
+    /** Переменные для ручной email-кампании из CRM (акции, новости, свежие товары). */
+    /** @return array<string, string> */
+    public function mergeVarsForCampaign(User $user): array
+    {
+        $digest = $this->digest->digestPlaceholderVars();
+        $digest['products_block'] = app(MarketingInterestProductBlock::class)->htmlBlockForUser($user);
+
+        return $this->baseVars($user, $digest);
+    }
+
+    /** @return array<string, string> */
+    private function digestExtrasForTrigger(string $sendTrigger, User $user): array
+    {
+        return match ($sendTrigger) {
+            'promotions' => $this->digest->digestPlaceholderVars(),
+            'preference_new_products' => array_merge($this->digest->digestPlaceholderVars(), [
+                'products_block' => app(MarketingInterestProductBlock::class)->htmlBlockForUser($user),
+                'promo_summary' => 'Подборка из каталога по вашим интересам и актуальные акции.',
+            ]),
+            default => [],
+        };
     }
 
     /**
@@ -82,18 +136,22 @@ class TransactionalMarketingMail
         $logoBlock .= '<div style="font-size:20px;font-weight:700;color:#1f1f2e;">'
             .htmlspecialchars($marketName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8').'</div>';
 
+        $baseUrl = rtrim((string) (FrontendUrl::tryBase() ?? config('app.url', '')), '/');
         $base = [
             'customer_name' => $name !== '' ? $name : 'Клиент',
             'marketplace_name' => $marketName,
             'support_email' => $emails[0]['email'] ?? 'support@example.com',
             'support_phone' => $phones[0]['phone'] ?? '',
-            'site_url' => FrontendUrl::tryBase() ?? (string) config('app.url', ''),
+            'site_url' => $baseUrl,
             'logo_url' => $logoUrl,
             'logo_block' => $logoBlock,
-            'recovery_link' => rtrim((string) (FrontendUrl::tryBase() ?? config('app.url', '')), '/').'/cart',
-            'order_link' => rtrim((string) (FrontendUrl::tryBase() ?? config('app.url', '')), '/').'/account/orders',
-            'promo_summary' => 'Следите за разделом «Акции» на сайте — персональные предложения появятся в кабинете.',
-            'products_block' => '<p>В каталоге появились новинки по вашим интересам. Зайдите на сайт, чтобы не пропустить.</p>',
+            'recovery_link' => $baseUrl.'/cart',
+            'order_link' => $baseUrl.'/person/orders',
+            'promo_summary' => 'Следите за разделом «Акции» на сайте.',
+            'products_block' => '<p>В каталоге появились новинки по вашим интересам.</p>',
+            'promotions_block' => '',
+            'news_block' => '',
+            'preference_sample_block' => '',
         ];
 
         foreach ($extra as $k => $v) {

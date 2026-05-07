@@ -12,7 +12,7 @@ class MarketingMailSeeder extends Seeder
     private const PLACEHOLDERS =
         '{{customer_name}}, {{marketplace_name}}, {{support_email}}, {{support_phone}}, {{site_url}}, '
         .'{{logo_url}}, {{logo_block}}, {{order_number}}, {{order_total}}, {{order_link}}, {{recovery_link}}, '
-        .'{{promo_summary}}, {{products_block}}';
+        .'{{promo_summary}}, {{products_block}}, {{promotions_block}}, {{news_block}}';
 
     private function wrap(string $bodyHtml): string
     {
@@ -62,6 +62,7 @@ class MarketingMailSeeder extends Seeder
                     '{{logo_block}}'
                     .'<p>Здравствуйте, {{customer_name}}!</p>'
                     .'<p>Мы получили ваш заказ <strong>{{order_number}}</strong>.</p>'
+                    .'<div style="margin:16px 0">{{products_block}}</div>'
                     .'<p style="font-size:18px;margin:18px 0">Сумма к оплате: <strong>{{order_total}}</strong></p>'
                     .'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:12px auto"><tr>'
                     .'<td style="border-radius:10px;background:#5b53e8"><a href="{{order_link}}" '
@@ -75,10 +76,11 @@ class MarketingMailSeeder extends Seeder
                 'title' => 'Не забыть корзину',
                 'send_trigger' => 'cart_abandon',
                 'subject' => 'У вас остались товары в корзине · {{marketplace_name}}',
-                'is_automatic' => false,
+                'is_automatic' => true,
                 'body' => $this->wrap(
                     '{{logo_block}}'
                     .'<p>{{customer_name}}, вы положили товары в корзину на {{marketplace_name}}.</p>'
+                    .'<div style="margin:14px 0">{{products_block}}</div>'
                     .'<p>Запасы могут закончиться — заберите заказ пока есть размер и цвет.</p>'
                     .'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px auto"><tr>'
                     .'<td style="border-radius:10px;background:#e84d6b"><a href="{{recovery_link}}" '
@@ -95,9 +97,10 @@ class MarketingMailSeeder extends Seeder
                 'body' => $this->wrap(
                     '{{logo_block}}'
                     .'<p>Здравствуйте, {{customer_name}}!</p>'
-                    .'<div style="background:#faf7ff;padding:14px;border-radius:12px;border:1px solid #ece7ff">'
-                    .'<strong>Актуально для вас</strong>'
+                    .'<div style="background:#faf7ff;padding:14px;border-radius:12px;border:1px solid #ece7ff;margin:12px 0">'
+                    .'<strong>Активные промокоды</strong>{{promotions_block}}'
                     .'</div>'
+                    .'<div style="margin:12px 0">{{news_block}}</div>'
                     .'<p style="margin-top:14px;line-height:1.5;color:#616187">{{promo_summary}}</p>'
                     .'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px auto"><tr>'
                     .'<td style="border-radius:10px;background:#5b53e8"><a href="{{site_url}}" '
@@ -115,6 +118,8 @@ class MarketingMailSeeder extends Seeder
                     '{{logo_block}}'
                     .'<p>{{customer_name}}, для вас подобрали обновление каталога.</p>'
                     .'<div style="margin:12px 0;line-height:1.5">{{products_block}}</div>'
+                    .'<div style="margin:16px 0">{{promotions_block}}</div>'
+                    .'<div style="margin:12px 0">{{news_block}}</div>'
                     .'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px auto"><tr>'
                     .'<td style="border-radius:10px;background:#5b53e8"><a href="{{site_url}}" '
                     .'style="display:inline-block;padding:12px 22px;color:#fff;text-decoration:none;font-weight:600">В каталог</a>'

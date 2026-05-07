@@ -6,11 +6,14 @@ use App\Http\Controllers\Controller;
 use App\Models\CustomerOrder;
 use App\Models\CustomerOrderItem;
 use App\Models\Payment;
+use App\Models\StorefrontCartSnapshot;
+use App\Models\SystemProduct;
 use App\Models\User;
 use App\Services\Catalog\PublicSystemCatalogService;
+use App\Services\Marketing\MarketingProductEmailBlockBuilder;
+use App\Services\Marketing\TransactionalMarketingMail;
 use App\Services\MarketplaceSettingsService;
 use App\Services\Payments\PaymentProviderManager;
-use App\Services\Marketing\TransactionalMarketingMail;
 use App\Services\Storefront\StorefrontDeliveryQuoteService;
 use App\Support\FrontendUrl;
 use Illuminate\Http\JsonResponse;
@@ -260,6 +263,31 @@ class StorefrontCheckoutController extends Controller
 
         if (empty($responsePayload['checkout_url'])) {
             return response()->json(['error' => 'Платёжный провайдер не вернул ссылку'], 422);
+        }
+
+        $orderId = (int) ($responsePayload['order_id'] ?? 0);
+        if ($orderId > 0) {
+            try {
+                StorefrontCartSnapshot::query()->where('user_id', $user->id)->delete();
+
+                $order = CustomerOrder::with('items')->find($orderId);
+                if ($order !== null) {
+                    /** @var MarketingProductEmailBlockBuilder $blocks */
+                    $blocks = app(MarketingProductEmailBlockBuilder::class);
+                    $productsHtml = $blocks->buildFromCustomerOrder($order);
+                    $totalRub = (int) round((float) $order->total_amount);
+                    $orderTotalFmt = number_format($totalRub, 0, ',', ' ').' ₽';
+                    $feOrder = rtrim((string) (FrontendUrl::tryBase() ?? config('app.url', '')), '/');
+                    app(TransactionalMarketingMail::class)->trySendTrigger('order_created', $user, [
+                        'products_block' => $productsHtml,
+                        'order_number' => (string) $order->number,
+                        'order_total' => $orderTotalFmt,
+                        'order_link' => $feOrder.'/person/order/'.$order->id,
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                report($e);
+            }
         }
 
         return response()->json($responsePayload);

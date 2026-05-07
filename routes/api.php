@@ -13,6 +13,8 @@ use App\Http\Controllers\Api\CrmEmailTemplateController;
 use App\Http\Controllers\Api\CrmMailIntegrationController;
 use App\Http\Controllers\Api\CrmMarketingCampaignController;
 use App\Http\Controllers\Api\CrmMarketingChannelController;
+use App\Http\Controllers\Api\CrmMarketingNewsController;
+use App\Http\Controllers\Api\StorefrontCartSyncController;
 use App\Http\Controllers\Api\SocialOAuthPublicController;
 use App\Http\Controllers\Api\AiMetricsController;
 use App\Http\Controllers\Api\CategorySyncController;
@@ -648,6 +650,12 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::get('marketing/campaigns', [CrmMarketingCampaignController::class, 'index']);
         Route::post('marketing/campaigns', [CrmMarketingCampaignController::class, 'store']);
         Route::post('marketing/campaigns/{id}/send', [CrmMarketingCampaignController::class, 'send'])->whereNumber('id');
+
+        Route::get('marketing/news', [CrmMarketingNewsController::class, 'index']);
+        Route::post('marketing/news', [CrmMarketingNewsController::class, 'store']);
+        Route::get('marketing/news/{id}', [CrmMarketingNewsController::class, 'show'])->whereNumber('id');
+        Route::patch('marketing/news/{id}', [CrmMarketingNewsController::class, 'update'])->whereNumber('id');
+        Route::delete('marketing/news/{id}', [CrmMarketingNewsController::class, 'destroy'])->whereNumber('id');
 
         Route::get('email-templates', [CrmEmailTemplateController::class, 'index']);
         Route::get('email-templates/{id}', [CrmEmailTemplateController::class, 'show'])->whereNumber('id');
