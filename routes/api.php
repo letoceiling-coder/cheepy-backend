@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\StorefrontAuthController;
 use App\Http\Controllers\Api\StorefrontAccountController;
 use App\Http\Controllers\Api\CrmSocialOauthIntegrationController;
 use App\Http\Controllers\Api\CrmCommerceController;
+use App\Http\Controllers\Api\CrmStoreInsightsController;
 use App\Http\Controllers\Api\CrmCouponController;
 use App\Http\Controllers\Api\CrmBonusRuleController;
 use App\Http\Controllers\Api\SocialOAuthPublicController;
@@ -607,6 +608,15 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
             ->where('name', 'vk|yandex|ok');
         Route::patch('social-oauth-integrations/{name}', [CrmSocialOauthIntegrationController::class, 'update'])
             ->where('name', 'vk|yandex|ok');
+
+        Route::get('store-insights/overview', [CrmStoreInsightsController::class, 'overview']);
+        Route::get('store-insights/analytics', [CrmStoreInsightsController::class, 'analytics']);
+        Route::get('store-users', [CrmStoreInsightsController::class, 'storeUsers']);
+        Route::get('catalog-sellers', [CrmStoreInsightsController::class, 'catalogSellers']);
+        Route::get('seller-reviews', [CrmStoreInsightsController::class, 'sellerReviews']);
+        Route::patch('seller-reviews/{id}', [CrmStoreInsightsController::class, 'updateSellerReview']);
+        Route::get('activity-feed', [CrmStoreInsightsController::class, 'activityFeed']);
+        Route::get('marketplace-tenant', [CrmStoreInsightsController::class, 'marketplaceTenant']);
 
         Route::get('store-orders/stats', [CrmCommerceController::class, 'orderStats']);
         Route::get('store-orders', [CrmCommerceController::class, 'orders']);
