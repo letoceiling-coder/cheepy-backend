@@ -4,6 +4,7 @@ namespace App\Services\Payments;
 
 use App\Models\SaasApiKey;
 use App\Support\FrontendUrl;
+use App\Support\PaymentWebhookCurrency;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -12,8 +13,7 @@ class TinkoffProvider implements PaymentProviderInterface
 {
     public function __construct(
         private array $config = []
-    ) {
-    }
+    ) {}
 
     public function normalizeAmount(float $amount): int
     {
@@ -27,9 +27,9 @@ class TinkoffProvider implements PaymentProviderInterface
         }
 
         $paymentId = (int) ($context['payment_id'] ?? 0);
-        $orderId = 'pay_' . $paymentId;
+        $orderId = 'pay_'.$paymentId;
 
-        $notificationUrl = $this->config['notification_url'] ?? rtrim(config('app.url', ''), '/') . '/api/v1/webhook/tinkoff';
+        $notificationUrl = $this->config['notification_url'] ?? rtrim(config('app.url', ''), '/').'/api/v1/webhook/tinkoff';
         $returnToken = (string) ($context['return_token'] ?? '');
         $urls = $this->buildReturnUrls($paymentId, $returnToken);
 
@@ -37,7 +37,7 @@ class TinkoffProvider implements PaymentProviderInterface
             'TerminalKey' => $this->config['terminal_key'] ?? '',
             'Amount' => (int) round($amount * 100),
             'OrderId' => $orderId,
-            'Description' => $context['description'] ?? ($apiKey !== null ? 'API Key Top-up #' . $apiKey->id : 'Оплата заказа'),
+            'Description' => $context['description'] ?? ($apiKey !== null ? 'API Key Top-up #'.$apiKey->id : 'Оплата заказа'),
             'NotificationURL' => $notificationUrl,
             'SuccessURL' => $urls['success'],
             'FailURL' => $urls['fail'],
@@ -51,10 +51,10 @@ class TinkoffProvider implements PaymentProviderInterface
 
         $response = Http::asJson()
             ->timeout(10)
-            ->post($base . '/v2/Init', $payload);
+            ->post($base.'/v2/Init', $payload);
 
         $body = $response->json();
-        if (!($body['Success'] ?? false)) {
+        if (! ($body['Success'] ?? false)) {
             $message = $body['Message'] ?? $body['Details'] ?? 'Tinkoff Init failed';
             throw new \RuntimeException($message);
         }
@@ -122,7 +122,7 @@ class TinkoffProvider implements PaymentProviderInterface
         }
 
         $data = $request->all();
-        if (!is_array($data) || empty($data)) {
+        if (! is_array($data) || empty($data)) {
             $content = $request->getContent();
             $data = json_decode($content, true) ?? [];
         }
@@ -137,8 +137,9 @@ class TinkoffProvider implements PaymentProviderInterface
             'incoming' => $receivedToken,
             'calculated' => $expectedToken,
         ]);
-        if (!hash_equals($expectedToken, $receivedToken)) {
+        if (! hash_equals($expectedToken, $receivedToken)) {
             Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'token_fail']);
+
             return ['ok' => false, 'return_ok' => true, 'provider_id' => null, 'provider_event_id' => null, 'status' => null, 'amount_total' => null, 'currency' => null];
         }
 
@@ -149,10 +150,14 @@ class TinkoffProvider implements PaymentProviderInterface
             'mapped' => $status,
         ]);
         $paymentId = isset($data['PaymentId']) ? (string) $data['PaymentId'] : '';
-        $eventId = $paymentId !== '' && $rawStatus !== '' ? $paymentId . '_' . $rawStatus : $paymentId;
+        $eventId = $paymentId !== '' && $rawStatus !== '' ? $paymentId.'_'.$rawStatus : $paymentId;
         $orderId = $data['OrderId'] ?? '';
         $amountTotal = isset($data['Amount']) ? (int) $data['Amount'] : null;
-        $currency = strtolower((string) ($data['Currency'] ?? 'rub'));
+        $currencyRaw = $data['Currency'] ?? null;
+        $currency = PaymentWebhookCurrency::normalize($currencyRaw !== null ? (string) $currencyRaw : '');
+        if ($currency === '') {
+            $currency = 'rub';
+        }
 
         return [
             'ok' => true,
@@ -193,10 +198,11 @@ class TinkoffProvider implements PaymentProviderInterface
     private function buildReturnUrls(int $paymentId, string $returnToken = ''): array
     {
         $base = FrontendUrl::base();
-        $tokenQuery = $returnToken !== '' ? '&return_token=' . urlencode($returnToken) : '';
+        $tokenQuery = $returnToken !== '' ? '&return_token='.urlencode($returnToken) : '';
+
         return [
-            'success' => $base . '/payment/success?payment_id=' . $paymentId . $tokenQuery,
-            'fail' => $base . '/payment/fail?payment_id=' . $paymentId . $tokenQuery,
+            'success' => $base.'/payment/success?payment_id='.$paymentId.$tokenQuery,
+            'fail' => $base.'/payment/fail?payment_id='.$paymentId.$tokenQuery,
         ];
     }
 

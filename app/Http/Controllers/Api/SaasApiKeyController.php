@@ -9,6 +9,7 @@ use App\Models\PaymentWebhookLog;
 use App\Models\SaasApiKey;
 use App\Services\Payments\PaymentProviderInterface;
 use App\Services\Payments\PaymentProviderManager;
+use App\Support\PaymentWebhookCurrency;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -21,7 +22,7 @@ class SaasApiKeyController extends Controller
         $data = $request->validate([
             'name' => 'required|string|max:255',
         ]);
-        $plain = 'sk_live_' . Str::random(40);
+        $plain = 'sk_live_'.Str::random(40);
         $key = SaasApiKey::create([
             'name' => $data['name'],
             'api_key_hash' => SaasApiKey::hashKey($plain),
@@ -30,6 +31,7 @@ class SaasApiKeyController extends Controller
             'cost_per_request' => 0.001,
             'is_active' => true,
         ]);
+
         return response()->json([
             'id' => $key->id,
             'name' => $key->name,
@@ -98,7 +100,7 @@ class SaasApiKeyController extends Controller
 
         $totalCost = (float) DB::table('api_usage_logs')
             ->where('api_key_id', $key->id)
-            ->sum(DB::raw('request_count * ' . (float) $key->cost_per_request));
+            ->sum(DB::raw('request_count * '.(float) $key->cost_per_request));
 
         return response()->json([
             'id' => $key->id,
@@ -131,8 +133,8 @@ class SaasApiKeyController extends Controller
         if (array_key_exists('is_active', $data)) {
             $key->is_active = (bool) $data['is_active'];
         }
-        if (!empty($data['regenerate'])) {
-            $plain = 'sk_live_' . Str::random(40);
+        if (! empty($data['regenerate'])) {
+            $plain = 'sk_live_'.Str::random(40);
             $key->api_key_hash = SaasApiKey::hashKey($plain);
             $response['regenerated_key'] = $plain;
         }
@@ -157,6 +159,7 @@ class SaasApiKeyController extends Controller
             $key = SaasApiKey::query()->whereKey($id)->lockForUpdate()->firstOrFail();
             $key->balance = (float) $key->balance + (float) $data['amount'];
             $key->save();
+
             return $key;
         });
 
@@ -174,7 +177,7 @@ class SaasApiKeyController extends Controller
         $allowedProviders = implode(',', $activeNames);
         $defaultProvider = $activeNames[0] ?? 'stripe';
         $data = $request->validate([
-            'provider' => 'nullable|string|in:' . ($allowedProviders ?: 'stripe'),
+            'provider' => 'nullable|string|in:'.($allowedProviders ?: 'stripe'),
             'amount' => 'required|numeric|min:0.01',
             'user_email' => 'nullable|email',
         ]);
@@ -201,6 +204,7 @@ class SaasApiKeyController extends Controller
             ]);
         } catch (\Throwable) {
             DB::table('payments')->where('id', $paymentId)->update(['status' => 'failed']);
+
             return response()->json(['error' => 'Checkout creation failed'], 422);
         }
 
@@ -226,18 +230,18 @@ class SaasApiKeyController extends Controller
     {
         \Illuminate\Support\Facades\Log::info('tinkoff webhook', $request->all());
 
-        if (!$request->has('PaymentId') || !$request->has('Status')) {
+        if (! $request->has('PaymentId') || ! $request->has('Status')) {
             return response('OK', 200, ['Content-Type' => 'text/plain']);
         }
 
         $orderId = (string) $request->input('OrderId', '');
-        if (!str_starts_with($orderId, 'pay_')) {
+        if (! str_starts_with($orderId, 'pay_')) {
             return response('OK', 200, ['Content-Type' => 'text/plain']);
         }
 
         $paymentId = $request->input('PaymentId');
         $status = strtoupper((string) $request->input('Status'));
-        $eventId = $paymentId && $status ? $paymentId . '_' . $status : $paymentId;
+        $eventId = $paymentId && $status ? $paymentId.'_'.$status : $paymentId;
 
         $log = PaymentWebhookLog::create([
             'provider' => 'tinkoff',
@@ -249,6 +253,7 @@ class SaasApiKeyController extends Controller
 
         try {
             $this->providerWebhook('tinkoff', $request, $log);
+
             return response('OK', 200, ['Content-Type' => 'text/plain']);
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::error('Tinkoff webhook failed', [
@@ -268,7 +273,7 @@ class SaasApiKeyController extends Controller
     public function sberWebhook(Request $request): \Symfony\Component\HttpFoundation\Response
     {
         $orderNumber = (string) $request->input('orderNumber', $request->input('mdOrder', ''));
-        if ($orderNumber === '' || !str_starts_with($orderNumber, 'pay_')) {
+        if ($orderNumber === '' || ! str_starts_with($orderNumber, 'pay_')) {
             return response('OK', 200, ['Content-Type' => 'text/plain']);
         }
 
@@ -283,6 +288,7 @@ class SaasApiKeyController extends Controller
 
         try {
             $this->providerWebhook('sber', $request, $log);
+
             return response('OK', 200, ['Content-Type' => 'text/plain']);
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::error('Sber webhook failed', [
@@ -290,6 +296,7 @@ class SaasApiKeyController extends Controller
                 'trace' => $e->getTraceAsString(),
             ]);
             $log->update(['status' => 'failed', 'error' => $e->getMessage()]);
+
             return response('OK', 200, ['Content-Type' => 'text/plain']);
         }
     }
@@ -317,6 +324,7 @@ class SaasApiKeyController extends Controller
                 return response('OK', 200, ['Content-Type' => 'text/plain']);
             }
             $status = (int) ($result['http_status'] ?? 400);
+
             return response()->json(['error' => 'Invalid webhook'], $status);
         }
 
@@ -325,6 +333,7 @@ class SaasApiKeyController extends Controller
         $newStatus = (string) ($result['status'] ?? '');
         if ($providerId === '' || $newStatus === '') {
             \Illuminate\Support\Facades\Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'empty_provider_or_status', 'provider_id' => $providerId, 'new_status' => $newStatus]);
+
             return $this->webhookSuccessResponse($provider);
         }
 
@@ -337,20 +346,23 @@ class SaasApiKeyController extends Controller
                 if ($alreadyProcessed) {
                     \Illuminate\Support\Facades\Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'idempotent', 'provider_event_id' => $providerEventId]);
                     $this->markWebhookProcessed($webhookLog);
+
                     return;
                 }
             }
 
             $payment = $this->findPaymentForWebhook($provider, $providerId, $result);
-            if (!$payment) {
+            if (! $payment) {
                 \Illuminate\Support\Facades\Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'payment_not_found', 'provider_id' => $providerId, 'order_id' => $result['order_id'] ?? null]);
+
                 return;
             }
 
             $paymentIdForLock = $payment->id;
             $payment = Payment::where('id', $payment->id)->lockForUpdate()->first();
-            if (!$payment) {
+            if (! $payment) {
                 \Illuminate\Support\Facades\Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'payment_lock_fail', 'payment_id' => $paymentIdForLock]);
+
                 return;
             }
 
@@ -359,13 +371,15 @@ class SaasApiKeyController extends Controller
             if ($payment->provider_event_id !== null && $payment->updated_at && $payment->updated_at->diffInSeconds(now()) < 1) {
                 \Illuminate\Support\Facades\Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'rate_limit', 'payment_id' => $payment->id]);
                 $this->markWebhookProcessed($webhookLog);
+
                 return;
             }
 
             $allowed = self::STATUS_TRANSITIONS[$payment->status] ?? [];
-            if (!in_array($newStatus, $allowed, true)) {
+            if (! in_array($newStatus, $allowed, true)) {
                 \Illuminate\Support\Facades\Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'status_skip', 'payment_id' => $payment->id, 'current_status' => $payment->status, 'new_status' => $newStatus, 'allowed' => $allowed]);
                 $this->markWebhookProcessed($webhookLog);
+
                 return;
             }
 
@@ -379,6 +393,7 @@ class SaasApiKeyController extends Controller
             if ($incomingAmount <= 0) {
                 \Illuminate\Support\Facades\Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'amount_zero', 'incoming' => $incomingAmount]);
                 $this->markWebhookProcessed($webhookLog);
+
                 return;
             }
             if ($incomingAmount !== $expectedAmount) {
@@ -392,12 +407,26 @@ class SaasApiKeyController extends Controller
                     'provider_event_id' => $providerEventId ?: $payment->provider_event_id,
                 ]);
                 $this->markWebhookProcessed($webhookLog);
+
                 return;
             }
 
             $providerRecord = $manager->getProviderRecord($provider);
-            $expectedCurrency = strtolower((string) ($providerRecord->config['currency'] ?? 'usd'));
-            $incomingCurrency = strtolower((string) ($result['currency'] ?? ''));
+            $configured = $providerRecord->config['currency'] ?? null;
+            if ($configured === null || $configured === '') {
+                $configured = config(
+                    'payments.'.$provider.'.currency',
+                    $provider === 'stripe' ? 'usd' : 'rub'
+                );
+            }
+            $expectedCurrency = PaymentWebhookCurrency::normalize((string) $configured);
+            if ($expectedCurrency === '') {
+                $expectedCurrency = $provider === 'stripe' ? 'usd' : 'rub';
+            }
+            $incomingCurrency = PaymentWebhookCurrency::normalize((string) ($result['currency'] ?? ''));
+            if ($incomingCurrency === '' && in_array($provider, ['tinkoff', 'sber'], true)) {
+                $incomingCurrency = 'rub';
+            }
             if ($incomingCurrency !== $expectedCurrency) {
                 \Illuminate\Support\Facades\Log::warning('Tinkoff WEBHOOK EXIT', ['reason' => 'currency_mismatch', 'incoming' => $incomingCurrency, 'expected' => $expectedCurrency]);
                 $payment->update([
@@ -405,6 +434,7 @@ class SaasApiKeyController extends Controller
                     'provider_event_id' => $providerEventId ?: $payment->provider_event_id,
                 ]);
                 $this->markWebhookProcessed($webhookLog);
+
                 return;
             }
 
@@ -432,7 +462,7 @@ class SaasApiKeyController extends Controller
             ]);
 
             $paymentIdForAtol = $payment->id;
-            if (!$payment->atol_uuid && $payment->atol_status !== 'processing') {
+            if (! $payment->atol_uuid && $payment->atol_status !== 'processing') {
                 $payment->update(['atol_status' => 'processing']);
                 DB::afterCommit(function () use ($paymentIdForAtol) {
                     \App\Jobs\SendAtolReceiptJob::dispatch($paymentIdForAtol);
@@ -452,7 +482,7 @@ class SaasApiKeyController extends Controller
             ->lockForUpdate()
             ->first();
 
-        if (!$payment && in_array($provider, ['tinkoff', 'sber']) && !empty($result['order_id'])) {
+        if (! $payment && in_array($provider, ['tinkoff', 'sber']) && ! empty($result['order_id'])) {
             $orderId = $result['order_id'];
             if (preg_match('/^pay_(\d+)$/', $orderId, $m)) {
                 $payment = Payment::where('provider', $provider)
@@ -479,6 +509,7 @@ class SaasApiKeyController extends Controller
         if (in_array($provider, ['tinkoff', 'sber'], true)) {
             return response('OK', 200, ['Content-Type' => 'text/plain']);
         }
+
         return response()->json(['received' => true]);
     }
 
@@ -500,6 +531,7 @@ class SaasApiKeyController extends Controller
 
         try {
             $this->providerWebhook('tinkoff', $replayRequest, null);
+
             return response()->json(['message' => 'Replay completed', 'log_id' => $id]);
         } catch (\Throwable $e) {
             return response()->json([
