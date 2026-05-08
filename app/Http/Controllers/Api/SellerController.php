@@ -119,6 +119,8 @@ class SellerController extends Controller
             'status' => $s->status,
             'is_verified' => $s->is_verified,
             'products_count' => $s->products_count,
+            'rating' => $s->rating !== null ? (float) $s->rating : null,
+            'created_at' => $s->created_at?->toIso8601String(),
             'last_parsed_at' => $s->last_parsed_at?->toIso8601String(),
         ];
     }
@@ -126,6 +128,7 @@ class SellerController extends Controller
     private function formatSellerFull(Seller $s): array
     {
         $data = $this->formatSeller($s);
+        $data['avatar_url'] = $s->avatar_url;
         $data['source_url'] = $s->source_url;
         $data['description'] = $s->description;
         $data['contacts'] = [
