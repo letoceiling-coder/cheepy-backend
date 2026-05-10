@@ -320,7 +320,9 @@ TXT;
             }
         }
 
-        return $out;
+        $max = max(1, (int) config('services.openrouter.max_chat_fallback_models', 4));
+
+        return array_slice($out, 0, $max);
     }
 
     /** @param mixed $body */

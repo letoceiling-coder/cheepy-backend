@@ -63,6 +63,11 @@ return [
     'openrouter' => [
         'base_url' => rtrim(env('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'), '/'),
         'timeout' => (int) env('OPENROUTER_TIMEOUT', 120),
+        /**
+         * Сколько разных id моделей подряд пробовать в одном POST /admin/site-al/chat (основная + запасные).
+         * Большая цепочка при таймаутах даёт «тишину» на минуты без прогресса в CRM.
+         */
+        'max_chat_fallback_models' => max(1, min(50, (int) env('OPENROUTER_MAX_CHAT_FALLBACK_MODELS', 4))),
     ],
 
     /**
