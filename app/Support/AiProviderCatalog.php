@@ -110,7 +110,7 @@ final class AiProviderCatalog
         ],
         'openrouter' => [
             'title' => 'OpenRouter',
-            'description' => 'Единый OpenAI-compatible API ко множеству моделей. Полный каталог — «Обновить» без ключа использует открытый список openrouter.ai; ключ нужен только для генерации ответов. Бесплатно: суффикс :free или нулевая цена prompt+completion.',
+            'description' => 'Только бесплатные текстовые модели (суффикс :free или нулевая цена prompt/completion по каталогу API). Платные модели не показываются и не вызываются; при недоступности основной модели включается цепочка бесплатных.',
             'docs_url' => 'https://openrouter.ai/docs/quickstart',
             'models' => [
                 ['id' => 'nousresearch/hermes-3-llama-3.1-405b:free', 'label' => 'Hermes 3 Llama 3.1 405B (free)'],
@@ -155,6 +155,38 @@ final class AiProviderCatalog
             'nvidia/nemotron-nano-9b-v2:free',
             'meta-llama/llama-3.2-3b-instruct:free',
         ];
+    }
+
+    /**
+     * Разрешённая для сохранения и для чата бесплатная модель (:free, цепочка fallback или статический каталог CRM).
+     */
+    public static function openRouterModelIsPersistableFree(string $id): bool
+    {
+        $id = trim($id);
+        if ($id === '') {
+            return false;
+        }
+        if (str_ends_with($id, ':free')) {
+            return true;
+        }
+        if (in_array($id, self::openRouterFreeFallbackChain(), true)) {
+            return true;
+        }
+        foreach (self::models('openrouter') as $m) {
+            if (($m['id'] ?? '') === $id) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Первая модель в цепочке бесплатных fallback (дефолт CRM). */
+    public static function openRouterDefaultFreeModelId(): string
+    {
+        $chain = self::openRouterFreeFallbackChain();
+
+        return $chain[0] ?? self::defaultModel('openrouter');
     }
 
     /**

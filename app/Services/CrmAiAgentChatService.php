@@ -6,6 +6,7 @@ use App\Models\AiProviderIntegration;
 use App\Models\AiTokenUsageLog;
 use App\Models\Setting;
 use App\Support\AiProviderCatalog;
+use App\Support\OpenRouterFreeModelCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -146,7 +147,7 @@ TXT;
             ], 503);
         }
 
-        $primary = $this->pickModel($provider, $validated, $config);
+        $primary = $this->pickOpenRouterModel($validated, $config);
         $candidates = $this->mergeOpenRouterCandidateModels($primary);
         $base = $this->openAiCompatibleBase($provider, $config);
         $url = $base.'/chat/completions';
@@ -242,9 +243,44 @@ TXT;
         }
 
         return response()->json([
-            'message' => $lastMsg !== '' ? $lastMsg : 'Все запасные бесплатные модели недоступны. Проверьте ключ и лимиты OpenRouter.',
+            'message' => $lastMsg !== '' ? $lastMsg : 'Все доступные бесплатные модели недоступны. Подгрузите каталог в Интеграциях → ИИ и проверьте ключ OpenRouter.',
             'details' => $lastBody,
         ], $lastStatus >= 400 && $lastStatus < 600 ? $lastStatus : 502);
+    }
+
+    /**
+     * @param  array{message: string, model?: string|null}  $validated
+     * @param  array<string, mixed>  $config
+     */
+    private function pickOpenRouterModel(array $validated, array $config): string
+    {
+        $freeCache = OpenRouterFreeModelCache::get();
+        $req = isset($validated['model']) ? trim((string) $validated['model']) : '';
+        if ($req !== '' && AiProviderCatalog::isValidModel('openrouter', $req)) {
+            return $this->resolveOpenRouterSingleFreeModelId($req, $freeCache);
+        }
+
+        $dm = trim((string) ($config['default_model'] ?? AiProviderCatalog::defaultModel('openrouter')));
+        $chosen = AiProviderCatalog::isValidModel('openrouter', $dm)
+            ? $dm
+            : AiProviderCatalog::defaultModel('openrouter');
+
+        return $this->resolveOpenRouterSingleFreeModelId($chosen, $freeCache);
+    }
+
+    /**
+     * @param  list<string>  $freeCache
+     */
+    private function resolveOpenRouterSingleFreeModelId(string $id, array $freeCache): string
+    {
+        if (AiProviderCatalog::openRouterModelIsPersistableFree($id)) {
+            return $id;
+        }
+        if ($freeCache !== [] && in_array($id, $freeCache, true)) {
+            return $id;
+        }
+
+        return AiProviderCatalog::openRouterDefaultFreeModelId();
     }
 
     /**
@@ -252,11 +288,15 @@ TXT;
      */
     private function mergeOpenRouterCandidateModels(string $primaryModel): array
     {
+        $freeCache = OpenRouterFreeModelCache::get();
         $merged = array_merge([$primaryModel], AiProviderCatalog::openRouterFreeFallbackChain());
         $out = [];
         foreach ($merged as $mid) {
             $mid = trim((string) $mid);
             if ($mid === '' || ! AiProviderCatalog::isValidModel('openrouter', $mid)) {
+                continue;
+            }
+            if (! AiProviderCatalog::openRouterModelIsPersistableFree($mid) && ($freeCache === [] || ! in_array($mid, $freeCache, true))) {
                 continue;
             }
             if (! in_array($mid, $out, true)) {

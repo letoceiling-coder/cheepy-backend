@@ -7,6 +7,7 @@ use App\Models\AiProviderIntegration;
 use App\Models\AiTokenUsageLog;
 use App\Models\Setting;
 use App\Support\AiProviderCatalog;
+use App\Support\OpenRouterFreeModelCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
@@ -28,6 +29,10 @@ class CrmAiProviderController extends Controller
 
         $out = [];
         foreach ($rows as $row) {
+            if ($row->name === 'openrouter') {
+                $this->sanitizeOpenRouterStoredDefaultModel($row);
+                $row->refresh();
+            }
             $out[] = $this->serializeProvider($row->name, $row);
         }
 
@@ -40,6 +45,22 @@ class CrmAiProviderController extends Controller
             'active_agent_provider' => $activeStr,
             'active_agent_options' => $this->activeAgentOptions(),
         ]);
+    }
+
+    /** Удалить платный default_model из сохранённой конфигурации OpenRouter (единоразово при GET списка). */
+    private function sanitizeOpenRouterStoredDefaultModel(AiProviderIntegration $row): void
+    {
+        if ($row->name !== 'openrouter') {
+            return;
+        }
+        $config = $row->config ?? [];
+        $dm = trim((string) ($config['default_model'] ?? ''));
+        if ($dm === '' || AiProviderCatalog::openRouterModelIsPersistableFree($dm)) {
+            return;
+        }
+        $config['default_model'] = AiProviderCatalog::openRouterDefaultFreeModelId();
+        $row->config = $config;
+        $row->save();
     }
 
     public function setActiveAgent(Request $request): JsonResponse
@@ -255,23 +276,20 @@ class CrmAiProviderController extends Controller
             ];
         }
 
+        $out = array_values(array_filter($out, static fn (array $r): bool => ! empty($r['free'])));
+
         $chainRank = array_flip(AiProviderCatalog::openRouterFreeFallbackChain());
         usort($out, static function (array $a, array $b) use ($chainRank): int {
-            $af = ! empty($a['free']);
-            $bf = ! empty($b['free']);
-            if ($af !== $bf) {
-                return $af ? -1 : 1;
-            }
-            if ($af && $bf) {
-                $ia = $chainRank[$a['id']] ?? 1000;
-                $ib = $chainRank[$b['id']] ?? 1000;
-                if ($ia !== $ib) {
-                    return $ia <=> $ib;
-                }
+            $ia = $chainRank[$a['id']] ?? 1000;
+            $ib = $chainRank[$b['id']] ?? 1000;
+            if ($ia !== $ib) {
+                return $ia <=> $ib;
             }
 
             return strnatcasecmp((string) $a['label'], (string) $b['label']);
         });
+
+        OpenRouterFreeModelCache::remember(array_column($out, 'id'));
 
         return response()->json([
             'data' => array_values($out),
@@ -357,6 +375,9 @@ class CrmAiProviderController extends Controller
             if (! AiProviderCatalog::isValidModel($name, $mid)) {
                 return response()->json(['error' => 'Неизвестная модель для этого провайдера'], 422);
             }
+            if ($name === 'openrouter' && ! AiProviderCatalog::openRouterModelIsPersistableFree($mid) && ! OpenRouterFreeModelCache::allows($mid)) {
+                return response()->json(['error' => 'Для OpenRouter можно сохранять только модели из бесплатного каталога (или с суффиксом :free в белом списке CRM). Сначала подгрузите каталог через «Обновить», если нужна модель без :free по цене API.'], 422);
+            }
             $config['default_model'] = $mid;
         }
 
@@ -399,6 +420,20 @@ class CrmAiProviderController extends Controller
         if (! AiProviderCatalog::isValidModel($name, $defaultModel)) {
             $defaultModel = AiProviderCatalog::defaultModel($name);
         }
+        if ($name === 'openrouter' && ! AiProviderCatalog::openRouterModelIsPersistableFree($defaultModel)) {
+            $defaultModel = AiProviderCatalog::openRouterDefaultFreeModelId();
+        }
+
+        $catalogModels = AiProviderCatalog::models($name);
+        if ($name === 'openrouter') {
+            $catalogModels = array_map(static function (array $m): array {
+                return [
+                    'id' => $m['id'],
+                    'label' => $m['label'],
+                    'free' => true,
+                ];
+            }, $catalogModels);
+        }
 
         return [
             'name' => $name,
@@ -411,7 +446,7 @@ class CrmAiProviderController extends Controller
             'api_key_hint' => $hasKey ? $this->maskKeyTail((string) $config['api_key']) : null,
             'default_model' => $defaultModel,
             'base_url' => trim((string) ($config['base_url'] ?? '')),
-            'models' => AiProviderCatalog::models($name),
+            'models' => $catalogModels,
             'catalog_updated_at' => self::CATALOG_UPDATED_AT,
         ];
     }
