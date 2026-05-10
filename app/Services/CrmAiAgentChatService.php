@@ -27,6 +27,23 @@ class CrmAiAgentChatService
 
 TXT;
 
+    /**
+     * Поля для клиента CRM: какой провайдер ответил и id модели (если известно).
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function withAiMeta(array $payload, string $provider, ?string $modelId = null): array
+    {
+        $payload['ai_provider'] = $provider;
+        $mid = $modelId !== null ? trim((string) $modelId) : '';
+        if ($mid !== '') {
+            $payload['ai_model'] = $mid;
+        }
+
+        return $payload;
+    }
+
     /** @param array{message: string, conversationId?: string|null, agentId?: string|null, model?: string|null} $validated */
     public function chat(array $validated): JsonResponse
     {
@@ -123,11 +140,12 @@ TXT;
 
         $reply = $body['reply'] ?? $body['text'] ?? $body['response'] ?? null;
         $conversationId = $body['conversationId'] ?? $body['conversation_id'] ?? null;
+        $reqModel = isset($validated['model']) ? trim((string) $validated['model']) : '';
 
-        return response()->json([
+        return response()->json($this->withAiMeta([
             'reply' => is_string($reply) ? $reply : (is_scalar($reply) ? (string) $reply : null),
             'conversationId' => is_string($conversationId) ? $conversationId : null,
-        ]);
+        ], 'site_al', $reqModel !== '' ? $reqModel : null));
     }
 
     /** @param array{message: string, model?: string|null} $validated */
@@ -233,13 +251,11 @@ TXT;
             $usage = $body['usage'] ?? null;
             $this->maybeLogUsage($provider, $model, is_array($usage) ? $usage : null, 'openai_style');
 
-            $payload = [
+            $payload = $this->withAiMeta([
                 'reply' => $text,
                 'conversationId' => null,
                 'model_used' => $model,
-            ];
-
-            return response()->json($payload);
+            ], $provider, $model);
         }
 
         return response()->json([
@@ -418,10 +434,10 @@ TXT;
         $usage = $body['usage'] ?? null;
         $this->maybeLogUsage($provider, $model, is_array($usage) ? $usage : null, 'openai_style');
 
-        return response()->json([
+        return response()->json($this->withAiMeta([
             'reply' => $text,
             'conversationId' => null,
-        ]);
+        ], $provider, $model));
     }
 
     /** @param array{message: string, model?: string|null} $validated */
@@ -490,10 +506,10 @@ TXT;
         $usage = $body['usage'] ?? null;
         $this->maybeLogAnthropicUsage($model, is_array($usage) ? $usage : null);
 
-        return response()->json([
+        return response()->json($this->withAiMeta([
             'reply' => $text,
             'conversationId' => null,
-        ]);
+        ], 'anthropic', $model));
     }
 
     /** @param array{message: string, model?: string|null} $validated */
@@ -566,15 +582,15 @@ TXT;
         $meta = $body['usageMetadata'] ?? null;
         $this->maybeLogGeminiUsage($model, is_array($meta) ? $meta : null);
 
-        return response()->json([
+        return response()->json($this->withAiMeta([
             'reply' => $text,
             'conversationId' => null,
-        ]);
+        ], 'gemini', $model));
     }
 
     /**
      * @param  array{message: string, model?: string|null}  $validated
-     * @param  array<string, mixed>  $config
+     * @param array<string, mixed> $config
      */
     private function pickModel(string $provider, array $validated, array $config): string
     {
