@@ -12,9 +12,8 @@ use App\Models\User;
 use App\Services\Catalog\PublicSystemCatalogService;
 use App\Services\Marketing\MarketingProductEmailBlockBuilder;
 use App\Services\Marketing\TransactionalMarketingMail;
-use App\Services\MarketplaceSettingsService;
 use App\Services\Payments\PaymentProviderManager;
-use App\Services\Storefront\StorefrontDeliveryQuoteService;
+use App\Services\Storefront\StorefrontOrderQuoteService;
 use App\Support\FrontendUrl;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -26,14 +25,11 @@ use Illuminate\Support\Str;
  */
 class StorefrontCheckoutController extends Controller
 {
-    private const DELIVERY_FLAT_RUB = 299;
-
     public function store(
         Request $request,
         PublicSystemCatalogService $catalog,
         PaymentProviderManager $manager,
-        StorefrontDeliveryQuoteService $deliveryQuotes,
-        MarketplaceSettingsService $marketplaceSettings,
+        StorefrontOrderQuoteService $quoteService,
     ): JsonResponse {
         $user = $request->attributes->get('storefront_user');
         if (! $user instanceof User) {
@@ -54,143 +50,87 @@ class StorefrontCheckoutController extends Controller
             'items.*.color' => ['nullable', 'string', 'max:80'],
             'items.*.size' => ['nullable', 'string', 'max:80'],
             'provider' => ['nullable', 'string', 'in:'.$allowedProviders],
+            'coupon_code' => ['nullable', 'string', 'max:64'],
         ]);
 
         $provider = strtolower((string) ($data['provider'] ?? $defaultProvider));
 
-        $lines = [];
-        foreach ($data['items'] as $row) {
-            try {
-                $sp = $catalog->findVisibleSystemProductByPublicId((string) $row['product_id']);
-            } catch (\Throwable) {
-                return response()->json([
-                    'error' => 'Один из товаров недоступен для заказа',
-                    'product_id' => $row['product_id'],
-                ], 422);
-            }
-            $sp->loadMissing(['photos']);
-            $unitRub = $catalog->priceForStorefront($sp);
-            if ($unitRub <= 0) {
-                return response()->json([
-                    'error' => 'Для товара не задана цена',
-                    'product_id' => $row['product_id'],
-                ], 422);
-            }
-            $qty = (int) $row['quantity'];
-            $lines[] = [
-                'product' => $sp,
-                'quantity' => $qty,
-                'unit_rub' => $unitRub,
-                'line_total_rub' => $unitRub * $qty,
-                'color' => $row['color'] ?? null,
-                'size' => $row['size'] ?? null,
-            ];
-        }
-
-        $subtotalRub = (int) array_sum(array_column($lines, 'line_total_rub'));
-
-        $cartLinesOnly = [];
-        foreach ($lines as $l) {
-            $cartLinesOnly[] = ['product' => $l['product'], 'quantity' => $l['quantity']];
-        }
-
-        $deliverySnapshot = [];
-        $deliveryProvider = null;
-        $deliveryType = 'flat';
-
-        $qb = $deliveryQuotes->buildQuotesForCartLines($user, $cartLinesOnly);
-
-        if ($qb['needs_address'] ?? false) {
-            return response()->json([
-                'error' => 'Добавьте адрес доставки в личном кабинете (раздел «Адреса доставки»), чтобы оформить заказ.',
-                'code' => 'needs_delivery_address',
-            ], 422);
-        }
-
-        $freeThresholdRub = $marketplaceSettings->effectiveFreeDeliveryThresholdRub();
-        $snapshotThreshold = $freeThresholdRub !== null ? ['threshold_rub' => $freeThresholdRub] : [];
-
-        if ($freeThresholdRub !== null && $subtotalRub >= $freeThresholdRub) {
-            $deliveryRub = 0;
-            $deliveryType = 'free_threshold';
-            $deliverySnapshot = array_merge([
-                'mode' => 'free_threshold',
-            ], $snapshotThreshold);
-        } else {
-            $cheapest = $qb['cheapest_price_rub'] ?? null;
-            if ($cheapest !== null) {
-                $deliveryRub = max(0, (int) round((float) $cheapest));
-                $cq = is_array($qb['cheapest_quote'] ?? null) ? $qb['cheapest_quote'] : null;
-                $deliveryProvider = $cq ? (string) ($cq['integration'] ?? '') : null;
-                if ($deliveryProvider === '') {
-                    $deliveryProvider = null;
-                }
-                $deliveryType = $deliveryProvider ?: 'carrier';
-                $deliverySnapshot = array_merge([
-                    'mode' => 'integrations_min',
-                    'integration' => $deliveryProvider,
-                    'provider_title' => is_array($cq) ? ($cq['provider_title'] ?? null) : null,
-                    'service_code' => is_array($cq) ? ($cq['service_code'] ?? null) : null,
-                    'quoted_price_rub' => round((float) $cheapest, 2),
-                ], $snapshotThreshold);
-            } else {
-                $deliveryRub = self::DELIVERY_FLAT_RUB;
-                $deliveryType = 'flat_fallback';
-                $deliverySnapshot = array_merge([
-                    'mode' => 'flat_fallback',
-                    'flat_rub' => self::DELIVERY_FLAT_RUB,
-                    'reason' => 'no_carrier_quotes',
-                ], $snapshotThreshold);
-            }
-        }
-
-        $totalRub = $subtotalRub + $deliveryRub;
-        $totalFloat = round($totalRub, 2);
-
-        if ($totalRub <= 0) {
-            return response()->json(['error' => 'Некорректная сумма заказа'], 422);
-        }
-
-        $returnToken = Str::random(32);
-
         try {
             $responsePayload = DB::transaction(function () use (
                 $user,
-                $lines,
-                $subtotalRub,
-                $deliveryRub,
-                $deliveryProvider,
-                $deliveryType,
-                $deliverySnapshot,
-                $totalRub,
-                $totalFloat,
+                $data,
                 $provider,
-                $returnToken,
+                $catalog,
+                $quoteService,
                 $manager
             ) {
+                $quote = $quoteService->quote(
+                    $user,
+                    $data['items'],
+                    $data['coupon_code'] ?? null,
+                    true,
+                    $catalog
+                );
+
+                if (! ($quote['ok'] ?? false)) {
+                    return [
+                        '__error' => true,
+                        'error' => $quote['error'] ?? 'Ошибка расчёта заказа',
+                        'code' => $quote['code'] ?? null,
+                        'product_id' => $quote['product_id'] ?? null,
+                    ];
+                }
+
+                $totalRub = (int) $quote['total_amount'];
+                $totalFloat = round($totalRub, 2);
+
+                if ($totalRub <= 0) {
+                    return [
+                        '__error' => true,
+                        'error' => 'Некорректная сумма заказа',
+                        'code' => null,
+                        'product_id' => null,
+                    ];
+                }
+
+                $discountRub = (int) $quote['discount_rub'];
+                $couponSnapshot = $discountRub > 0 ? ($quote['coupon_snapshot'] ?? null) : null;
+                $couponId = $discountRub > 0 && isset($quote['coupon']) && $quote['coupon'] !== null
+                    ? $quote['coupon']->id
+                    : null;
+
+                $returnToken = Str::random(32);
                 $number = $this->generateUniqueOrderNumber();
+
+                $lines = $quote['lines'];
 
                 $order = CustomerOrder::create([
                     'user_id' => $user->id,
+                    'coupon_id' => $couponId,
                     'number' => $number,
                     'status' => 'awaiting_payment',
-                    'subtotal_amount' => $subtotalRub,
-                    'discount_amount' => 0,
-                    'delivery_amount' => $deliveryRub,
+                    'subtotal_amount' => (int) $quote['subtotal_catalog_rub'],
+                    'discount_amount' => $discountRub,
+                    'coupon_snapshot' => $couponSnapshot,
+                    'delivery_amount' => (int) $quote['delivery_amount'],
                     'bonus_spent_amount' => 0,
                     'total_amount' => $totalRub,
                     'currency' => 'RUB',
                     'payment_status' => 'pending',
-                    'delivery_provider' => $deliveryProvider,
-                    'delivery_type' => $deliveryType,
-                    'delivery_snapshot' => array_merge($deliverySnapshot, [
-                        'subtotal_snapshot_rub' => $subtotalRub,
-                    ]),
+                    'delivery_provider' => $quote['delivery_provider'],
+                    'delivery_type' => $quote['delivery_type'],
+                    'delivery_snapshot' => array_merge(
+                        is_array($quote['delivery_snapshot_base'] ?? null) ? $quote['delivery_snapshot_base'] : [],
+                        [
+                            'subtotal_snapshot_rub' => (int) $quote['subtotal_catalog_rub'],
+                            'discount_rub' => $discountRub,
+                        ]
+                    ),
                     'paid_at' => null,
                 ]);
 
                 foreach ($lines as $line) {
-                    /** @var \App\Models\SystemProduct $sp */
+                    /** @var SystemProduct $sp */
                     $sp = $line['product'];
                     $thumb = $sp->photos->first()?->url;
                     $attrs = array_filter([
@@ -223,7 +163,7 @@ class StorefrontCheckoutController extends Controller
 
                 $providerService = $manager->getProvider($provider);
                 $feBase = FrontendUrl::base();
-                $tokQ = $returnToken !== '' ? '&return_token=' . urlencode($returnToken) : '';
+                $tokQ = $returnToken !== '' ? '&return_token='.urlencode($returnToken) : '';
                 $checkout = $providerService->createCheckout(null, $totalFloat, [
                     'payment_id' => $payment->id,
                     'return_token' => $returnToken,
@@ -238,6 +178,7 @@ class StorefrontCheckoutController extends Controller
                 ]);
 
                 return [
+                    '__error' => false,
                     'payment_id' => $payment->id,
                     'return_token' => $returnToken,
                     'provider' => $provider,
@@ -261,9 +202,25 @@ class StorefrontCheckoutController extends Controller
             return response()->json($payload, 422);
         }
 
+        if (! empty($responsePayload['__error'])) {
+            $body = ['error' => (string) ($responsePayload['error'] ?? 'Ошибка')];
+            $c = $responsePayload['code'] ?? null;
+            if ($c !== null && $c !== '') {
+                $body['code'] = $c;
+            }
+            $pid = $responsePayload['product_id'] ?? null;
+            if ($pid !== null && $pid !== '') {
+                $body['product_id'] = $pid;
+            }
+
+            return response()->json($body, 422);
+        }
+
         if (empty($responsePayload['checkout_url'])) {
             return response()->json(['error' => 'Платёжный провайдер не вернул ссылку'], 422);
         }
+
+        unset($responsePayload['__error']);
 
         $orderId = (int) ($responsePayload['order_id'] ?? 0);
         if ($orderId > 0) {

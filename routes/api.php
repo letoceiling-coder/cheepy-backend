@@ -479,6 +479,7 @@ Route::prefix('v1/store/auth')->middleware('throttle:45,1')->group(function () {
 Route::prefix('v1/store')->middleware(['throttle:120,1', 'customer.jwt'])->group(function () {
     Route::get('delivery-quote', [\App\Http\Controllers\Api\StorefrontDeliveryQuoteController::class, 'show']);
     Route::post('cart-delivery-quote', [\App\Http\Controllers\Api\StorefrontCartDeliveryQuoteController::class, 'store']);
+    Route::post('order-preview', [\App\Http\Controllers\Api\StorefrontOrderPreviewController::class, 'store']);
     Route::post('cart-sync', [StorefrontCartSyncController::class, 'sync']);
     Route::post('checkout', [\App\Http\Controllers\Api\StorefrontCheckoutController::class, 'store']);
 });

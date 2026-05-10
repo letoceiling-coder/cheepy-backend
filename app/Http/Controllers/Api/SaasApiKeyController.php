@@ -9,6 +9,7 @@ use App\Models\PaymentWebhookLog;
 use App\Models\SaasApiKey;
 use App\Services\Payments\PaymentProviderInterface;
 use App\Services\Payments\PaymentProviderManager;
+use App\Services\Storefront\StorefrontCouponRedemptionRecorder;
 use App\Support\PaymentWebhookCurrency;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -445,6 +446,11 @@ class SaasApiKeyController extends Controller
                     'status' => 'confirmed',
                     'paid_at' => now(),
                 ]);
+                try {
+                    app(StorefrontCouponRedemptionRecorder::class)->recordForPaymentIfNeeded($payment);
+                } catch (\Throwable $e) {
+                    report($e);
+                }
             } else {
                 $key = $payment->api_key_id !== null
                     ? SaasApiKey::query()->whereKey($payment->api_key_id)->lockForUpdate()->first()
