@@ -82,21 +82,6 @@ final class AiProviderCatalog
                 ['id' => 'grok-3-mini', 'label' => 'Grok 3 Mini'],
             ],
         ],
-        'replicate' => [
-            'title' => 'Replicate',
-            'description' => 'Официальные модели в формате owner/name (HTTP API predictions). Полный каталог — на replicate.com.',
-            'docs_url' => 'https://replicate.com/docs',
-            'models' => [
-                ['id' => 'black-forest-labs/flux-2-dev', 'label' => 'FLUX.2 [dev]'],
-                ['id' => 'black-forest-labs/flux-2-pro', 'label' => 'FLUX.2 [pro]'],
-                ['id' => 'black-forest-labs/flux-schnell', 'label' => 'FLUX Schnell'],
-                ['id' => 'black-forest-labs/flux-dev', 'label' => 'FLUX.1 [dev]'],
-                ['id' => 'black-forest-labs/flux-1.1-pro', 'label' => 'FLUX 1.1 [pro]'],
-                ['id' => 'meta/meta-llama-3-70b-instruct', 'label' => 'Llama 3 70B Instruct'],
-                ['id' => 'google/imagen-4-ultra', 'label' => 'Google Imagen 4 Ultra'],
-                ['id' => 'bytedance/seedance-1-pro', 'label' => 'ByteDance Seedance 1 Pro'],
-            ],
-        ],
         // Ollama behind our HTTPS tunnel: OpenAI-compatible POST …/v1/chat/completions.
         'ollama' => [
             'title' => 'Ollama',
@@ -191,13 +176,12 @@ final class AiProviderCatalog
 
     /**
      * Провайдеры, которыми можно пользоваться как источником текста для CRM-агента (чат).
-     * Replicate здесь нет — это в основном predictions/медиа, не чат для описаний.
      *
      * @return list<string>
      */
     public static function agentChatProviderKeys(): array
     {
-        return array_values(array_diff(self::providerKeys(), ['replicate']));
+        return self::providerKeys();
     }
 
     public static function providerKeys(): array
