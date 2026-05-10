@@ -13,7 +13,6 @@ use App\Services\CatalogAttributeNormalizer;
 use App\Services\MarketplaceSettingsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 
 /**
  * Публичный каталог на слое system_products (опубликованные карточки CRM).
@@ -102,8 +101,20 @@ class PublicSystemCatalogService
 
         $categoryIds = $this->collectActiveDescendantCategoryIds((int) $category->id);
 
+        $visible = $this->visibleStatuses();
+
+        $priceAgg = SystemProduct::query()
+            ->whereIn('status', $visible)
+            ->whereIn('category_id', $categoryIds)
+            ->whereNotNull('price_raw')
+            ->selectRaw('MIN(price_raw) AS min_price, MAX(price_raw) AS max_price')
+            ->first();
+
+        $priceRangeMin = $priceAgg && $priceAgg->min_price !== null ? (int) $priceAgg->min_price : 0;
+        $priceRangeMax = $priceAgg && $priceAgg->max_price !== null ? (int) $priceAgg->max_price : 0;
+
         $query = SystemProduct::query()
-            ->whereIn('status', $this->visibleStatuses())
+            ->whereIn('status', $visible)
             ->whereIn('category_id', $categoryIds)
             ->with([
                 'seller:id,name,slug,pavilion',
@@ -143,10 +154,15 @@ class PublicSystemCatalogService
             'price_asc' => ['price_raw', 'asc'],
             'price_desc' => ['price_raw', 'desc'],
             'new' => ['created_at', 'desc'],
-            /** Ручной порядок из CRM (list_position): меньше — выше в списке. */
+            /** Фронт: popular → sort_by=list_position&sort_dir=desc */
+            'list_position' => ['list_position', 'desc'],
             'position' => ['list_position', 'asc'],
         ];
         [$sortCol, $sortDir] = $sortMap[$request->input('sort_by', 'new')] ?? ['created_at', 'desc'];
+        $incomingDir = strtolower((string) $request->input('sort_dir', ''));
+        if (in_array($incomingDir, ['asc', 'desc'], true) && in_array($sortCol, ['list_position', 'created_at'], true)) {
+            $sortDir = $incomingDir;
+        }
         $query->orderBy($sortCol, $sortDir)->orderBy('id', 'desc');
 
         $perPage = min((int) $request->input('per_page', 24), 60);
@@ -159,6 +175,10 @@ class PublicSystemCatalogService
                 'id' => $category->id,
                 'name' => $category->name,
                 'slug' => $category->slug,
+            ],
+            'price_range' => [
+                'min' => $priceRangeMin,
+                'max' => $priceRangeMax,
             ],
             'filters' => $filters,
             'data' => $page->getCollection()->map(fn (SystemProduct $sp) => $this->storefrontCard($sp))->values(),
