@@ -110,13 +110,52 @@ final class AiProviderCatalog
         ],
         'openrouter' => [
             'title' => 'OpenRouter',
-            'description' => 'Единый OpenAI-compatible API ко множеству моделей. Ключ с openrouter.ai; полный список — кнопка «Обновить» (суффикс :free или нулевая текстовая цена → пометка «бесплатно»).',
+            'description' => 'Единый OpenAI-compatible API ко множеству моделей. Полный каталог — «Обновить» без ключа использует открытый список openrouter.ai; ключ нужен только для генерации ответов. Бесплатно: суффикс :free или нулевая цена prompt+completion.',
             'docs_url' => 'https://openrouter.ai/docs/quickstart',
             'models' => [
-                ['id' => 'meta-llama/llama-3.3-8b-instruct:free', 'label' => 'Llama 3.3 8B Instruct (free)'],
+                ['id' => 'nousresearch/hermes-3-llama-3.1-405b:free', 'label' => 'Hermes 3 Llama 3.1 405B (free)'],
+                ['id' => 'meta-llama/llama-3.3-70b-instruct:free', 'label' => 'Llama 3.3 70B Instruct (free)'],
+                ['id' => 'inclusionai/ring-2.6-1t:free', 'label' => 'Ring 2.6-1T (free)'],
+                ['id' => 'openai/gpt-oss-120b:free', 'label' => 'OpenAI OSS 120B (free)'],
+                ['id' => 'meta-llama/llama-3.2-3b-instruct:free', 'label' => 'Llama 3.2 3B Instruct (free)'],
             ],
         ],
     ];
+
+    /**
+     * Цепочка бесплатных моделей OpenRouter (лучшие к запасным) при недоступности выбранной.
+     *
+     * @return list<string>
+     */
+    public static function openRouterFreeFallbackChain(): array
+    {
+        return [
+            'nousresearch/hermes-3-llama-3.1-405b:free',
+            'meta-llama/llama-3.3-70b-instruct:free',
+            'inclusionai/ring-2.6-1t:free',
+            'nvidia/nemotron-3-super-120b-a12b:free',
+            'qwen/qwen3-next-80b-a3b-instruct:free',
+            'openai/gpt-oss-120b:free',
+            'minimax/minimax-m2.5:free',
+            'google/gemma-4-31b-it:free',
+            'google/gemma-4-26b-a4b-it:free',
+            'z-ai/glm-4.5-air:free',
+            'qwen/qwen3-coder:free',
+            'openai/gpt-oss-20b:free',
+            'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+            'nvidia/nemotron-3-nano-30b-a3b:free',
+            'nvidia/nemotron-nano-12b-v2-vl:free',
+            'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
+            'poolside/laguna-m.1:free',
+            'poolside/laguna-xs.2:free',
+            'baidu/cobuddy:free',
+            'baidu/qianfan-ocr-fast:free',
+            'liquid/lfm-2.5-1.2b-thinking:free',
+            'liquid/lfm-2.5-1.2b-instruct:free',
+            'nvidia/nemotron-nano-9b-v2:free',
+            'meta-llama/llama-3.2-3b-instruct:free',
+        ];
+    }
 
     /**
      * Провайдеры, которыми можно пользоваться как источником текста для CRM-агента (чат).

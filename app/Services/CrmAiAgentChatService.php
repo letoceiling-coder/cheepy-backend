@@ -33,7 +33,8 @@ TXT;
 
         return match ($provider) {
             'site_al' => $this->chatSiteAl($validated),
-            'openai', 'xai', 'ollama', 'openrouter' => $this->chatOpenAiCompatible($provider, $validated),
+            'openrouter' => $this->chatOpenRouterOpenAiCompatible($validated),
+            'openai', 'xai', 'ollama' => $this->chatOpenAiCompatible($provider, $validated),
             'anthropic' => $this->chatAnthropic($validated),
             'gemini' => $this->chatGemini($validated),
             default => $this->chatSiteAl($validated),
@@ -129,6 +130,183 @@ TXT;
     }
 
     /** @param array{message: string, model?: string|null} $validated */
+    private function chatOpenRouterOpenAiCompatible(array $validated): JsonResponse
+    {
+        $provider = 'openrouter';
+        $row = AiProviderIntegration::where('name', $provider)->first();
+        if (! $row) {
+            return response()->json(['message' => 'Интеграция openrouter не найдена в базе.'], 503);
+        }
+
+        $config = $row->config ?? [];
+        $apiKey = trim((string) ($config['api_key'] ?? ''));
+        if ($apiKey === '') {
+            return response()->json([
+                'message' => 'Для openrouter не сохранён API ключ в CRM → Интеграции → ИИ.',
+            ], 503);
+        }
+
+        $primary = $this->pickModel($provider, $validated, $config);
+        $candidates = $this->mergeOpenRouterCandidateModels($primary);
+        $base = $this->openAiCompatibleBase($provider, $config);
+        $url = $base.'/chat/completions';
+
+        $headers = [
+            'Content-Type' => 'application/json',
+            'Accept' => 'application/json',
+            'Authorization' => 'Bearer '.$apiKey,
+        ];
+        $ref = rtrim((string) config('app.url', ''), '/');
+        if ($ref !== '') {
+            $headers['Referer'] = $ref;
+        }
+        $title = trim((string) config('app.name', ''));
+        if ($title !== '') {
+            $headers['X-Title'] = $title;
+        }
+
+        $timeout = (int) config('services.openrouter.timeout', 120);
+        $messages = [
+            ['role' => 'user', 'content' => self::RUSSIAN_OUTPUT_PREAMBLE.$validated['message']],
+        ];
+
+        $lastStatus = 502;
+        $lastBody = null;
+        $lastMsg = '';
+
+        foreach ($candidates as $model) {
+            try {
+                $response = Http::timeout($timeout)
+                    ->withHeaders($headers)
+                    ->post($url, [
+                        'model' => $model,
+                        'messages' => $messages,
+                    ]);
+            } catch (\Throwable $e) {
+                Log::warning('crm ai chat transport', ['provider' => $provider, 'model' => $model, 'error' => $e->getMessage()]);
+                $lastMsg = 'Не удалось связаться с openrouter: '.$e->getMessage();
+                $lastStatus = 502;
+
+                continue;
+            }
+
+            $body = $response->json();
+            $lastBody = $body;
+            $lastStatus = $response->status();
+
+            if (! $response->successful()) {
+                $lastMsg = $this->extractOpenAiStyleError($body) ?? ('OpenRouter вернул HTTP '.$response->status());
+                if ($this->openRouterErrorShouldTryNextModel($response->status(), $body)) {
+                    Log::info('openrouter model fallback', [
+                        'model' => $model,
+                        'http' => $response->status(),
+                        'message' => $lastMsg,
+                    ]);
+
+                    continue;
+                }
+
+                return response()->json([
+                    'message' => $lastMsg,
+                    'details' => $body ?? $response->body(),
+                ], $response->status() >= 400 && $response->status() < 600 ? $response->status() : 502);
+            }
+
+            if (! is_array($body)) {
+                if ($this->openRouterErrorShouldTryNextModel(502, null)) {
+                    continue;
+                }
+
+                return response()->json(['message' => 'Неожиданный ответ провайдера (не JSON).'], 502);
+            }
+
+            $text = $body['choices'][0]['message']['content'] ?? null;
+            if (! is_string($text) || $text === '') {
+                if ($this->openRouterErrorShouldTryNextModel(502, $body)) {
+                    continue;
+                }
+
+                return response()->json(['message' => 'Пустой ответ модели.'], 502);
+            }
+
+            $usage = $body['usage'] ?? null;
+            $this->maybeLogUsage($provider, $model, is_array($usage) ? $usage : null, 'openai_style');
+
+            $payload = [
+                'reply' => $text,
+                'conversationId' => null,
+                'model_used' => $model,
+            ];
+
+            return response()->json($payload);
+        }
+
+        return response()->json([
+            'message' => $lastMsg !== '' ? $lastMsg : 'Все запасные бесплатные модели недоступны. Проверьте ключ и лимиты OpenRouter.',
+            'details' => $lastBody,
+        ], $lastStatus >= 400 && $lastStatus < 600 ? $lastStatus : 502);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function mergeOpenRouterCandidateModels(string $primaryModel): array
+    {
+        $merged = array_merge([$primaryModel], AiProviderCatalog::openRouterFreeFallbackChain());
+        $out = [];
+        foreach ($merged as $mid) {
+            $mid = trim((string) $mid);
+            if ($mid === '' || ! AiProviderCatalog::isValidModel('openrouter', $mid)) {
+                continue;
+            }
+            if (! in_array($mid, $out, true)) {
+                $out[] = $mid;
+            }
+        }
+
+        return $out;
+    }
+
+    /** @param mixed $body */
+    private function openRouterErrorShouldTryNextModel(int $status, $body): bool
+    {
+        if (in_array($status, [401, 403], true)) {
+            return false;
+        }
+
+        if (in_array($status, [408, 429, 502, 503, 529], true)) {
+            return true;
+        }
+
+        if ($status >= 500 && $status <= 599) {
+            return true;
+        }
+
+        $msg = strtolower((string) ($this->extractOpenAiStyleError(is_array($body) ? $body : null) ?? ''));
+
+        if ($status === 404) {
+            return true;
+        }
+
+        if ($status === 402) {
+            return true;
+        }
+
+        if ($status === 400) {
+            return str_contains($msg, 'model')
+                || str_contains($msg, 'not found')
+                || str_contains($msg, 'no endpoints')
+                || str_contains($msg, 'routing')
+                || str_contains($msg, 'overload')
+                || str_contains($msg, 'moderation')
+                || str_contains($msg, 'unavailable')
+                || str_contains($msg, 'disabled');
+        }
+
+        return false;
+    }
+
+    /** @param array{message: string, model?: string|null} $validated */
     private function chatOpenAiCompatible(string $provider, array $validated): JsonResponse
     {
         $row = AiProviderIntegration::where('name', $provider)->first();
@@ -155,20 +333,9 @@ TXT;
             'Accept' => 'application/json',
         ];
         $headers['Authorization'] = 'Bearer '.$apiKey;
-        if ($provider === 'openrouter') {
-            $ref = rtrim((string) config('app.url', ''), '/');
-            if ($ref !== '') {
-                $headers['Referer'] = $ref;
-            }
-            $title = trim((string) config('app.name', ''));
-            if ($title !== '') {
-                $headers['X-Title'] = $title;
-            }
-        }
 
         $timeout = match ($provider) {
             'ollama' => (int) config('services.ollama.timeout', 120),
-            'openrouter' => (int) config('services.openrouter.timeout', 120),
             default => (int) config('services.site_al.timeout', 120),
         };
 
@@ -366,8 +533,8 @@ TXT;
     }
 
     /**
-     * @param array{message: string, model?: string|null} $validated
-     * @param array<string, mixed> $config
+     * @param  array{message: string, model?: string|null}  $validated
+     * @param  array<string, mixed>  $config
      */
     private function pickModel(string $provider, array $validated, array $config): string
     {

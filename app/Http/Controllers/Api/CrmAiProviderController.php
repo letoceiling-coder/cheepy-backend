@@ -184,26 +184,27 @@ class CrmAiProviderController extends Controller
         }
 
         $token = trim((string) ($config['api_key'] ?? ''));
-        if ($token === '') {
-            return response()->json([
-                'message' => 'Сохраните API-ключ OpenRouter в CRM → Интеграции → ИИ, затем обновите список моделей.',
-            ], 422);
-        }
+        $publicBase = rtrim((string) config('services.openrouter.base_url', 'https://openrouter.ai/api/v1'), '/');
+        $catalogSource = $token !== '' ? 'authenticated' : 'public';
 
-        $url = $base.'/models';
+        $url = $token !== '' ? ($base.'/models') : ($publicBase.'/models');
 
         try {
-            $referer = rtrim((string) config('app.url', ''), '/');
             $headers = [
-                'Authorization' => 'Bearer '.$token,
                 'Accept' => 'application/json',
             ];
-            if ($referer !== '') {
-                $headers['Referer'] = $referer;
-            }
-            $title = trim((string) config('app.name', ''));
-            if ($title !== '') {
-                $headers['X-Title'] = $title;
+            if ($token !== '') {
+                $headers['Authorization'] = 'Bearer '.$token;
+                $referer = rtrim((string) config('app.url', ''), '/');
+                if ($referer !== '') {
+                    $headers['Referer'] = $referer;
+                }
+                $title = trim((string) config('app.name', ''));
+                if ($title !== '') {
+                    $headers['X-Title'] = $title;
+                }
+            } else {
+                $headers['User-Agent'] = 'Cheepy-CRM/OpenRouter-catalog (public /v1/models)';
             }
 
             $response = Http::timeout(120)
@@ -230,7 +231,7 @@ class CrmAiProviderController extends Controller
 
         $out = [];
         if (! is_array($body) || ! isset($body['data']) || ! is_array($body['data'])) {
-            return response()->json(['data' => [], 'endpoint' => $url]);
+            return response()->json(['data' => [], 'endpoint' => $url, 'catalog_source' => $catalogSource]);
         }
 
         foreach ($body['data'] as $item) {
@@ -254,11 +255,19 @@ class CrmAiProviderController extends Controller
             ];
         }
 
-        usort($out, static function (array $a, array $b): int {
+        $chainRank = array_flip(AiProviderCatalog::openRouterFreeFallbackChain());
+        usort($out, static function (array $a, array $b) use ($chainRank): int {
             $af = ! empty($a['free']);
             $bf = ! empty($b['free']);
             if ($af !== $bf) {
                 return $af ? -1 : 1;
+            }
+            if ($af && $bf) {
+                $ia = $chainRank[$a['id']] ?? 1000;
+                $ib = $chainRank[$b['id']] ?? 1000;
+                if ($ia !== $ib) {
+                    return $ia <=> $ib;
+                }
             }
 
             return strnatcasecmp((string) $a['label'], (string) $b['label']);
@@ -267,6 +276,7 @@ class CrmAiProviderController extends Controller
         return response()->json([
             'data' => array_values($out),
             'endpoint' => $url,
+            'catalog_source' => $catalogSource,
         ]);
     }
 
@@ -285,12 +295,18 @@ class CrmAiProviderController extends Controller
             if ($v === null) {
                 return null;
             }
+            if (is_bool($v)) {
+                return null;
+            }
             if (is_numeric($v)) {
                 return (float) $v;
             }
             if (is_string($v)) {
                 $t = trim($v);
-                if ($t !== '' && is_numeric($t)) {
+                if ($t === '' || $t === '-') {
+                    return null;
+                }
+                if (is_numeric($t)) {
                     return (float) $t;
                 }
             }
