@@ -214,7 +214,8 @@ TXT;
             $lastStatus = $response->status();
 
             if (! $response->successful()) {
-                $lastMsg = $this->extractOpenAiStyleError($body) ?? ('OpenRouter вернул HTTP '.$response->status());
+                $lastMsg = $this->explainOpenRouterErrorBody(is_array($body) ? $body : null)
+                    ?? ('OpenRouter вернул HTTP '.$response->status());
                 if ($this->openRouterErrorShouldTryNextModel($response->status(), $body)) {
                     Log::info('openrouter model fallback', [
                         'model' => $model,
@@ -256,6 +257,8 @@ TXT;
                 'conversationId' => null,
                 'model_used' => $model,
             ], $provider, $model);
+
+            return response()->json($payload);
         }
 
         return response()->json([
@@ -678,6 +681,58 @@ TXT;
         }
 
         return null;
+    }
+
+    /** Расширенное описание ошибки для ответов CRM и логами (метаданные OpenRouter). */
+    private function explainOpenRouterErrorBody(?array $body): ?string
+    {
+        $base = $this->extractOpenAiStyleError($body);
+        if ($base === null || $base === '') {
+            return null;
+        }
+
+        $parts = [$base];
+
+        $errBlock = ($body !== null && isset($body['error']) && is_array($body['error'])) ? $body['error'] : null;
+        if ($errBlock !== null) {
+            if (isset($errBlock['code'])) {
+                $parts[] = 'code: '.trim((string) $errBlock['code']);
+            }
+            $meta = $errBlock['metadata'] ?? null;
+            if (is_array($meta)) {
+                if (isset($meta['provider_name']) && is_string($meta['provider_name']) && trim($meta['provider_name']) !== '') {
+                    $parts[] = 'upstream: '.$meta['provider_name'];
+                }
+                foreach (['raw', 'reason'] as $k) {
+                    if (! isset($meta[$k])) {
+                        continue;
+                    }
+                    $enc = json_encode($meta[$k], JSON_UNESCAPED_UNICODE);
+                    if ($enc === false) {
+                        continue;
+                    }
+                    $chunk = self::truncateForUserMessage($enc);
+                    if ($chunk !== '') {
+                        $parts[] = $k.': '.$chunk;
+                    }
+                }
+            }
+        }
+
+        return implode(' · ', $parts);
+    }
+
+    private static function truncateForUserMessage(string $s, int $max = 400): string
+    {
+        $t = trim($s);
+        if ($t === '') {
+            return '';
+        }
+        if (strlen($t) <= $max) {
+            return $t;
+        }
+
+        return substr($t, 0, $max).'…';
     }
 
     /** @param array<string, mixed>|null $usage */
