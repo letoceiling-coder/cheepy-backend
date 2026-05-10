@@ -220,32 +220,11 @@ class PublicController extends Controller
 
     /**
      * GET /api/v1/public/search?q=платье&page=1
+     * Подсказки: suggest_only=1 (&limit_categories=&limit_sellers=&limit_products=)
      */
     public function search(Request $request): JsonResponse
     {
-        $q = trim($request->input('q', ''));
-        if (strlen($q) < 2) {
-            return response()->json(['data' => [], 'meta' => ['total' => 0]]);
-        }
-
-        $products = Product::where('status', 'active')
-            ->where(function ($query) use ($q) {
-                $query->where('title', 'like', "%{$q}%")
-                    ->orWhere('description', 'like', "%{$q}%");
-            })
-            ->with(['category:id,name,slug', 'seller:id,name,slug'])
-            ->paginate($request->input('per_page', 20));
-
-        return response()->json([
-            'query' => $q,
-            'data' => $products->map(fn($p) => $this->formatPublicProduct($p)),
-            'meta' => [
-                'total' => $products->total(),
-                'per_page' => $products->perPage(),
-                'current_page' => $products->currentPage(),
-                'last_page' => $products->lastPage(),
-            ],
-        ]);
+        return app(PublicSystemCatalogService::class)->search($request);
     }
 
     /**

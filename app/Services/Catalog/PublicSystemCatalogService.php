@@ -13,6 +13,7 @@ use App\Services\CatalogAttributeNormalizer;
 use App\Services\MarketplaceSettingsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 
 /**
  * Публичный каталог на слое system_products (опубликованные карточки CRM).
@@ -359,17 +360,52 @@ class PublicSystemCatalogService
     public function search(Request $request): JsonResponse
     {
         $q = trim($request->input('q', ''));
-        if (strlen($q) < 2) {
-            return response()->json(['data' => [], 'meta' => ['total' => 0]]);
+        $suggestOnly = $request->boolean('suggest_only');
+
+        $emptyMeta = [
+            'total' => 0,
+            'per_page' => (int) min(60, max(1, (int) $request->input('per_page', 20))),
+            'current_page' => 1,
+            'last_page' => 1,
+        ];
+
+        if (Str::length($q) < 2) {
+            if ($suggestOnly) {
+                return response()->json([
+                    'query' => $q,
+                    'suggestions' => [
+                        'categories' => [],
+                        'sellers' => [],
+                        'products' => [],
+                    ],
+                ]);
+            }
+
+            return response()->json([
+                'query' => $q,
+                'data' => [],
+                'meta' => $emptyMeta,
+            ]);
         }
+
+        if ($suggestOnly) {
+            return response()->json([
+                'query' => $q,
+                'suggestions' => $this->buildSearchSuggestions($request, $q),
+            ]);
+        }
+
+        $likeWild = '%'.$this->escapeLike($q).'%';
 
         $products = SystemProduct::query()
             ->whereIn('status', $this->visibleStatuses())
-            ->where(function ($query) use ($q) {
-                $query->where('name', 'like', "%{$q}%")
-                    ->orWhere('description', 'like', "%{$q}%");
+            ->where(function ($query) use ($likeWild) {
+                $query->where('name', 'like', $likeWild)
+                    ->orWhere('description', 'like', $likeWild);
             })
             ->with(['category:id,name,slug', 'seller:id,name,slug', 'photos' => $this->enabledPhotos(), 'productSources.donorProduct:id,external_id'])
+            ->orderByDesc('list_position')
+            ->orderByDesc('id')
             ->paginate($request->input('per_page', 20));
 
         return response()->json([
@@ -382,6 +418,84 @@ class PublicSystemCatalogService
                 'last_page' => $products->lastPage(),
             ],
         ]);
+    }
+
+    /**
+     * @return array{categories: array<int, array<string, mixed>>, sellers: array<int, array<string, mixed>>, products: array<int, array<string, mixed>>}
+     */
+    private function buildSearchSuggestions(Request $request, string $q): array
+    {
+        $likeWild = '%'.$this->escapeLike($q).'%';
+        $visible = $this->visibleStatuses();
+
+        $limCat = max(1, min(12, (int) $request->input('limit_categories', 8)));
+        $limSel = max(1, min(12, (int) $request->input('limit_sellers', 8)));
+        $limPrd = max(1, min(15, (int) $request->input('limit_products', 10)));
+
+        $countVisible = fn ($q2) => $q2->whereIn('status', $visible);
+
+        $categories = CatalogCategory::query()
+            ->where('is_active', true)
+            ->where('name', 'like', $likeWild)
+            ->whereHas('systemProducts', fn ($sq) => $sq->whereIn('status', $visible))
+            ->withCount(['systemProducts as products_count' => $countVisible])
+            ->orderByDesc('products_count')
+            ->orderBy('name')
+            ->limit($limCat)
+            ->get(['id', 'name', 'slug'])
+            ->map(fn (CatalogCategory $c) => [
+                'id' => (int) $c->id,
+                'name' => (string) $c->name,
+                'slug' => (string) $c->slug,
+                'products_count' => (int) ($c->products_count ?? 0),
+            ])
+            ->values()
+            ->all();
+
+        $sellers = Seller::query()
+            ->where('status', 'active')
+            ->where('name', 'like', $likeWild)
+            ->whereHas('systemProducts', fn ($sq) => $sq->whereIn('status', $visible))
+            ->withCount(['systemProducts as visible_products_count' => fn ($sq) => $sq->whereIn('status', $visible)])
+            ->orderByDesc('visible_products_count')
+            ->orderBy('name')
+            ->limit($limSel)
+            ->get(['id', 'name', 'slug', 'avatar_url'])
+            ->map(fn (Seller $s) => [
+                'id' => (int) $s->id,
+                'name' => (string) $s->name,
+                'slug' => (string) $s->slug,
+                'avatar_url' => $s->avatar_url,
+                'products_count' => (int) ($s->visible_products_count ?? 0),
+            ])
+            ->values()
+            ->all();
+
+        $products = SystemProduct::query()
+            ->whereIn('status', $visible)
+            ->where(function ($query) use ($likeWild) {
+                $query->where('name', 'like', $likeWild)
+                    ->orWhere('description', 'like', $likeWild);
+            })
+            ->with(['category:id,name,slug', 'seller:id,name,slug', 'photos' => $this->enabledPhotos(), 'productSources.donorProduct:id,external_id'])
+            ->orderByDesc('list_position')
+            ->orderByDesc('id')
+            ->limit($limPrd)
+            ->get()
+            ->map(fn (SystemProduct $sp) => $this->storefrontCard($sp))
+            ->values()
+            ->all();
+
+        return [
+            'categories' => $categories,
+            'sellers' => $sellers,
+            'products' => $products,
+        ];
+    }
+
+    private function escapeLike(string $value): string
+    {
+        return str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $value);
     }
 
     public function featured(Request $request): JsonResponse
