@@ -103,11 +103,18 @@ class PublicSystemCatalogService
 
         $visible = $this->visibleStatuses();
 
+        $mps = app(MarketplaceSettingsService::class);
+        $commissionMap = $mps->commissionPercentForCategoryIds($categoryIds);
+        $defaultCommissionPct = max(0.0, $mps->commissionForCategory(null));
+        $productsTable = (new SystemProduct)->getTable();
+        $sfPriceExpr = $this->sqlStorefrontPriceRubExpression($productsTable, $commissionMap, $defaultCommissionPct);
+
         $priceAgg = SystemProduct::query()
             ->whereIn('status', $visible)
             ->whereIn('category_id', $categoryIds)
             ->whereNotNull('price_raw')
-            ->selectRaw('MIN(price_raw) AS min_price, MAX(price_raw) AS max_price')
+            ->where('price_raw', '>', 0)
+            ->selectRaw("MIN({$sfPriceExpr}) AS min_price, MAX({$sfPriceExpr}) AS max_price")
             ->first();
 
         $priceRangeMin = $priceAgg && $priceAgg->min_price !== null ? (int) $priceAgg->min_price : 0;
@@ -123,25 +130,50 @@ class PublicSystemCatalogService
                 'productSources.donorProduct:id,external_id',
             ]);
 
+        $facetNormalizer = app(CatalogAttributeNormalizer::class);
+
         foreach ($request->all() as $key => $value) {
             if (in_array($key, ['page', 'per_page', 'sort_by', 'sort_dir', 'price_from', 'price_to', 'search'], true)) {
+                continue;
+            }
+            if (! in_array($key, $this->allowedCatalogFacetKeys(), true)) {
                 continue;
             }
             if ($value === '' || $value === null) {
                 continue;
             }
-            $query->whereHas('attributes', function ($q) use ($key, $value) {
-                $q->where(function ($inner) use ($key) {
-                    $inner->where('attribute_key', $key)->orWhere('attr_name', $key);
-                })->where('attr_value', $value);
+            if (is_array($value)) {
+                $flat = collect($value)
+                    ->map(fn ($x) => is_string($x) ? trim($x) : trim((string) $x))
+                    ->filter(fn ($x) => $x !== '')
+                    ->unique()
+                    ->values()
+                    ->all();
+                if ($flat === []) {
+                    continue;
+                }
+                $query->whereHas('attributes', function ($q) use ($key, $flat, $facetNormalizer) {
+                    $this->constrainFacetAttributeQuery($q, $key, $facetNormalizer);
+                    $q->whereIn('attr_value', $flat);
+                });
+
+                continue;
+            }
+            $trimmed = trim((string) $value);
+            if ($trimmed === '') {
+                continue;
+            }
+            $query->whereHas('attributes', function ($q) use ($key, $trimmed, $facetNormalizer) {
+                $this->constrainFacetAttributeQuery($q, $key, $facetNormalizer);
+                $q->where('attr_value', $trimmed);
             });
         }
 
         if ($priceFrom = $request->input('price_from')) {
-            $query->where('price_raw', '>=', (int) $priceFrom);
+            $query->whereRaw("( {$sfPriceExpr} ) >= ?", [(int) $priceFrom]);
         }
         if ($priceTo = $request->input('price_to')) {
-            $query->where('price_raw', '<=', (int) $priceTo);
+            $query->whereRaw("( {$sfPriceExpr} ) <= ?", [(int) $priceTo]);
         }
         if ($search = $request->input('search')) {
             $query->where(function ($q) use ($search) {
@@ -150,20 +182,25 @@ class PublicSystemCatalogService
             });
         }
 
-        $sortMap = [
-            'price_asc' => ['price_raw', 'asc'],
-            'price_desc' => ['price_raw', 'desc'],
-            'new' => ['created_at', 'desc'],
-            /** Фронт: popular → sort_by=list_position&sort_dir=desc */
-            'list_position' => ['list_position', 'desc'],
-            'position' => ['list_position', 'asc'],
-        ];
-        [$sortCol, $sortDir] = $sortMap[$request->input('sort_by', 'new')] ?? ['created_at', 'desc'];
-        $incomingDir = strtolower((string) $request->input('sort_dir', ''));
-        if (in_array($incomingDir, ['asc', 'desc'], true) && in_array($sortCol, ['list_position', 'created_at'], true)) {
-            $sortDir = $incomingDir;
+        $sortKey = $request->input('sort_by', 'new');
+        if ($sortKey === 'price_asc') {
+            $query->orderByRaw("{$sfPriceExpr} asc")->orderBy($productsTable.'.id', 'desc');
+        } elseif ($sortKey === 'price_desc') {
+            $query->orderByRaw("{$sfPriceExpr} desc")->orderBy($productsTable.'.id', 'desc');
+        } else {
+            $sortMap = [
+                'new' => ['created_at', 'desc'],
+                /** Фронт: popular → sort_by=list_position&sort_dir=desc */
+                'list_position' => ['list_position', 'desc'],
+                'position' => ['list_position', 'asc'],
+            ];
+            [$sortCol, $sortDir] = $sortMap[$sortKey] ?? ['created_at', 'desc'];
+            $incomingDir = strtolower((string) $request->input('sort_dir', ''));
+            if (in_array($incomingDir, ['asc', 'desc'], true) && in_array($sortCol, ['list_position', 'created_at'], true)) {
+                $sortDir = $incomingDir;
+            }
+            $query->orderBy($productsTable.'.'.$sortCol, $sortDir)->orderBy($productsTable.'.id', 'desc');
         }
-        $query->orderBy($sortCol, $sortDir)->orderBy('id', 'desc');
 
         $perPage = min((int) $request->input('per_page', 24), 60);
         $page = $query->paginate($perPage);
@@ -718,6 +755,32 @@ class PublicSystemCatalogService
     }
 
     /**
+     * Ключи характеристик для фасетов каталога (совпадает с {@see buildSystemFiltersForCategoryIds}).
+     *
+     * @return list<string>
+     */
+    private function allowedCatalogFacetKeys(): array
+    {
+        return ['size', 'color', 'material', 'country_of_origin', 'brand'];
+    }
+
+    /**
+     * Строка атрибута относится к фасету с каноническим ключом $facetKey (ключ и/или русское display name).
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\SystemProductAttribute>|\Illuminate\Database\Query\Builder  $q
+     */
+    private function constrainFacetAttributeQuery($q, string $facetKey, CatalogAttributeNormalizer $normalizer): void
+    {
+        $dn = $normalizer->displayName($facetKey);
+        $q->where(function ($inner) use ($facetKey, $dn) {
+            $inner->where('attribute_key', $facetKey)->orWhere('attr_name', $facetKey);
+            if ($dn !== '' && strcasecmp($dn, $facetKey) !== 0) {
+                $inner->orWhere('attr_name', $dn);
+            }
+        });
+    }
+
+    /**
      * @return list<array<string, mixed>>
      */
     private function buildSystemFiltersForCategoryIds(array $catalogCategoryIds): array
@@ -731,12 +794,13 @@ class PublicSystemCatalogService
         }
 
         $normalizer = app(CatalogAttributeNormalizer::class);
-        $keys = ['size', 'color', 'material', 'country_of_origin', 'brand'];
+        $keys = $this->allowedCatalogFacetKeys();
         $out = [];
         foreach ($keys as $key) {
-            $values = SystemProductAttribute::query()
-                ->whereIn('system_product_id', $ids)
-                ->where('attribute_key', $key)
+            $attrQuery = SystemProductAttribute::query()
+                ->whereIn('system_product_id', $ids);
+            $this->constrainFacetAttributeQuery($attrQuery, $key, $normalizer);
+            $values = $attrQuery
                 ->distinct()
                 ->pluck('attr_value')
                 ->filter(fn ($v) => is_string($v) && trim($v) !== '')
@@ -926,7 +990,26 @@ class PublicSystemCatalogService
     private function parsePrice(?string $price): int
     {
         $digits = preg_replace('/[^\d]/', '', (string) $price);
+
         return $digits ? (int) $digits : 0;
+    }
+
+    /**
+     * SQL цена витрины по `price_raw` и `category_id` (совпадает с {@see MarketplaceSettingsService::priceWithCommission}).
+     *
+     * @param  array<int, float>  $commissionPercentByCategoryId
+     */
+    private function sqlStorefrontPriceRubExpression(string $productsTableName, array $commissionPercentByCategoryId, float $elsePercent): string
+    {
+        $caseBody = '';
+        foreach ($commissionPercentByCategoryId as $cid => $pct) {
+            $caseBody .= sprintf(' WHEN %d THEN %.6F', (int) $cid, max(0.0, (float) $pct));
+        }
+        $elseLit = sprintf('%.6F', max(0.0, $elsePercent));
+
+        return 'CASE WHEN COALESCE('.$productsTableName.'.price_raw, 0) <= 0 THEN 0 ELSE '
+            .'GREATEST(1, ROUND(COALESCE('.$productsTableName.'.price_raw, 0) * (100 + CASE '.$productsTableName.'.category_id'.$caseBody.' ELSE '.$elseLit.' END) / 100 / 10) * 10)'
+            .' END';
     }
 
     /**

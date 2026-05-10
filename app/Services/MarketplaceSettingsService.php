@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Events\MarketplaceSettingsUpdated;
 use App\Models\CatalogCategory;
 use App\Models\Setting;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Http;
 
 class MarketplaceSettingsService
@@ -179,6 +180,59 @@ class MarketplaceSettingsService
         }
 
         return $default;
+    }
+
+    /**
+     * Процент наценки по каждому id категории; один загрузчик дерева (для фильтров/агрегации SQL).
+     *
+     * @param  list<int>|array<int,int>  $categoryIds
+     * @return array<int, float> category_id => percent
+     */
+    public function commissionPercentForCategoryIds(array $categoryIds): array
+    {
+        $settings = $this->all();
+        $default = (float) ($settings['default_commission_percent'] ?? 0);
+        $mapPayload = $settings['category_commissions'] ?? [];
+
+        $ids = collect($categoryIds)
+            ->map(fn ($x) => (int) $x)
+            ->filter(fn ($x) => $x > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($ids === []) {
+            return [];
+        }
+
+        /** @var Collection<int, CatalogCategory> $categoriesById */
+        $categoriesById = CatalogCategory::query()->get(['id', 'parent_id'])->keyBy('id');
+
+        $out = [];
+        foreach ($ids as $cid) {
+            $out[$cid] = max(0.0, $this->resolveCommissionPercentWalkingParentsFromMap($cid, $default, $mapPayload, $categoriesById));
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  array<string,mixed>  $mapPayload
+     * @param  Collection<int, CatalogCategory>  $categoriesById
+     */
+    private function resolveCommissionPercentWalkingParentsFromMap(int $startCategoryId, float $default, array $mapPayload, Collection $categoriesById): float
+    {
+        $category = $categoriesById->get($startCategoryId);
+        while ($category !== null) {
+            $key = (string) $category->id;
+            if (array_key_exists($key, $mapPayload) && $mapPayload[$key] !== null && $mapPayload[$key] !== '') {
+                return max(0.0, (float) $mapPayload[$key]);
+            }
+            $pid = $category->parent_id;
+            $category = $pid !== null ? $categoriesById->get((int) $pid) : null;
+        }
+
+        return max(0.0, $default);
     }
 
     public function priceWithCommission(int|float|null $price, ?int $categoryId): int
