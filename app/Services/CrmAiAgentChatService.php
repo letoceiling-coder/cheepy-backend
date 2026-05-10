@@ -33,7 +33,7 @@ TXT;
 
         return match ($provider) {
             'site_al' => $this->chatSiteAl($validated),
-            'openai', 'xai', 'ollama' => $this->chatOpenAiCompatible($provider, $validated),
+            'openai', 'xai', 'ollama', 'openrouter' => $this->chatOpenAiCompatible($provider, $validated),
             'anthropic' => $this->chatAnthropic($validated),
             'gemini' => $this->chatGemini($validated),
             default => $this->chatSiteAl($validated),
@@ -142,7 +142,7 @@ TXT;
             return response()->json([
                 'message' => $provider === 'ollama'
                     ? 'Для Ollama не сохранён Token в CRM → Интеграции → ИИ.'
-                    : 'Для '.$provider.' не сохранён API-ключ в CRM → Интеграции → ИИ.',
+                    : 'Для '.$provider.' не сохранён API ключ в CRM → Интеграции → ИИ.',
             ], 503);
         }
 
@@ -155,10 +155,22 @@ TXT;
             'Accept' => 'application/json',
         ];
         $headers['Authorization'] = 'Bearer '.$apiKey;
+        if ($provider === 'openrouter') {
+            $ref = rtrim((string) config('app.url', ''), '/');
+            if ($ref !== '') {
+                $headers['Referer'] = $ref;
+            }
+            $title = trim((string) config('app.name', ''));
+            if ($title !== '') {
+                $headers['X-Title'] = $title;
+            }
+        }
 
-        $timeout = $provider === 'ollama'
-            ? (int) config('services.ollama.timeout', 120)
-            : (int) config('services.site_al.timeout', 120);
+        $timeout = match ($provider) {
+            'ollama' => (int) config('services.ollama.timeout', 120),
+            'openrouter' => (int) config('services.openrouter.timeout', 120),
+            default => (int) config('services.site_al.timeout', 120),
+        };
 
         try {
             $response = Http::timeout($timeout)
@@ -383,6 +395,7 @@ TXT;
             'openai' => rtrim((string) config('services.openai.base_url', 'https://api.openai.com/v1'), '/'),
             'xai' => 'https://api.x.ai/v1',
             'ollama' => rtrim((string) config('services.ollama.base_url', 'http://127.0.0.1:11434'), '/'),
+            'openrouter' => rtrim((string) config('services.openrouter.base_url', 'https://openrouter.ai/api/v1'), '/'),
             default => 'https://api.openai.com/v1',
         };
     }

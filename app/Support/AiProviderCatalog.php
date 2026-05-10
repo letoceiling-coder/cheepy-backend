@@ -11,7 +11,7 @@ namespace App\Support;
  * - Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
  * - Gemini: https://ai.google.dev/gemini-api/docs/models
  * - xAI: https://docs.x.ai/docs/models
- * - Replicate: https://replicate.com/docs — формат owner/name
+ * - OpenRouter (OpenAI-совместимый): https://openrouter.ai/docs
  */
 final class AiProviderCatalog
 {
@@ -108,6 +108,14 @@ final class AiProviderCatalog
                 ['id' => 'llama3:latest', 'label' => 'Llama 3'],
             ],
         ],
+        'openrouter' => [
+            'title' => 'OpenRouter',
+            'description' => 'Единый OpenAI-compatible API ко множеству моделей. Ключ с openrouter.ai; полный список — кнопка «Обновить» (суффикс :free или нулевая текстовая цена → пометка «бесплатно»).',
+            'docs_url' => 'https://openrouter.ai/docs/quickstart',
+            'models' => [
+                ['id' => 'meta-llama/llama-3.3-8b-instruct:free', 'label' => 'Llama 3.3 8B Instruct (free)'],
+            ],
+        ],
     ];
 
     /**
@@ -152,8 +160,8 @@ final class AiProviderCatalog
         if ($modelId === '') {
             return false;
         }
-        if ($name === 'ollama') {
-            return preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.:\\/-]{0,127}$/', $modelId) === 1;
+        if ($name === 'ollama' || $name === 'openrouter') {
+            return preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.:\\/-]{0,191}$/', $modelId) === 1;
         }
         foreach (self::models($name) as $m) {
             if ($m['id'] === $modelId) {

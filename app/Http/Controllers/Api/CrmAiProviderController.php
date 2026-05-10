@@ -167,6 +167,147 @@ class CrmAiProviderController extends Controller
         ]);
     }
 
+    /**
+     * GET /api/v1/crm/ai-providers/openrouter/models
+     * Полный каталог моделей OpenRouter + признак «бесплатная» (:free или нулевая текстовая цена).
+     */
+    public function openrouterModels(): JsonResponse
+    {
+        $row = AiProviderIntegration::where('name', 'openrouter')->firstOrFail();
+        $config = $row->config ?? [];
+
+        $base = trim((string) ($config['base_url'] ?? ''));
+        if ($base === '') {
+            $base = rtrim((string) config('services.openrouter.base_url', ''), '/');
+        } else {
+            $base = rtrim($base, '/');
+        }
+
+        $token = trim((string) ($config['api_key'] ?? ''));
+        if ($token === '') {
+            return response()->json([
+                'message' => 'Сохраните API-ключ OpenRouter в CRM → Интеграции → ИИ, затем обновите список моделей.',
+            ], 422);
+        }
+
+        $url = $base.'/models';
+
+        try {
+            $referer = rtrim((string) config('app.url', ''), '/');
+            $headers = [
+                'Authorization' => 'Bearer '.$token,
+                'Accept' => 'application/json',
+            ];
+            if ($referer !== '') {
+                $headers['Referer'] = $referer;
+            }
+            $title = trim((string) config('app.name', ''));
+            if ($title !== '') {
+                $headers['X-Title'] = $title;
+            }
+
+            $response = Http::timeout(120)
+                ->withHeaders($headers)
+                ->get($url);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'message' => 'Не удалось запросить OpenRouter ('.$url.'): '.$e->getMessage(),
+            ], 502);
+        }
+
+        $body = $response->json();
+
+        if (! $response->successful()) {
+            $msg = is_array($body) && isset($body['error']['message']) && is_string($body['error']['message'])
+                ? $body['error']['message']
+                : ('OpenRouter вернул HTTP '.$response->status());
+
+            return response()->json([
+                'message' => $msg,
+                'details' => $body ?? $response->body(),
+            ], $response->status() >= 400 && $response->status() < 600 ? $response->status() : 502);
+        }
+
+        $out = [];
+        if (! is_array($body) || ! isset($body['data']) || ! is_array($body['data'])) {
+            return response()->json(['data' => [], 'endpoint' => $url]);
+        }
+
+        foreach ($body['data'] as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+            $id = isset($item['id']) ? trim((string) $item['id']) : '';
+            if ($id === '') {
+                continue;
+            }
+
+            $nameRaw = isset($item['name']) ? trim((string) $item['name']) : '';
+            $baseLabel = $nameRaw !== '' ? $nameRaw.' ('.$id.')' : $id;
+
+            $free = $this->openRouterRowLooksFree($id, $item['pricing'] ?? null);
+
+            $out[] = [
+                'id' => $id,
+                'label' => $baseLabel.($free ? ' — бесплатно' : ''),
+                'free' => $free,
+            ];
+        }
+
+        usort($out, static function (array $a, array $b): int {
+            $af = ! empty($a['free']);
+            $bf = ! empty($b['free']);
+            if ($af !== $bf) {
+                return $af ? -1 : 1;
+            }
+
+            return strnatcasecmp((string) $a['label'], (string) $b['label']);
+        });
+
+        return response()->json([
+            'data' => array_values($out),
+            'endpoint' => $url,
+        ]);
+    }
+
+    /** @param mixed $pricing OpenRouter: prompt / completion — строки с ценой за токен или 0. */
+    private function openRouterRowLooksFree(string $id, $pricing): bool
+    {
+        if ($id !== '' && str_ends_with($id, ':free')) {
+            return true;
+        }
+
+        if (! is_array($pricing)) {
+            return false;
+        }
+
+        $toNum = static function ($v): ?float {
+            if ($v === null) {
+                return null;
+            }
+            if (is_numeric($v)) {
+                return (float) $v;
+            }
+            if (is_string($v)) {
+                $t = trim($v);
+                if ($t !== '' && is_numeric($t)) {
+                    return (float) $t;
+                }
+            }
+
+            return null;
+        };
+
+        $p = $toNum($pricing['prompt'] ?? null);
+        $c = $toNum($pricing['completion'] ?? null);
+
+        if ($p === null && $c === null) {
+            return false;
+        }
+
+        return (($p ?? 0) <= 0.0) && (($c ?? 0) <= 0.0);
+    }
+
     public function update(Request $request, string $name): JsonResponse
     {
         if (! in_array($name, AiProviderCatalog::providerKeys(), true)) {

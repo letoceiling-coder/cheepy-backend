@@ -666,6 +666,7 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
         Route::post('ai-providers/active-agent', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'setActiveAgent']);
         Route::get('ai-providers/token-usage', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'tokenUsage']);
         Route::get('ai-providers/ollama/models', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'ollamaModels']);
+        Route::get('ai-providers/openrouter/models', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'openrouterModels']);
         Route::patch('ai-providers/{name}', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'update']);
         Route::post('ai-providers/{name}/clear-key', [\App\Http\Controllers\Api\CrmAiProviderController::class, 'clearKey']);
     });

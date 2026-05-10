@@ -59,6 +59,12 @@ return [
         'timeout' => (int) env('OLLAMA_TIMEOUT', 120),
     ],
 
+    /** OpenRouter (OpenAI-compatible /v1/chat/completions); ключ задаётся в CRM → Интеграции → ИИ. */
+    'openrouter' => [
+        'base_url' => rtrim(env('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'), '/'),
+        'timeout' => (int) env('OPENROUTER_TIMEOUT', 120),
+    ],
+
     /**
      * Базовый URL витрины после OAuth (редирект с callback API).
      * Пример: https://siteaacess.store
