@@ -64,6 +64,12 @@ class CrmBonusRuleController extends Controller
                     'enabled_for_seller_campaigns' => false,
                 ],
             ],
+            'referral_reward' => [
+                'title' => 'Реферальное вознаграждение',
+                'config' => [
+                    'referrer_reward_rub' => 500,
+                ],
+            ],
         ];
 
         foreach ($defaults as $key => $row) {

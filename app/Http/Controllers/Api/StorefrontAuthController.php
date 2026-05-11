@@ -8,6 +8,7 @@ use App\Services\Marketing\TransactionalMarketingMail;
 use App\Services\MarketplaceSettingsService;
 use App\Support\PhoneNormalizer;
 use App\Support\SocialOauthCatalog;
+use App\Services\Storefront\StorefrontReferralAttributionService;
 use App\Support\StorefrontSmsGate;
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
@@ -147,6 +148,7 @@ class StorefrontAuthController extends Controller
             'password' => ['required', 'string', 'min:8', 'max:255'],
             'phone' => ['nullable', 'string', 'max:32'],
             'account_type' => ['nullable', 'string', 'in:customer,seller'],
+            'referral_code' => ['nullable', 'string', 'max:48'],
         ];
 
         if ($smsOn) {
@@ -180,6 +182,14 @@ class StorefrontAuthController extends Controller
             'seller_requested_at' => $accountType === 'seller' ? now() : null,
             'password' => $data['password'],
         ]);
+
+        try {
+            app(StorefrontReferralAttributionService::class)->tryRegisterAttribution(
+                $user,
+                isset($data['referral_code']) ? (string) $data['referral_code'] : null
+            );
+        } catch (\Throwable) {
+        }
 
         try {
             app(TransactionalMarketingMail::class)->trySendTrigger('registration', $user);

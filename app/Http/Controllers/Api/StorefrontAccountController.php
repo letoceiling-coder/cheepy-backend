@@ -18,6 +18,7 @@ use App\Models\UserPickupPoint;
 use App\Services\Storefront\CdekOfficeService;
 use App\Services\Storefront\CustomerWalletService;
 use App\Services\Storefront\ReferralService;
+use App\Services\Storefront\StorefrontReferralAttributionService;
 use App\Services\Storefront\YandexRuAddressEnrichmentService;
 use App\Services\Storefront\YandexSuggestService;
 use App\Support\SocialOauthCatalog;
@@ -355,6 +356,27 @@ class StorefrontAccountController extends Controller
             'link' => $referrals->linkFor($this->user($request)),
             'stats' => $this->referralStats($code->id),
         ]);
+    }
+
+    /**
+     * Привязка реф-кода после OAuth или поздней регистрации (свежий аккаунт, см. сервис).
+     */
+    public function attachReferral(Request $request, StorefrontReferralAttributionService $attribution): JsonResponse
+    {
+        $data = $request->validate([
+            'code' => ['required', 'string', 'max:48'],
+        ]);
+
+        $err = $attribution->tryAttachForNewishAccount(
+            $this->user($request),
+            $data['code'],
+        );
+
+        if ($err !== null) {
+            return response()->json(['error' => $err], 422);
+        }
+
+        return response()->json(['ok' => true]);
     }
 
     public function socialProviders(): JsonResponse

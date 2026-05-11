@@ -478,6 +478,10 @@ Route::prefix('v1/store/auth')->middleware('throttle:45,1')->group(function () {
     });
 });
 
+Route::prefix('v1/store')->middleware('throttle:60,1')->group(function () {
+    Route::post('referral/track', [\App\Http\Controllers\Api\StorefrontReferralTrackingController::class, 'track']);
+});
+
 Route::prefix('v1/store')->middleware(['throttle:120,1', 'customer.jwt'])->group(function () {
     Route::get('delivery-quote', [\App\Http\Controllers\Api\StorefrontDeliveryQuoteController::class, 'show']);
     Route::post('cart-delivery-quote', [\App\Http\Controllers\Api\StorefrontCartDeliveryQuoteController::class, 'store']);
@@ -506,6 +510,7 @@ Route::prefix('v1/store/account')->middleware(['throttle:120,1', 'customer.jwt']
     Route::get('wallet', [StorefrontAccountController::class, 'wallet']);
     Route::get('coupons', [StorefrontAccountController::class, 'coupons']);
     Route::get('referral', [StorefrontAccountController::class, 'referral']);
+    Route::post('referral/attach', [StorefrontAccountController::class, 'attachReferral']);
     Route::get('social-providers', [StorefrontAccountController::class, 'socialProviders']);
 });
 

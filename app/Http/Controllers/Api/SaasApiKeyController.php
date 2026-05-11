@@ -451,6 +451,15 @@ class SaasApiKeyController extends Controller
                 } catch (\Throwable $e) {
                     report($e);
                 }
+
+                try {
+                    $paidOrder = CustomerOrder::query()->whereKey((int) $payment->customer_order_id)->first();
+                    if ($paidOrder !== null) {
+                        app(\App\Services\Storefront\StorefrontReferralRewardService::class)->grantReferrerBonusAfterFirstPaidOrder($paidOrder);
+                    }
+                } catch (\Throwable $e) {
+                    report($e);
+                }
             } else {
                 $key = $payment->api_key_id !== null
                     ? SaasApiKey::query()->whereKey($payment->api_key_id)->lockForUpdate()->first()
