@@ -14,6 +14,8 @@ use App\Http\Controllers\Api\CrmMailIntegrationController;
 use App\Http\Controllers\Api\CrmMarketingCampaignController;
 use App\Http\Controllers\Api\CrmMarketingChannelController;
 use App\Http\Controllers\Api\CrmMarketingNewsController;
+use App\Http\Controllers\Api\CrmAdminUserController;
+use App\Http\Controllers\Api\CrmAdminRoleController;
 use App\Http\Controllers\Api\StorefrontCartSyncController;
 use App\Http\Controllers\Api\SocialOAuthPublicController;
 use App\Http\Controllers\Api\AiMetricsController;
@@ -523,6 +525,17 @@ Route::prefix('v1')->middleware(JwtMiddleware::class)->group(function () {
     // Dashboard (shared)
     Route::get('dashboard', [DashboardController::class, 'index']);
     // Route::get('admin/ai/metrics', [AiMetricsController::class, 'index']); // not deployed
+
+    // Admin panel JWT users (админ-панель `admin_users` + RBAC pivot `roles`)
+    Route::get('admin/users', [CrmAdminUserController::class, 'index']);
+    Route::post('admin/users', [CrmAdminUserController::class, 'store']);
+    Route::put('admin/users/{id}', [CrmAdminUserController::class, 'update'])->whereNumber('id');
+    Route::delete('admin/users/{id}', [CrmAdminUserController::class, 'destroy'])->whereNumber('id');
+
+    Route::get('admin/roles', [CrmAdminRoleController::class, 'index']);
+    Route::post('admin/roles', [CrmAdminRoleController::class, 'store']);
+    Route::put('admin/roles/{id}', [CrmAdminRoleController::class, 'update'])->whereNumber('id');
+    Route::delete('admin/roles/{id}', [CrmAdminRoleController::class, 'destroy'])->whereNumber('id');
 
     // -----------------------------------------------------------------
     // PARSER (Admin Panel) — /api/v1/admin/parser
