@@ -13,6 +13,7 @@ use App\Services\CatalogAttributeNormalizer;
 use App\Services\MarketplaceSettingsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 
 /**
  * Публичный каталог на слое system_products (опубликованные карточки CRM).
