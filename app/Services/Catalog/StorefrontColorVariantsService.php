@@ -54,7 +54,12 @@ class StorefrontColorVariantsService
             ->keyBy('id');
 
         $out = [];
+        $seenExt = [];
         foreach ($orderedExt as $ext) {
+            if (isset($seenExt[$ext])) {
+                continue;
+            }
+            $seenExt[$ext] = true;
             if (! isset($resolved[$ext])) {
                 continue;
             }
@@ -275,7 +280,7 @@ class StorefrontColorVariantsService
         $links = $donor->similarLinks ?? collect();
         foreach ($links->sortBy('sort_order') as $link) {
             $e = $this->normalizeExternalId((string) $link->related_external_id);
-            if ($e !== '' && isset($resolvedSet[$e])) {
+            if ($e !== '' && isset($resolvedSet[$e]) && ! in_array($e, $ordered, true)) {
                 $ordered[] = $e;
             }
         }
