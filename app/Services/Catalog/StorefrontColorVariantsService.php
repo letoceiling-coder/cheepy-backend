@@ -257,7 +257,11 @@ class StorefrontColorVariantsService
             }
         }
 
-        return array_keys($extSet);
+        // PHP приводит числовые строки к int-ключам массива — для API резолва нужны строки.
+        return array_values(array_unique(array_map(
+            fn ($k) => $this->normalizeExternalId((string) $k),
+            array_keys($extSet),
+        )));
     }
 
     /**

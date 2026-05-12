@@ -653,6 +653,11 @@ class PublicSystemCatalogService
         $visible = $this->visibleStatuses();
         $resolved = [];
 
+        $requestedIds = array_values(array_unique(array_filter(
+            array_map(static fn ($rid) => trim((string) $rid), $requestedIds),
+            static fn (string $s) => $s !== '',
+        )));
+
         $bySpPrefix = [];
         foreach ($requestedIds as $rid) {
             if (str_starts_with($rid, 'sp-')) {
@@ -681,7 +686,7 @@ class PublicSystemCatalogService
 
         $numericRids = [];
         foreach ($remaining as $rid) {
-            if (ctype_digit($rid)) {
+            if (ctype_digit((string) $rid)) {
                 $numericRids[$rid] = (int) $rid;
             }
         }
