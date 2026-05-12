@@ -155,7 +155,16 @@ class StorefrontAuthController extends Controller
             $rules['phone'][] = 'required';
         }
 
-        $data = $request->validate($rules);
+        $data = $request->validate($rules, [
+            'name.required' => 'Укажите имя.',
+            'email.required' => 'Укажите email.',
+            'email.email' => 'Укажите корректный email.',
+            'email.unique' => 'Этот email уже зарегистрирован.',
+            'password.required' => 'Укажите пароль.',
+            'password.min' => 'Пароль должен содержать не менее 8 символов.',
+            'phone.required' => 'Укажите номер телефона.',
+            'account_type.in' => 'Выберите тип аккаунта: покупатель или продавец.',
+        ]);
 
         $phoneNorm = PhoneNormalizer::normalize($data['phone'] ?? null);
 
