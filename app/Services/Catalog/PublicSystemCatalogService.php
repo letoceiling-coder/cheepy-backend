@@ -3,7 +3,6 @@
 namespace App\Services\Catalog;
 
 use App\Models\CatalogCategory;
-use App\Http\Resources\PublicSystemProductStorefrontCardResource;
 use App\Models\ProductSource;
 use App\Models\Seller;
 use App\Models\SellerReview;
@@ -13,6 +12,7 @@ use App\Services\CatalogAttributeNormalizer;
 use App\Services\MarketplaceSettingsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 
 /**
@@ -219,7 +219,7 @@ class PublicSystemCatalogService
                 'max' => $priceRangeMax,
             ],
             'filters' => $filters,
-            'data' => $page->getCollection()->map(fn (SystemProduct $sp) => $this->storefrontCard($sp))->values(),
+            'data' => $this->mapStorefrontCardsWithColorVariants($page->getCollection())->values(),
             'meta' => [
                 'total' => $page->total(),
                 'per_page' => $page->perPage(),
@@ -244,14 +244,14 @@ class PublicSystemCatalogService
 
         $sellerProducts = [];
         if ($sp->seller_id) {
-            $sellerProducts = SystemProduct::query()
+            $sellerRows = SystemProduct::query()
                 ->whereIn('status', $this->visibleStatuses())
                 ->where('seller_id', $sp->seller_id)
                 ->where('id', '!=', $sp->id)
                 ->with(['photos' => $this->enabledPhotos(), 'productSources.donorProduct:id,external_id'])
                 ->limit(12)
-                ->get()
-                ->map(fn (SystemProduct $p) => $this->storefrontCard($p));
+                ->get();
+            $sellerProducts = $this->mapStorefrontCardsWithColorVariants($sellerRows)->values();
         }
 
         return response()->json([
@@ -330,7 +330,7 @@ class PublicSystemCatalogService
                     'positive_percent' => $positivePercent,
                 ],
             ],
-            'data' => $products->getCollection()->map(fn (SystemProduct $sp) => $this->storefrontCard($sp))->values(),
+            'data' => $this->mapStorefrontCardsWithColorVariants($products->getCollection())->values(),
             'meta' => [
                 'total' => $products->total(),
                 'per_page' => $products->perPage(),
@@ -468,7 +468,7 @@ class PublicSystemCatalogService
 
         return response()->json([
             'query' => $q,
-            'data' => $products->getCollection()->map(fn (SystemProduct $sp) => $this->storefrontCard($sp))->values(),
+            'data' => $this->mapStorefrontCardsWithColorVariants($products->getCollection())->values(),
             'meta' => [
                 'total' => $products->total(),
                 'per_page' => $products->perPage(),
@@ -476,6 +476,22 @@ class PublicSystemCatalogService
                 'last_page' => $products->lastPage(),
             ],
         ]);
+    }
+
+    /**
+     * @param  Collection<int, SystemProduct>  $collection
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function mapStorefrontCardsWithColorVariants(Collection $collection): Collection
+    {
+        $summaries = app(StorefrontColorVariantsService::class)->batchCardSummaries($collection, $this);
+
+        return $collection->map(function (SystemProduct $sp) use ($summaries) {
+            $card = $this->storefrontCard($sp);
+            $extra = $summaries[(int) $sp->id] ?? ['color_variants_count' => 0, 'color_variant_thumbnails' => []];
+
+            return array_merge($card, $extra);
+        });
     }
 
     /**
@@ -539,15 +555,14 @@ class PublicSystemCatalogService
             ->orderByDesc('list_position')
             ->orderByDesc('id')
             ->limit($limPrd)
-            ->get()
-            ->map(fn (SystemProduct $sp) => $this->storefrontCard($sp))
-            ->values()
-            ->all();
+            ->get();
+
+        $productCards = $this->mapStorefrontCardsWithColorVariants($products)->values()->all();
 
         return [
             'categories' => $categories,
             'sellers' => $sellers,
-            'products' => $products,
+            'products' => $productCards,
         ];
     }
 
@@ -596,12 +611,17 @@ class PublicSystemCatalogService
         }
 
         $resolved = $this->resolveVisibleSystemProductsByRequestedIds($normalized);
+        $resolvedCollection = collect($resolved)->values();
+        $summaries = app(StorefrontColorVariantsService::class)->batchCardSummaries($resolvedCollection, $this);
         $byId = [];
         foreach ($normalized as $reqId) {
             if (! isset($resolved[$reqId])) {
                 continue;
             }
-            $byId[$reqId] = (new PublicSystemProductStorefrontCardResource($resolved[$reqId]))->toArray($request);
+            $sp = $resolved[$reqId];
+            $card = $this->storefrontCard($sp);
+            $extra = $summaries[(int) $sp->id] ?? ['color_variants_count' => 0, 'color_variant_thumbnails' => []];
+            $byId[$reqId] = array_merge($card, $extra);
         }
 
         return response()->json(['by_id' => empty($byId) ? (object) [] : $byId]);
@@ -628,7 +648,7 @@ class PublicSystemCatalogService
      * @param  list<string>  $requestedIds
      * @return array<string, SystemProduct>
      */
-    private function resolveVisibleSystemProductsByRequestedIds(array $requestedIds): array
+    public function resolveVisibleSystemProductsByRequestedIds(array $requestedIds): array
     {
         $visible = $this->visibleStatuses();
         $resolved = [];
@@ -935,6 +955,8 @@ class PublicSystemCatalogService
     {
         $urls = $sp->photos->map(fn ($p) => $p->url)->filter()->values()->all();
         $price = $this->priceForStorefront($sp);
+        [$color, $sizeRange] = $this->coreColorAndSizeFromSystemAttributes($sp);
+        $colorVariants = app(StorefrontColorVariantsService::class)->detailColorVariants($sp, $this);
 
         return [
             'id' => $this->publicId($sp),
@@ -950,13 +972,15 @@ class PublicSystemCatalogService
                 'is_primary' => (bool) $ph->is_primary,
             ]),
             'characteristics' => [],
-            'color' => null,
-            'size_range' => null,
+            'color' => $color,
+            'size_range' => $sizeRange,
+            'color_variants' => $colorVariants,
             'source_link' => null,
             'source_url' => $sp->productSources->first()?->donorProduct?->source_url,
             'attributes' => $sp->attributes->map(fn ($a) => [
                 'name' => $a->attr_name,
                 'value' => $a->attr_value,
+                'type' => (string) ($a->attr_type ?? 'text'),
             ]),
             'category' => $sp->category?->only(['id', 'name', 'slug']),
             'seller' => $sp->seller ? [
@@ -975,6 +999,31 @@ class PublicSystemCatalogService
                 'logo_url' => $sp->brand->logo_url,
             ] : null,
         ];
+    }
+
+    /**
+     * @return array{0: string|null, 1: string|null} color, size_range string
+     */
+    private function coreColorAndSizeFromSystemAttributes(SystemProduct $sp): array
+    {
+        $color = null;
+        $size = null;
+        foreach ($sp->attributes ?? [] as $a) {
+            $key = mb_strtolower((string) ($a->attribute_key ?? ''));
+            $name = mb_strtolower((string) ($a->attr_name ?? ''));
+            $val = trim((string) ($a->attr_value ?? ''));
+            if ($val === '') {
+                continue;
+            }
+            if ($color === null && ($key === 'color' || str_contains($name, 'цвет') || str_contains($name, 'color'))) {
+                $color = $val;
+            }
+            if ($size === null && ($key === 'size' || str_contains($name, 'размер') || str_contains($name, 'size'))) {
+                $size = $val;
+            }
+        }
+
+        return [$color, $size];
     }
 
     /**
