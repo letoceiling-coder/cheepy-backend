@@ -204,35 +204,60 @@ class StorefrontColorVariantsService
     }
 
     /**
+     * Все внешние id вариантов по графу product_similar (как на доноре — одна связная группа).
+     * Иначе у карточки, которую парсили без блока .similar_products в этом прогоне, оставались бы только «обратные» ссылки,
+     * без полного круга цветов.
+     *
      * @return list<string>
      */
     private function collectRelatedExternalIds(Product $donor): array
     {
         $own = $this->normalizeExternalId((string) $donor->external_id);
-        if ($own === '') {
+        if ($own === '' || ! $donor->id) {
             return [];
         }
-        $out = [$own => true];
-        foreach ($donor->similarLinks ?? collect() as $link) {
-            $ext = $this->normalizeExternalId((string) $link->related_external_id);
-            if ($ext !== '' && $ext !== $own) {
-                $out[$ext] = true;
-            }
-        }
-        $inverse = ProductSimilar::query()
-            ->where('related_external_id', $own)
-            ->pluck('product_id');
-        if ($inverse->isNotEmpty()) {
-            $peers = Product::query()->whereIn('id', $inverse)->pluck('external_id');
-            foreach ($peers as $e) {
-                $ext = $this->normalizeExternalId((string) $e);
-                if ($ext !== '') {
-                    $out[$ext] = true;
+
+        $extSet = [$own => true];
+        $pidSet = [(int) $donor->id => true];
+
+        for ($iter = 0; $iter < 16; $iter++) {
+            $beforeExt = count($extSet);
+            $beforePid = count($pidSet);
+
+            $pids = array_keys($pidSet);
+            $outgoing = ProductSimilar::query()
+                ->whereIn('product_id', $pids)
+                ->pluck('related_external_id');
+            foreach ($outgoing as $raw) {
+                $e = $this->normalizeExternalId((string) $raw);
+                if ($e !== '') {
+                    $extSet[$e] = true;
                 }
+            }
+
+            $exts = array_keys($extSet);
+            $incomingPids = ProductSimilar::query()
+                ->whereIn('related_external_id', $exts)
+                ->pluck('product_id');
+            foreach ($incomingPids as $pid) {
+                if ($pid) {
+                    $pidSet[(int) $pid] = true;
+                }
+            }
+
+            $mappedPids = Product::query()
+                ->whereIn('external_id', $exts)
+                ->pluck('id');
+            foreach ($mappedPids as $pid) {
+                $pidSet[(int) $pid] = true;
+            }
+
+            if (count($extSet) === $beforeExt && count($pidSet) === $beforePid) {
+                break;
             }
         }
 
-        return array_keys($out);
+        return array_keys($extSet);
     }
 
     /**
