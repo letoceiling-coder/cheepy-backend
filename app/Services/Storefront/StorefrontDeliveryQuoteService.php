@@ -57,8 +57,6 @@ class StorefrontDeliveryQuoteService
 
         /** @var list<array<string, mixed>> $quotes */
         $quotes = [];
-        /** @var list<string> $warnings */
-        $warnings = [];
 
         $cdekRes = $this->cdek->quoteDoorToDoor(
             $fromCdek,
@@ -101,14 +99,14 @@ class StorefrontDeliveryQuoteService
         }
 
         $yd = $this->yandexDelivery->quote($address, $weightG, $l, $w, $h, $declaredKop);
-        $this->appendYandexQuotes($quotes, $warnings, $yd, $user->getAuthIdentifier(), $product->id ?? null, 'storefront_delivery_quote');
+        $this->appendYandexQuotes($quotes, $yd, $user->getAuthIdentifier(), $product->id ?? null, 'storefront_delivery_quote');
 
         return [
             'needs_address' => false,
             'address' => $this->addressSlice($address),
             'shipment' => $shipment,
             'quotes' => $quotes,
-            'warnings' => $warnings,
+            'warnings' => [],
         ];
     }
 
@@ -188,8 +186,6 @@ class StorefrontDeliveryQuoteService
 
         /** @var list<array<string, mixed>> $quotes */
         $quotes = [];
-        /** @var list<string> $warnings */
-        $warnings = [];
 
         $cdekRes = $this->cdek->quoteDoorToDoor(
             $fromCdek,
@@ -227,7 +223,7 @@ class StorefrontDeliveryQuoteService
         }
 
         $yd = $this->yandexDelivery->quote($address, $weightG, $l, $w, $h, $declaredKop);
-        $this->appendYandexQuotes($quotes, $warnings, $yd, $user->getAuthIdentifier(), null, 'storefront_cart_delivery_quote');
+        $this->appendYandexQuotes($quotes, $yd, $user->getAuthIdentifier(), null, 'storefront_cart_delivery_quote');
 
         $picked = $this->pickCheapestQuote($quotes);
 
@@ -239,7 +235,7 @@ class StorefrontDeliveryQuoteService
             'quotes' => $quotes,
             'cheapest_quote' => $picked['cheapest_quote'],
             'cheapest_price_rub' => $picked['cheapest_price_rub'],
-            'warnings' => $warnings,
+            'warnings' => [],
         ];
     }
 
@@ -346,13 +342,13 @@ class StorefrontDeliveryQuoteService
     }
 
     /**
+     * Успешные тарифы Яндекса — в quotes; ошибки только в лог (не показываем покупателю).
+     *
      * @param  list<array<string, mixed>>  $quotes
-     * @param  list<string>  $warnings
      * @param  array{ok?: bool, message?: string, quote?: array<string, mixed>, quotes?: list<array<string, mixed>>}  $yd
      */
     private function appendYandexQuotes(
         array &$quotes,
-        array &$warnings,
         array $yd,
         int|string $userId,
         ?int $systemProductId,
@@ -378,7 +374,6 @@ class StorefrontDeliveryQuoteService
             'system_product_id' => $systemProductId,
             'message' => $yd['message'],
         ]);
-        $warnings[] = (string) $yd['message'];
     }
 
     private function enrichPresentation(array $quote, string $serviceLabel): array
