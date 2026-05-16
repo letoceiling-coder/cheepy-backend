@@ -34,9 +34,14 @@ class CrmDeliveryIntegrationController extends Controller
 
     public function index(): JsonResponse
     {
+        $this->ensureDeliveryIntegrationRowsExist();
+
+        $names = self::DELIVERY_NAMES;
+        $fieldOrder = implode("','", $names);
+
         $rows = DeliveryIntegration::query()
-            ->whereIn('name', ['cdek', 'yandex_maps', 'nova_poshta', 'dhl', 'russian_post'])
-            ->orderByRaw("FIELD(name, 'cdek', 'yandex_maps', 'nova_poshta', 'dhl', 'russian_post')")
+            ->whereIn('name', $names)
+            ->orderByRaw("FIELD(name, '{$fieldOrder}')")
             ->get();
 
         $data = $rows->map(fn (DeliveryIntegration $r) => [
@@ -478,6 +483,43 @@ class CrmDeliveryIntegrationController extends Controller
             ],
             default => [],
         };
+    }
+
+    /** Гарантирует строки в БД для всех служб из {@see DELIVERY_NAMES} (без перезаписи config). */
+    private function ensureDeliveryIntegrationRowsExist(): void
+    {
+        foreach (self::DELIVERY_NAMES as $name) {
+            DeliveryIntegration::firstOrCreate(
+                ['name' => $name],
+                [
+                    'is_active' => false,
+                    'config' => match ($name) {
+                        'cdek' => ['environment' => CdekOAuthService::ENV_PRODUCTION],
+                        'yandex_delivery' => [
+                            'environment' => YandexDeliveryConfig::ENV_PRODUCTION,
+                            'api_modes' => 'express,other_day',
+                            'oauth_token' => '',
+                            'platform_station_id' => '',
+                            'other_day_tariff' => 'time_interval',
+                            'sender_city' => 'Москва',
+                            'sender_address' => 'МКАД, 14-й км, 4',
+                            'sender_lat' => '55.6534',
+                            'sender_lng' => '37.7201',
+                        ],
+                        'russian_post' => [
+                            'sender_postal_index' => '',
+                            'access_token' => '',
+                            'auth_login' => '',
+                            'auth_password' => '',
+                            'mail_type' => 'POSTAL_PARCEL',
+                            'mail_category' => 'ORDINARY',
+                            'payment_method' => 'CASHLESS',
+                        ],
+                        default => [],
+                    },
+                ]
+            );
+        }
     }
 
     /**
