@@ -90,7 +90,8 @@ class YandexDeliveryTariffService
 
       $env = $this->resolveEnvironment($config);
       $modes = $this->enabledModes($config);
-      $parts = [];
+      $okParts = [];
+      $failParts = [];
 
       if (in_array('express', $modes, true)) {
           $sender = $this->resolveSenderPoint($config);
@@ -112,33 +113,42 @@ class YandexDeliveryTariffService
 
           $res = $this->postExpressCalculate($token, $env, $body);
           if ($res['ok']) {
-              $parts[] = 'Экспресс: OK (offers/calculate, '.($res['offers_count'] ?? 0).' вариантов)';
+              $okParts[] = 'Экспресс: OK (offers/calculate, '.($res['offers_count'] ?? 0).' вариантов)';
           } else {
-              return ['success' => false, 'message' => 'Экспресс: '.$res['message']];
+              $failParts[] = 'Экспресс: '.($res['message'] ?? 'ошибка');
           }
       }
 
       if (in_array('other_day', $modes, true)) {
           $stationId = trim((string) ($config['platform_station_id'] ?? ''));
           if ($stationId === '') {
-              return ['success' => false, 'message' => 'Для «Доставки по России» укажите platform_station_id склада отгрузки.'];
-          }
-
-          $pricing = $this->quoteOtherDay($config, $token, null, 500, 20, 15, 10, null, 'Москва, Тверская улица, 1');
-          if (! empty($pricing['ok'])) {
-              $parts[] = 'Доставка по России: OK (pricing-calculator)';
+              $failParts[] = 'Доставка по России: укажите platform_station_id склада (выдаёт менеджер Яндекс Доставки)';
           } else {
-              return ['success' => false, 'message' => 'Доставка по России: '.($pricing['message'] ?? 'ошибка')];
+              $pricing = $this->quoteOtherDay($config, $token, null, 500, 20, 15, 10, null, 'Москва, Тверская улица, 1');
+              if (! empty($pricing['ok'])) {
+                  $okParts[] = 'Доставка по России: OK (pricing-calculator)';
+              } else {
+                  $raw = (string) ($pricing['message'] ?? 'ошибка');
+                  $failParts[] = str_starts_with($raw, 'Доставка по России') ? $raw : 'Доставка по России: '.$raw;
+              }
           }
       }
 
-      if ($parts === []) {
-          return ['success' => false, 'message' => 'Выберите хотя бы один режим API (экспресс или доставка по России).'];
+      if ($okParts === [] && $failParts === []) {
+          return ['success' => false, 'message' => 'Выберите хотя бы один режим API (express и/или other_day в поле «Режимы API»).'];
       }
 
-      $integration->update(['last_successful_auth_at' => now()]);
+      if ($okParts !== []) {
+          $integration->update(['last_successful_auth_at' => now()]);
+          $message = implode('. ', $okParts).'.';
+          if ($failParts !== []) {
+              $message .= ' Не прошло: '.implode('; ', $failParts).'.';
+          }
 
-      return ['success' => true, 'message' => implode('. ', $parts).'.'];
+          return ['success' => true, 'message' => $message];
+      }
+
+      return ['success' => false, 'message' => implode('; ', $failParts)];
   }
 
   /**
@@ -273,7 +283,7 @@ class YandexDeliveryTariffService
       }
 
       if (! $res->successful()) {
-          return ['ok' => false, 'message' => $this->formatHttpError('Доставка по России', $res->status(), $res->json())];
+          return ['ok' => false, 'message' => $this->formatHttpError($res->status(), $res->json(), 'pricing-calculator')];
       }
 
       $j = $res->json();
@@ -425,7 +435,7 @@ class YandexDeliveryTariffService
       }
 
       if (! $res->successful()) {
-          return ['ok' => false, 'message' => $this->formatHttpError('Экспресс', $res->status(), $res->json())];
+          return ['ok' => false, 'message' => $this->formatHttpError($res->status(), $res->json(), 'offers/calculate')];
       }
 
       $j = $res->json();
@@ -491,17 +501,60 @@ class YandexDeliveryTariffService
   /**
    * @param  mixed  $json
    */
-  private function formatHttpError(string $label, int $status, $json): string
+  private function formatHttpError(int $status, $json, ?string $endpoint = null): string
   {
-      $msg = $label.' HTTP '.$status;
-      if (is_array($json)) {
-          $detail = $json['message'] ?? $json['error'] ?? $json['code'] ?? null;
-          if (is_string($detail) && $detail !== '') {
-              $msg .= ': '.$detail;
-          }
+      $detail = $this->extractApiErrorText($json);
+      $msg = 'HTTP '.$status.($detail !== '' ? ': '.$detail : '');
+
+      if ($status === 401) {
+          $msg .= '. Токен недействителен или отозван — получите новый в личном кабинете (Интеграции → Получить токен).';
+      } elseif ($status === 403) {
+          $msg .= '. Доступ запрещён: токен принят, но у договора нет прав на этот метод. '
+              .'Экспресс (offers/calculate) требует подключённого продукта «Экспресс-доставка» в ЛК dostavka.yandex.ru. '
+              .'«Доставка по России» — отдельный договор и platform_station_id склада. '
+              .'Если экспресс не подключён, в «Режимы API» укажите только other_day.';
+      } elseif ($status >= 500) {
+          $msg .= '. Временная ошибка на стороне Яндекс Доставки — повторите позже.';
+      }
+
+      if ($endpoint !== null && $endpoint !== '') {
+          $msg = $endpoint.' — '.$msg;
       }
 
       return $msg;
+  }
+
+  /**
+   * @param  mixed  $json
+   */
+  private function extractApiErrorText($json): string
+  {
+      if (! is_array($json)) {
+          return '';
+      }
+
+      foreach (['message', 'error', 'description', 'code'] as $key) {
+          $v = $json[$key] ?? null;
+          if (is_string($v) && trim($v) !== '') {
+              return trim($v);
+          }
+      }
+
+      $errors = $json['errors'] ?? null;
+      if (is_array($errors)) {
+          $first = $errors[0] ?? null;
+          if (is_string($first)) {
+              return trim($first);
+          }
+          if (is_array($first)) {
+              $m = $first['message'] ?? $first['text'] ?? null;
+              if (is_string($m) && trim($m) !== '') {
+                  return trim($m);
+              }
+          }
+      }
+
+      return '';
   }
 
   /**
