@@ -224,6 +224,10 @@ class CrmDeliveryIntegrationController extends Controller
             ]);
         }
 
+        if ($name === 'yandex_delivery') {
+            return response()->json(app(YandexDeliveryTariffService::class)->testConnection());
+        }
+
         if ($name !== 'cdek') {
             return response()->json([
                 'success' => false,
