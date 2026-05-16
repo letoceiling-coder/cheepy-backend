@@ -22,7 +22,7 @@ class YandexDeliveryTariffService
     }
 
   /**
-   * @return array{ok: bool, message?: string, quote?: array<string, mixed>}
+   * @return array{ok: bool, message?: string, quote?: array<string, mixed>, quotes?: list<array<string, mixed>>}
    */
   public function quote(
       UserAddress $destination,
@@ -44,12 +44,16 @@ class YandexDeliveryTariffService
       }
 
       $modes = $this->enabledModes($config);
+      /** @var list<array<string, mixed>> $quotes */
       $quotes = [];
+      $failures = [];
 
       if (in_array('express', $modes, true)) {
           $express = $this->quoteExpress($config, $token, $destination, $weightG, $lengthCm, $widthCm, $heightCm);
           if (! empty($express['ok']) && isset($express['quote'])) {
               $quotes[] = $express['quote'];
+          } elseif (($express['message'] ?? '') !== '') {
+              $failures[] = (string) $express['message'];
           }
       }
 
@@ -57,16 +61,20 @@ class YandexDeliveryTariffService
           $other = $this->quoteOtherDay($config, $token, $destination, $weightG, $lengthCm, $widthCm, $heightCm, $declaredValueKopeks);
           if (! empty($other['ok']) && isset($other['quote'])) {
               $quotes[] = $other['quote'];
+          } elseif (($other['message'] ?? '') !== '') {
+              $failures[] = (string) $other['message'];
           }
       }
 
       if ($quotes === []) {
-          return ['ok' => false, 'message' => 'Яндекс Доставка: не удалось рассчитать тариф для адреса'];
+          $message = $this->summarizeQuoteFailures($failures, $config);
+
+          return ['ok' => false, 'message' => $message];
       }
 
       usort($quotes, fn ($a, $b) => ((float) ($a['price_rub'] ?? 0)) <=> ((float) ($b['price_rub'] ?? 0)));
 
-      return ['ok' => true, 'quote' => $quotes[0]];
+      return ['ok' => true, 'quotes' => $quotes, 'quote' => $quotes[0]];
   }
 
   /**
@@ -241,7 +249,7 @@ class YandexDeliveryTariffService
 
       $address = $overrideAddress;
       if ($address === null && $destination !== null) {
-          $address = trim($destination->city.', '.$destination->line1);
+          $address = $this->formatOtherDayDestinationAddress($destination);
       }
       if ($address === null || trim($address) === '') {
           return ['ok' => false, 'message' => 'Нужен адрес получателя'];
@@ -283,7 +291,7 @@ class YandexDeliveryTariffService
       }
 
       if (! $res->successful()) {
-          return ['ok' => false, 'message' => $this->formatHttpError($res->status(), $res->json(), 'pricing-calculator')];
+          return ['ok' => false, 'message' => $this->formatOtherDayHttpError($res->status(), $res->json())];
       }
 
       $j = $res->json();
@@ -347,6 +355,94 @@ class YandexDeliveryTariffService
   /**
    * @return array{id: int, coordinates: list<float>, fullname: string, country: string, city: string}|null
    */
+  private function formatOtherDayDestinationAddress(UserAddress $destination): string
+  {
+      $payload = is_array($destination->provider_payload) ? $destination->provider_payload : [];
+      $formatted = trim((string) ($payload['yandex_geocode']['formatted'] ?? ''));
+
+      $enriched = $this->geocoder->enrichValidatedAddress([
+          'country' => 'Россия',
+          'region' => $destination->region,
+          'city' => (string) $destination->city,
+          'line1' => (string) $destination->line1,
+          'line2' => $destination->line2,
+          'postal_code' => $destination->postal_code,
+          'lat' => $destination->lat,
+          'lng' => $destination->lng,
+          'provider_payload' => $payload,
+      ]);
+
+      $enrichedFormatted = trim((string) ($enriched['provider_payload']['yandex_geocode']['formatted'] ?? ''));
+      if (mb_strlen($enrichedFormatted) > mb_strlen($formatted)) {
+          $formatted = $enrichedFormatted;
+      }
+
+      $line1 = trim((string) $destination->line1);
+      if ($formatted !== '' && $line1 !== '') {
+          if (mb_stripos($formatted, $line1) === false) {
+              $formatted .= ', '.$line1;
+          }
+
+          return $formatted;
+      }
+
+      $postal = preg_replace('/\D/', '', (string) ($enriched['postal_code'] ?? $destination->postal_code ?? ''));
+      $region = trim((string) ($enriched['region'] ?? $destination->region ?? ''));
+      $city = trim((string) ($enriched['city'] ?? $destination->city ?? ''));
+      $parts = [];
+      if (strlen($postal) === 6) {
+          $parts[] = $postal;
+      }
+      if ($region !== '') {
+          $parts[] = $region;
+      }
+      if ($city !== '') {
+          $parts[] = $city;
+      }
+      if ($line1 !== '') {
+          $parts[] = $line1;
+      }
+
+      return implode(', ', $parts);
+  }
+
+  /**
+   * @param  list<string>  $failures
+   * @param  array<string, mixed>  $config
+   */
+  private function summarizeQuoteFailures(array $failures, array $config): string
+  {
+      $joined = implode('; ', array_values(array_filter($failures)));
+      foreach ($failures as $f) {
+          if (str_contains($f, 'no_delivery_options') || str_contains($f, 'No delivery options')) {
+              if ($this->resolveEnvironment($config) === YandexDeliveryConfig::ENV_TEST) {
+                  return 'Яндекс Доставка: на этот адрес нет тарифа в тестовом контуре (склад из документации — только Москва). Для регионов подключите боевой platform_station_id склада Садовода.';
+              }
+
+              return 'Яндекс Доставка: доставка на указанный адрес недоступна для склада отправления.';
+          }
+      }
+
+      if ($joined !== '') {
+          return 'Яндекс Доставка: '.$joined;
+      }
+
+      return 'Яндекс Доставка: не удалось рассчитать тариф для адреса';
+  }
+
+  /**
+   * @param  mixed  $json
+   */
+  private function formatOtherDayHttpError(int $status, $json): string
+  {
+      $code = is_array($json) ? trim((string) ($json['code'] ?? '')) : '';
+      if ($status === 400 && $code === 'no_delivery_options') {
+          return 'no_delivery_options: нет вариантов доставки на этот адрес';
+      }
+
+      return $this->formatHttpError($status, $json, 'pricing-calculator');
+  }
+
   private function resolveDestinationPoint(UserAddress $destination): ?array
   {
       $lng = $destination->lng !== null ? (float) $destination->lng : null;
