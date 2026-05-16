@@ -20,6 +20,7 @@ class StorefrontDeliveryQuoteService
     public function __construct(
         private readonly CdekTariffService $cdek,
         private readonly RussianPostTariffService $pochta,
+        private readonly YandexDeliveryTariffService $yandexDelivery,
     ) {
     }
 
@@ -95,6 +96,17 @@ class StorefrontDeliveryQuoteService
                     'message' => $rp['message'],
                 ]);
             }
+        }
+
+        $yd = $this->yandexDelivery->quote($address, $weightG, $l, $w, $h, $declaredKop);
+        if (! empty($yd['ok']) && isset($yd['quote']) && is_array($yd['quote'])) {
+            $quotes[] = $this->enrichPresentation($yd['quote'], 'Яндекс Доставка');
+        } elseif (($yd['message'] ?? '') !== '') {
+            Log::debug('storefront_delivery_quote:yandex_delivery_failed', [
+                'user_id' => $user->getAuthIdentifier(),
+                'system_product_id' => $product->id ?? null,
+                'message' => $yd['message'],
+            ]);
         }
 
         return [
@@ -216,6 +228,16 @@ class StorefrontDeliveryQuoteService
                     'message' => $rp['message'],
                 ]);
             }
+        }
+
+        $yd = $this->yandexDelivery->quote($address, $weightG, $l, $w, $h, $declaredKop);
+        if (! empty($yd['ok']) && isset($yd['quote']) && is_array($yd['quote'])) {
+            $quotes[] = $this->enrichPresentation($yd['quote'], 'Яндекс Доставка');
+        } elseif (($yd['message'] ?? '') !== '') {
+            Log::debug('storefront_cart_delivery_quote:yandex_delivery_failed', [
+                'user_id' => $user->getAuthIdentifier(),
+                'message' => $yd['message'],
+            ]);
         }
 
         $picked = $this->pickCheapestQuote($quotes);

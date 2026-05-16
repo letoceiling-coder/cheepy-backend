@@ -22,4 +22,12 @@ return [
         'width_cm' => max(1, (int) env('DELIVERY_DEFAULT_WIDTH_CM', 15)),
         'height_cm' => max(1, (int) env('DELIVERY_DEFAULT_HEIGHT_CM', 10)),
     ],
+
+    /** Точка отправления по умолчанию для Яндекс Доставки (экспресс offers/calculate). */
+    'yandex_delivery' => [
+        'default_sender' => [
+            'lat' => (float) env('YANDEX_DELIVERY_SENDER_LAT', 55.6534),
+            'lng' => (float) env('YANDEX_DELIVERY_SENDER_LNG', 37.7201),
+        ],
+    ],
 ];

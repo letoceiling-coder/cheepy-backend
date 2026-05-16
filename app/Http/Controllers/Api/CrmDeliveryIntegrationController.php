@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\DeliveryIntegration;
 use App\Services\Delivery\CdekOAuthService;
+use App\Services\Delivery\YandexDeliveryConfig;
+use App\Services\Storefront\YandexDeliveryTariffService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
@@ -13,10 +15,21 @@ class CrmDeliveryIntegrationController extends Controller
 {
     private const TITLE_MAP = [
         'cdek' => 'СДЭК',
+        'yandex_delivery' => 'Яндекс Доставка',
         'yandex_maps' => 'Яндекс Карты',
         'nova_poshta' => 'Новая Почта',
         'dhl' => 'DHL',
         'russian_post' => 'Почта России',
+    ];
+
+    /** @var list<string> */
+    private const DELIVERY_NAMES = [
+        'cdek',
+        'yandex_delivery',
+        'yandex_maps',
+        'nova_poshta',
+        'dhl',
+        'russian_post',
     ];
 
     public function index(): JsonResponse
@@ -239,6 +252,7 @@ class CrmDeliveryIntegrationController extends Controller
 
         return match ($r->name) {
             'cdek' => ! empty($c['client_id']) && ! empty($c['client_secret']),
+            'yandex_delivery' => ! empty(trim((string) ($c['oauth_token'] ?? ''))),
             'yandex_maps' => ! empty($c['api_key']),
             'russian_post' => ! empty(trim((string) ($c['access_token'] ?? ''))),
             default => false,
@@ -249,7 +263,7 @@ class CrmDeliveryIntegrationController extends Controller
     {
         $out = [];
         foreach ($config as $k => $v) {
-            if (in_array($k, ['client_secret', 'api_key', 'access_token', 'auth_password'], true) && is_string($v) && strlen($v) > 0) {
+            if (in_array($k, ['client_secret', 'api_key', 'access_token', 'auth_password', 'oauth_token'], true) && is_string($v) && strlen($v) > 0) {
                 $out[$k] = '***';
             } else {
                 $out[$k] = $v;
@@ -283,6 +297,21 @@ class CrmDeliveryIntegrationController extends Controller
             ];
         }
 
+        if ($name === 'yandex_delivery') {
+            $env = ($config['environment'] ?? YandexDeliveryConfig::ENV_PRODUCTION) === YandexDeliveryConfig::ENV_TEST
+                ? YandexDeliveryConfig::ENV_TEST
+                : YandexDeliveryConfig::ENV_PRODUCTION;
+
+            return [
+                'express_api_base' => YandexDeliveryConfig::expressApiBase($env),
+                'express_offers_calculate' => YandexDeliveryConfig::expressApiBase($env).YandexDeliveryConfig::EXPRESS_OFFERS_CALCULATE_PATH,
+                'other_day_api_base' => YandexDeliveryConfig::otherDayApiBase($env),
+                'other_day_pricing' => YandexDeliveryConfig::otherDayApiBase($env).YandexDeliveryConfig::OTHER_DAY_PRICING_PATH,
+                'cabinet_url' => 'https://dostavka.yandex.ru/auth/',
+                'docs_url' => YandexDeliveryConfig::docsUrl(),
+            ];
+        }
+
         if ($name !== 'cdek') {
             return [];
         }
@@ -306,6 +335,7 @@ class CrmDeliveryIntegrationController extends Controller
     {
         return match ($name) {
             'cdek' => 'https://apidoc.cdek.ru/',
+            'yandex_delivery' => YandexDeliveryConfig::docsUrl(),
             'yandex_maps' => 'https://yandex.ru/dev/maps/geosuggest/',
             'russian_post' => 'https://otpravka.pochta.ru/specification',
             default => null,
@@ -341,6 +371,67 @@ class CrmDeliveryIntegrationController extends Controller
                 ['key' => 'default_tariff_code', 'label' => 'Тариф по умолчанию (код тарифа СДЭК для типовых отправлений)', 'type' => 'text'],
                 ['key' => 'default_shipment_point', 'label' => 'Код пункта приёма / ПВЗ отправителя (если отгрузка с ПВЗ)', 'type' => 'text'],
                 ['key' => 'additional_order_types', 'label' => 'Доп. тип заказа / пометки для ЛК (необязательно, текст)', 'type' => 'textarea'],
+            ],
+            'yandex_delivery' => [
+                [
+                    'key' => 'environment',
+                    'label' => 'Контур API',
+                    'type' => 'select',
+                    'required' => true,
+                    'options' => [
+                        ['value' => YandexDeliveryConfig::ENV_PRODUCTION, 'label' => 'Боевой'],
+                        ['value' => YandexDeliveryConfig::ENV_TEST, 'label' => 'Тестовый (доставка по России — b2b.taxi.tst.yandex.net)'],
+                    ],
+                ],
+                [
+                    'key' => 'api_modes',
+                    'label' => 'Режимы API (через запятую: express, other_day)',
+                    'type' => 'text',
+                    'required' => true,
+                ],
+                [
+                    'key' => 'oauth_token',
+                    'label' => 'OAuth-токен (Authorization: Bearer …, ЛК → Интеграции)',
+                    'type' => 'password',
+                    'required' => true,
+                ],
+                [
+                    'key' => 'platform_station_id',
+                    'label' => 'platform_station_id склада (доставка по России, выдаёт менеджер)',
+                    'type' => 'text',
+                ],
+                [
+                    'key' => 'other_day_tariff',
+                    'label' => 'Тариф «по России»: time_interval или self_pickup',
+                    'type' => 'select',
+                    'options' => [
+                        ['value' => 'time_interval', 'label' => 'До двери (time_interval)'],
+                        ['value' => 'self_pickup', 'label' => 'До ПВЗ (self_pickup)'],
+                    ],
+                ],
+                ['key' => 'sender_fullname', 'label' => 'Отправитель: полный адрес', 'type' => 'text'],
+                ['key' => 'sender_city', 'label' => 'Отправитель: город', 'type' => 'text'],
+                ['key' => 'sender_address', 'label' => 'Отправитель: улица, дом', 'type' => 'text'],
+                ['key' => 'sender_lat', 'label' => 'Отправитель: широта', 'type' => 'text'],
+                ['key' => 'sender_lng', 'label' => 'Отправитель: долгота', 'type' => 'text'],
+                [
+                    'key' => 'express_offers_calculate',
+                    'label' => 'Экспресс: POST offers/calculate (только чтение)',
+                    'type' => 'text',
+                    'readonly' => true,
+                ],
+                [
+                    'key' => 'other_day_pricing',
+                    'label' => 'По России: POST pricing-calculator (только чтение)',
+                    'type' => 'text',
+                    'readonly' => true,
+                ],
+                [
+                    'key' => 'cabinet_url',
+                    'label' => 'Личный кабинет Яндекс Доставки (только чтение)',
+                    'type' => 'text',
+                    'readonly' => true,
+                ],
             ],
             'yandex_maps' => [
                 [
