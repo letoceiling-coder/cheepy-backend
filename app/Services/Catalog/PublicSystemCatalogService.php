@@ -93,8 +93,17 @@ class PublicSystemCatalogService
         return response()->json(['data' => $ordered]);
     }
 
+    /** @var array<string, string> Устаревшие slug из навигации витрины → slug в catalog_categories. */
+    private const CATEGORY_SLUG_ALIASES = [
+        'zhenskoe' => 'jenskaya-odezhda',
+        'muzhskoe' => 'muzhskaya-odezhda',
+        'odezhda' => 'jenskaya-odezhda',
+    ];
+
     public function categoryProducts(Request $request, string $slug): JsonResponse
     {
+        $slug = self::CATEGORY_SLUG_ALIASES[strtolower($slug)] ?? $slug;
+
         $category = CatalogCategory::query()
             ->where('slug', $slug)
             ->where('is_active', true)
