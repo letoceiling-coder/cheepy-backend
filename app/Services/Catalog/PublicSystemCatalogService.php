@@ -1012,7 +1012,7 @@ class PublicSystemCatalogService
     private function coreColorAndSizeFromSystemAttributes(SystemProduct $sp): array
     {
         $color = null;
-        $size = null;
+        $sizes = [];
         foreach ($sp->attributes ?? [] as $a) {
             $key = mb_strtolower((string) ($a->attribute_key ?? ''));
             $name = mb_strtolower((string) ($a->attr_name ?? ''));
@@ -1023,10 +1023,13 @@ class PublicSystemCatalogService
             if ($color === null && ($key === 'color' || str_contains($name, 'цвет') || str_contains($name, 'color'))) {
                 $color = $val;
             }
-            if ($size === null && ($key === 'size' || str_contains($name, 'размер') || str_contains($name, 'size'))) {
-                $size = $val;
+            if ($key === 'size' || str_contains($name, 'размер') || str_contains($name, 'size')) {
+                $sizes[] = $val;
             }
         }
+
+        $sizes = array_values(array_unique($sizes));
+        $size = $sizes !== [] ? implode(' ', $sizes) : null;
 
         return [$color, $size];
     }
