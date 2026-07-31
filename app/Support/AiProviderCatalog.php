@@ -85,8 +85,8 @@ final class AiProviderCatalog
         // Ollama behind our HTTPS tunnel: OpenAI-compatible POST …/v1/chat/completions.
         'ollama' => [
             'title' => 'Ollama',
-            'description' => 'OpenAI-compatible Ollama через reverse SSH tunnel; укажите Base URL https://ollama.siteaacess.store/v1, Bearer Token и модель из /v1/models.',
-            'docs_url' => 'https://ollama.siteaacess.store/v1/models',
+            'description' => 'OpenAI-compatible Ollama через reverse SSH tunnel; укажите Base URL https://ollama.cheepy.shop/v1, Bearer Token и модель из /v1/models.',
+            'docs_url' => 'https://ollama.cheepy.shop/v1/models',
             'models' => [
                 ['id' => 'qwen2.5-coder:7b', 'label' => 'Qwen 2.5 Coder 7B'],
                 ['id' => 'qwen2.5vl:7b', 'label' => 'Qwen 2.5 VL 7B'],

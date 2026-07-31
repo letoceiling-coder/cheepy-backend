@@ -55,7 +55,7 @@ return [
 
     /** Ollama (OpenAI-compatible /v1/chat/completions). Base URL and Bearer token can be stored in CRM integrations. */
     'ollama' => [
-        'base_url' => rtrim(env('OLLAMA_BASE_URL', 'https://ollama.siteaacess.store/v1'), '/'),
+        'base_url' => rtrim(env('OLLAMA_BASE_URL', 'https://ollama.cheepy.shop/v1'), '/'),
         'timeout' => (int) env('OLLAMA_TIMEOUT', 120),
     ],
 
@@ -72,7 +72,7 @@ return [
 
     /**
      * Базовый URL витрины после OAuth (редирект с callback API).
-     * Пример: https://siteaacess.store
+     * Пример: https://cheepy.shop
      */
     'social_oauth' => [
         'frontend_base_url' => \App\Support\FrontendUrl::tryBase(

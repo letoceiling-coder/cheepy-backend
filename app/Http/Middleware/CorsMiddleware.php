@@ -10,7 +10,7 @@ class CorsMiddleware
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $allowedOrigins = config('cors.allowed_origins', ['https://siteaacess.store', 'http://cheepy.loc']);
+        $allowedOrigins = config('cors.allowed_origins', ['https://cheepy.shop', 'https://www.cheepy.shop', 'http://cheepy.loc']);
         $allowedOrigins = array_values(array_unique(array_map('trim', $allowedOrigins)));
 
         $origin = $request->header('Origin');

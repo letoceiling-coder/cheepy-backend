@@ -7,9 +7,9 @@ return [
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
-        'https://siteaacess.store',
-        'https://www.siteaacess.store',
-        'http://cheepy.loc'
+        'https://cheepy.shop',
+        'https://www.cheepy.shop',
+        'http://cheepy.loc',
     ],
 
     'allowed_origins_patterns' => [],
