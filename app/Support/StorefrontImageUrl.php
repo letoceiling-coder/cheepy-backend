@@ -30,7 +30,7 @@ class StorefrontImageUrl
         }
 
         if (self::isAllowedExternal($url)) {
-            return rtrim((string) config('app.url'), '/').'/api/v1/public/image?url='.rawurlencode($url);
+            return $url;
         }
 
         return $url;
