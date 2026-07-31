@@ -38,12 +38,33 @@ class PublicImageController extends Controller
                 'Accept-Language' => 'ru-RU,ru;q=0.9',
                 'Referer' => 'https://sadovodbaza.ru/',
             ],
+            'curl' => self::curlResolveOptions($url),
         ]);
 
         try {
             $response = $client->get($url);
         } catch (GuzzleException) {
-            abort(502, 'Upstream image fetch failed');
+            $fallback = str_replace('_img_big.', '_img_medium.', $url);
+            if ($fallback !== $url) {
+                try {
+                    $client = new Client([
+                        'timeout' => 25,
+                        'verify' => false,
+                        'headers' => [
+                            'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept' => 'image/*,*/*;q=0.8',
+                            'Referer' => 'https://sadovodbaza.ru/',
+                        ],
+                        'curl' => self::curlResolveOptions($fallback),
+                    ]);
+                    $response = $client->get($fallback);
+                    $url = $fallback;
+                } catch (GuzzleException) {
+                    abort(502, 'Upstream image fetch failed');
+                }
+            } else {
+                abort(502, 'Upstream image fetch failed');
+            }
         }
 
         $body = (string) $response->getBody();
@@ -55,6 +76,21 @@ class PublicImageController extends Controller
         Cache::put($cacheKey, ['body' => $body, 'mime' => $mime], now()->addHours(24));
 
         return response($body, 200, $this->responseHeaders($mime));
+    }
+
+    /** @return array<int, mixed> */
+    private static function curlResolveOptions(string $url): array
+    {
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+        $resolve = match ($host) {
+            'sadovodbaza.ru', 'www.sadovodbaza.ru' => [
+                'sadovodbaza.ru:443:95.213.188.163',
+                'www.sadovodbaza.ru:443:95.213.188.163',
+            ],
+            default => [],
+        };
+
+        return $resolve !== [] ? [CURLOPT_RESOLVE => $resolve] : [];
     }
 
     /** @return array<string, string> */
