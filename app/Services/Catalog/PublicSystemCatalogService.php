@@ -8,6 +8,7 @@ use App\Models\Seller;
 use App\Models\SellerReview;
 use App\Models\SystemProduct;
 use App\Models\SystemProductAttribute;
+use App\Support\StorefrontImageUrl;
 use App\Services\CatalogAttributeNormalizer;
 use App\Services\MarketplaceSettingsService;
 use Illuminate\Http\JsonResponse;
@@ -949,7 +950,7 @@ class PublicSystemCatalogService
     {
         $sp->loadMissing(['photos', 'category:id,name,slug', 'seller:id,name,slug', 'productSources.donorProduct:id,external_id']);
         $urls = $sp->photos->pluck('url')->filter()->values()->all();
-        $thumb = $urls[0] ?? null;
+        $thumb = isset($urls[0]) ? StorefrontImageUrl::publicUrl((string) $urls[0]) : null;
         $price = $this->priceForStorefront($sp);
 
         return [
@@ -967,7 +968,7 @@ class PublicSystemCatalogService
 
     private function formatSystemProductFull(SystemProduct $sp): array
     {
-        $urls = $sp->photos->map(fn ($p) => $p->url)->filter()->values()->all();
+        $urls = $sp->photos->map(fn ($p) => StorefrontImageUrl::publicUrl((string) $p->url))->filter()->values()->all();
         $price = $this->priceForStorefront($sp);
         [$color, $sizeRange] = $this->coreColorAndSizeFromSystemAttributes($sp);
         $colorVariants = app(StorefrontColorVariantsService::class)->detailColorVariants($sp, $this);

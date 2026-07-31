@@ -2,6 +2,7 @@
 
 namespace App\Services\Catalog;
 
+use App\Support\StorefrontImageUrl;
 use App\Models\Product;
 use App\Models\ProductSimilar;
 use App\Models\ProductSource;
@@ -321,7 +322,7 @@ class StorefrontColorVariantsService
     {
         $first = $sp->photos->first();
 
-        return $first && $first->url ? (string) $first->url : null;
+        return $first && $first->url ? StorefrontImageUrl::publicUrl((string) $first->url) : null;
     }
 
     /**
@@ -342,7 +343,7 @@ class StorefrontColorVariantsService
         foreach ($rows as $row) {
             $pid = (int) $row->system_product_id;
             if (! isset($map[$pid]) && $row->url) {
-                $map[$pid] = (string) $row->url;
+                $map[$pid] = StorefrontImageUrl::publicUrl((string) $row->url) ?? (string) $row->url;
             }
         }
 

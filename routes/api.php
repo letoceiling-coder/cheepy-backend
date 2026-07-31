@@ -32,6 +32,7 @@ use App\Http\Controllers\Api\MarketplaceSettingsController;
 use App\Http\Controllers\Api\ParserController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\PublicController;
+use App\Http\Controllers\Api\PublicImageController;
 use App\Http\Controllers\Api\PublicConstructorLayoutController;
 use App\Http\Controllers\Api\PublicSellerReviewController;
 use App\Http\Controllers\Api\CrmMediaController;
@@ -429,6 +430,7 @@ Route::prefix('v1/public')->group(function () {
     Route::get('layout/global', [PublicConstructorLayoutController::class, 'global']);
     Route::get('layout/page/{pageKey}', [PublicConstructorLayoutController::class, 'page']);
     Route::get('media/files/{id}/content', [CrmMediaController::class, 'publicStreamContent'])->whereNumber('id');
+    Route::get('image', [PublicImageController::class, 'show']);
     Route::get('categories/{slug}/products', [PublicController::class, 'categoryProducts']);
     Route::post('products/storefront-cards', [PublicController::class, 'productsStorefrontCards'])->middleware('throttle:120,1');
     Route::get('products/{externalId}', [PublicController::class, 'product']);
