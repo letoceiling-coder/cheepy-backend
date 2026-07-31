@@ -2,8 +2,8 @@
 
 return [
     'proxy_enabled' => (bool) env('PARSER_PROXY_ENABLED', true),
-    'proxy' => env('PARSER_PROXY_URL', 'http://89.169.39.244:3128'),
-    'proxy_url' => env('PARSER_PROXY_URL', 'http://89.169.39.244:3128'),
+    'proxy' => env('PARSER_PROXY_URL', 'http://85.198.64.93:3128'),
+    'proxy_url' => env('PARSER_PROXY_URL', 'http://85.198.64.93:3128'),
     'delay_min' => (int) env('PARSER_DELAY_MIN', 1500),
     'delay_max' => (int) env('PARSER_DELAY_MAX', 3000),
     'timeout' => (int) env('PARSER_TIMEOUT', 60),

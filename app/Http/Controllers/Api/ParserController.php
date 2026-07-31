@@ -713,9 +713,7 @@ class ParserController extends Controller
         $proxyOk = $proxyProbe['proxy_ok'];
         $parserState = ParserState::current();
         $proxyState = ParserProxyState::snapshot();
-        $donorOk = $this->checkDonorAvailability(
-            $parserState->isRunning() && $parserState->network_mode === 'proxy'
-        );
+        $donorOk = $this->probeDonorForDiagnostics($proxyOk);
 
         $errorsTodayProducts = (int) Product::where('status', 'error')
             ->whereDate('status_changed_at', today())
@@ -803,9 +801,7 @@ class ParserController extends Controller
         $proxyProbe = $this->checkProxyAvailability(true);
         $proxyOk = $proxyProbe['proxy_ok'];
         $proxyState = ParserProxyState::snapshot();
-        $donorOk = $this->checkDonorAvailability(
-            $parserState->isRunning() && $parserState->network_mode === 'proxy'
-        );
+        $donorOk = $this->probeDonorForDiagnostics($proxyOk);
 
         return response()->json([
             'parser_state' => $parserState->status,
@@ -1047,7 +1043,28 @@ class ParserController extends Controller
     }
 
     /**
-     * @return array{proxy_ok: bool, reason: string, skipped?: bool}
+     * @return list<string>
+     */
+    private function resolveProxyPool(): array
+    {
+        $settings = ParserSetting::current();
+        $pool = is_array($settings->proxy_urls) ? $settings->proxy_urls : [];
+        $pool = array_values(array_unique(array_filter(array_map(
+            static fn ($u) => trim((string) $u),
+            $pool
+        ))));
+        if ($pool === []) {
+            $single = trim((string) ($settings->proxy_url ?: config('parser.proxy_url') ?: config('parser.proxy', '')));
+            if ($single !== '') {
+                $pool = [$single];
+            }
+        }
+
+        return $pool;
+    }
+
+    /**
+     * @return array{proxy_ok: bool, reason: string, skipped?: bool, proxy_url?: string}
      */
     private function checkProxyAvailability(bool $forcePrecheckWhenStopped = false): array
     {
@@ -1059,68 +1076,105 @@ class ParserController extends Controller
             return ['proxy_ok' => false, 'reason' => 'parser_inactive_skipped', 'skipped' => true];
         }
 
-        $proxyEnabled = (bool) config('parser.proxy_enabled', true);
-        $proxyUrl = (string) (config('parser.proxy') ?: config('parser.proxy_url', ''));
-        if (!$proxyEnabled || $proxyUrl === '') {
+        $settings = ParserSetting::current();
+        $proxyEnabled = (bool) $settings->proxy_enabled || (bool) config('parser.proxy_enabled', true);
+        $pool = $this->resolveProxyPool();
+        if (!$proxyEnabled || $pool === []) {
             return ['proxy_ok' => false, 'reason' => 'proxy_disabled_or_missing'];
         }
 
         $lastReason = 'error';
-        for ($attempt = 1; $attempt <= 3; $attempt++) {
-            try {
-                Http::timeout(20)
-                    ->withOptions([
-                        'proxy' => $proxyUrl,
-                        'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
-                    ])
-                    ->get('https://sadovodbaza.ru')
-                    ->throw();
-                return ['proxy_ok' => true, 'reason' => 'ok'];
-            } catch (\Throwable $e) {
-                $lastReason = $this->classifyNetworkError($e);
-                if (str_contains($e->getMessage(), '429')) {
-                    ParserProxyState::mark429('https://sadovodbaza.ru');
+        foreach ($pool as $proxyUrl) {
+            for ($attempt = 1; $attempt <= 2; $attempt++) {
+                try {
+                    Http::timeout(20)
+                        ->withOptions([
+                            'proxy' => $proxyUrl,
+                            'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
+                        ])
+                        ->get('https://sadovodbaza.ru')
+                        ->throw();
+
+                    return ['proxy_ok' => true, 'reason' => 'ok', 'proxy_url' => $proxyUrl];
+                } catch (\Throwable $e) {
+                    $lastReason = $this->classifyNetworkError($e);
+                    if (str_contains($e->getMessage(), '429')) {
+                        ParserProxyState::mark429('https://sadovodbaza.ru');
+                    }
+                    if ($attempt < 2) {
+                        usleep(500000);
+                    }
                 }
-                if ($attempt < 3) {
-                    usleep($attempt * 500000);
-                    continue;
-                }
-                ParserLogger::write('network_error', 'Proxy precheck failed after retries', [
-                    'attempt' => $attempt,
-                    'error' => $e->getMessage(),
-                    'reason' => $lastReason,
-                    'url' => 'https://sadovodbaza.ru',
-                ]);
             }
         }
+
+        ParserLogger::write('network_error', 'Proxy precheck failed for all proxies', [
+            'reason' => $lastReason,
+            'url' => 'https://sadovodbaza.ru',
+            'proxy_count' => count($pool),
+        ]);
 
         return ['proxy_ok' => false, 'reason' => $lastReason];
     }
 
+    private function probeDonorForDiagnostics(bool $proxyOk): bool
+    {
+        if ($proxyOk && $this->checkDonorAvailability(true)) {
+            return true;
+        }
+
+        return $this->checkDonorAvailability(false);
+    }
+
     private function checkDonorAvailability(bool $useProxy = false): bool
     {
-        try {
-            $options = [
-                'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
-            ];
-            if ($useProxy) {
-                $proxyUrl = (string) (config('parser.proxy') ?: config('parser.proxy_url', ''));
-                if ($proxyUrl === '') {
-                    return false;
+        $targets = ['https://sadovodbaza.ru'];
+        if ($useProxy) {
+            foreach ($this->resolveProxyPool() as $proxyUrl) {
+                if ($this->probeDonorThroughProxy($proxyUrl)) {
+                    return true;
                 }
-                $options['proxy'] = $proxyUrl;
             }
 
-            $response = Http::timeout(10)
-                ->withOptions($options)
+            return false;
+        }
+
+        foreach ($targets as $url) {
+            if ($this->probeDonorDirect($url)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function probeDonorDirect(string $url): bool
+    {
+        try {
+            $response = Http::timeout(15)
+                ->withOptions(['curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4]])
+                ->get($url);
+
+            return $response->successful()
+                && str_contains(mb_strtolower($response->body()), 'sadovodbaza');
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function probeDonorThroughProxy(string $proxyUrl): bool
+    {
+        try {
+            $response = Http::timeout(20)
+                ->withOptions([
+                    'proxy' => $proxyUrl,
+                    'curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4],
+                ])
                 ->get('https://sadovodbaza.ru');
 
-            if (!$response->successful()) {
-                return false;
-            }
-
-            return str_contains(mb_strtolower($response->body()), 'sadovodbaza');
-        } catch (\Throwable $e) {
+            return $response->successful()
+                && str_contains(mb_strtolower($response->body()), 'sadovodbaza');
+        } catch (\Throwable) {
             return false;
         }
     }
