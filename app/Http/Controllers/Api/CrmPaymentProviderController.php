@@ -8,6 +8,7 @@ use App\Models\PaymentProvider;
 use App\Models\PaymentWebhookLog;
 use App\Models\SaasApiKey;
 use App\Support\FrontendUrl;
+use App\Support\PaymentHttp;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -241,7 +242,7 @@ class CrmPaymentProviderController extends Controller
         $tokenData = array_merge($payload, ['Password' => $config['password']]);
         ksort($tokenData);
         $payload['Token'] = hash('sha256', implode('', $tokenData));
-        $response = Http::asJson()->timeout(10)->post($base . '/v2/Init', $payload);
+        $response = PaymentHttp::client(10)->asJson()->post($base . '/v2/Init', $payload);
         $body = $response->json() ?? [];
         if ($body['Success'] ?? false) {
             return ['success' => true, 'message' => 'Подключение успешно'];
@@ -267,7 +268,7 @@ class CrmPaymentProviderController extends Controller
             'failUrl' => $frontendUrl . '/payment/fail',
             'description' => 'Connection test',
         ];
-        $response = Http::asForm()->timeout(10)->post($sberBase . '/payment/rest/register.do', $formData);
+        $response = PaymentHttp::client(10)->asForm()->post($sberBase . '/payment/rest/register.do', $formData);
         $body = $response->json() ?? [];
         $code = (int) ($body['errorCode'] ?? -1);
         if ($code === 0 && !empty($body['orderId'])) {

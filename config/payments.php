@@ -1,6 +1,9 @@
 <?php
 
 return [
+    /** CA bundle for T-Bank / Sber / ATOL (Russian Trusted Root). */
+    'ca_bundle' => env('PAYMENTS_CA_BUNDLE', storage_path('certs/russian-trusted-ca-bundle.pem')),
+
     'stripe' => [
         'currency' => env('PAYMENTS_STRIPE_CURRENCY', env('STRIPE_CURRENCY', 'usd')),
     ],

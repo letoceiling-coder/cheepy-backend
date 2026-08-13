@@ -4,9 +4,10 @@ namespace App\Services\Payments;
 
 use App\Models\SaasApiKey;
 use App\Support\FrontendUrl;
+use App\Support\PaymentHttp;
+use App\Support\PaymentHttp;
 use App\Support\PaymentWebhookCurrency;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class TinkoffProvider implements PaymentProviderInterface
@@ -49,8 +50,8 @@ class TinkoffProvider implements PaymentProviderInterface
             ? 'https://rest-api-test.tinkoff.ru'
             : 'https://securepay.tinkoff.ru';
 
-        $response = Http::asJson()
-            ->timeout(10)
+        $response = PaymentHttp::client(10)
+            ->asJson()
             ->post($base.'/v2/Init', $payload);
 
         $body = $response->json();
@@ -96,7 +97,7 @@ class TinkoffProvider implements PaymentProviderInterface
             ? 'https://rest-api-test.tinkoff.ru'
             : 'https://securepay.tinkoff.ru';
 
-        $response = Http::asJson()->timeout(20)->post($base.'/v2/Cancel', $payload);
+        $response = PaymentHttp::client(20)->asJson()->post($base.'/v2/Cancel', $payload);
         $body = $response->json();
         if (! is_array($body)) {
             return ['ok' => false, 'message' => 'Пустой ответ T‑Банка', 'raw' => null];

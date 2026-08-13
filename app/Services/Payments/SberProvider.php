@@ -4,6 +4,7 @@ namespace App\Services\Payments;
 
 use App\Models\Payment;
 use App\Support\FrontendUrl;
+use App\Support\PaymentHttp;
 use App\Models\SaasApiKey;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
@@ -48,8 +49,8 @@ class SberProvider implements PaymentProviderInterface
         ];
 
         $base = ($this->config['mode'] ?? 'prod') === 'test' ? self::BASE_TEST : self::BASE_PROD;
-        $response = Http::asForm()
-            ->timeout(15)
+        $response = PaymentHttp::client(15)
+            ->asForm()
             ->post($base . '/payment/rest/register.do', $formData);
 
         $body = $response->json() ?? [];
