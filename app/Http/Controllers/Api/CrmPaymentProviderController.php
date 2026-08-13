@@ -230,9 +230,7 @@ class CrmPaymentProviderController extends Controller
         if (empty($config['terminal_key']) || empty($config['password'])) {
             return ['success' => false, 'message' => 'Terminal Key и Password обязательны'];
         }
-        $base = ($config['mode'] ?? 'prod') === 'test'
-            ? 'https://rest-api-test.tinkoff.ru'
-            : 'https://securepay.tinkoff.ru';
+        $base = 'https://securepay.tinkoff.ru';
         $payload = [
             'TerminalKey' => $config['terminal_key'],
             'Amount' => 100,

@@ -45,9 +45,8 @@ class TinkoffProvider implements PaymentProviderInterface
 
         $payload['Token'] = $this->generateRequestToken($payload);
 
-        $base = ($this->config['mode'] ?? 'prod') === 'test'
-            ? 'https://rest-api-test.tinkoff.ru'
-            : 'https://securepay.tinkoff.ru';
+        // DEMO и prod терминалы ходят на securepay; rest-api-test.tinkoff.ru часто отдаёт 403 с VPS.
+        $base = 'https://securepay.tinkoff.ru';
 
         $response = PaymentHttp::client(10)
             ->asJson()
@@ -92,9 +91,8 @@ class TinkoffProvider implements PaymentProviderInterface
         }
         $payload['Token'] = $this->generateRequestToken($payload);
 
-        $base = ($this->config['mode'] ?? 'prod') === 'test'
-            ? 'https://rest-api-test.tinkoff.ru'
-            : 'https://securepay.tinkoff.ru';
+        // DEMO и prod терминалы ходят на securepay; rest-api-test.tinkoff.ru часто отдаёт 403 с VPS.
+        $base = 'https://securepay.tinkoff.ru';
 
         $response = PaymentHttp::client(20)->asJson()->post($base.'/v2/Cancel', $payload);
         $body = $response->json();
