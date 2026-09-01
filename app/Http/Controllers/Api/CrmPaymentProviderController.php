@@ -341,6 +341,7 @@ class CrmPaymentProviderController extends Controller
                 ['key' => 'terminal_key', 'label' => 'Terminal Key', 'type' => 'text', 'required' => true],
                 ['key' => 'password', 'label' => 'Password', 'type' => 'password', 'required' => true],
                 ['key' => 'notification_url', 'label' => 'Notification URL', 'type' => 'text', 'readonly' => true],
+                ['key' => 'receipt_email', 'label' => 'Email для чека (fallback)', 'type' => 'text'],
                 ['key' => 'mode', 'label' => 'Режим', 'type' => 'select', 'options' => [['value' => 'test', 'label' => 'Тест'], ['value' => 'prod', 'label' => 'Продакшен']]],
             ],
             'sber' => [

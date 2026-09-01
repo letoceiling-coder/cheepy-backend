@@ -59,11 +59,15 @@ class TinkoffProvider implements PaymentProviderInterface
 
         $body = $response->json();
         if (! ($body['Success'] ?? false)) {
-            $message = $body['Message'] ?? $body['Details'] ?? 'Tinkoff Init failed';
+            $message = trim((string) ($body['Message'] ?? $body['Details'] ?? 'Tinkoff Init failed'));
+            $details = trim((string) ($body['Details'] ?? ''));
+            if ($details !== '' && ! str_contains($message, $details)) {
+                $message = $message.' ('.$details.')';
+            }
             Log::warning('Tinkoff Init failed', [
                 'error_code' => $body['ErrorCode'] ?? null,
                 'message' => $message,
-                'details' => $body['Details'] ?? null,
+                'details' => $details,
                 'order_id' => $orderId,
                 'amount_kopecks' => $payload['Amount'],
                 'has_receipt' => isset($payload['Receipt']),
@@ -239,17 +243,59 @@ class TinkoffProvider implements PaymentProviderInterface
             'Items' => $items,
         ];
 
-        $email = trim((string) ($context['customer_email'] ?? ''));
-        if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $email = $this->resolveReceiptEmail($context);
+        if ($email !== null) {
             $receipt['Email'] = $email;
         }
 
-        $phone = trim((string) ($context['customer_phone'] ?? ''));
-        if ($phone !== '') {
+        $phone = $this->resolveReceiptPhone($context);
+        if ($phone !== null) {
             $receipt['Phone'] = $phone;
         }
 
+        if (! isset($receipt['Email']) && ! isset($receipt['Phone'])) {
+            throw new \RuntimeException('Для чека T‑Bank нужен email или телефон покупателя');
+        }
+
         return $receipt;
+    }
+
+    /** @param  array<string, mixed>  $context */
+    private function resolveReceiptEmail(array $context): ?string
+    {
+        $candidates = [
+            $context['customer_email'] ?? null,
+            $this->config['receipt_email'] ?? null,
+            config('payments.receipt_fallback_email'),
+            config('mail.from.address'),
+        ];
+        foreach ($candidates as $candidate) {
+            $email = trim((string) $candidate);
+            if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                return $email;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param  array<string, mixed>  $context */
+    private function resolveReceiptPhone(array $context): ?string
+    {
+        $phone = trim((string) ($context['customer_phone'] ?? $this->config['receipt_phone'] ?? ''));
+        if ($phone === '') {
+            return null;
+        }
+
+        $digits = preg_replace('/\D+/', '', $phone) ?? '';
+        if (strlen($digits) === 11 && str_starts_with($digits, '8')) {
+            $digits = '7'.substr($digits, 1);
+        }
+        if (strlen($digits) === 10) {
+            $digits = '7'.$digits;
+        }
+
+        return strlen($digits) >= 10 ? '+'.$digits : $phone;
     }
 
     /**
