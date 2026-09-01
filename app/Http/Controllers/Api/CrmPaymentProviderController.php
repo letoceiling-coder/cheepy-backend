@@ -236,6 +236,18 @@ class CrmPaymentProviderController extends Controller
             'Amount' => 100,
             'OrderId' => 'test_' . time(),
             'Description' => 'Connection test',
+            'Receipt' => [
+                'Taxation' => $config['receipt_taxation'] ?? 'usn_income',
+                'Items' => [[
+                    'Name' => 'Connection test',
+                    'Price' => 100,
+                    'Quantity' => 1,
+                    'Amount' => 100,
+                    'Tax' => $config['receipt_tax'] ?? 'none',
+                    'PaymentMethod' => $config['receipt_payment_method'] ?? 'full_prepayment',
+                    'PaymentObject' => $config['receipt_payment_object'] ?? 'service',
+                ]],
+            ],
         ];
         $tokenData = array_merge($payload, ['Password' => $config['password']]);
         ksort($tokenData);

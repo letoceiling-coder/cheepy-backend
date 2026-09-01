@@ -161,6 +161,29 @@ class StorefrontCheckoutController extends Controller
                     'return_token' => $returnToken,
                 ]);
 
+                $receiptItems = [];
+                foreach ($lines as $line) {
+                    /** @var SystemProduct $sp */
+                    $sp = $line['product'];
+                    $receiptItems[] = [
+                        'name' => $sp->name,
+                        'price_kopecks' => (int) round((float) $line['unit_rub'] * 100),
+                        'quantity' => (float) $line['quantity'],
+                        'amount_kopecks' => (int) round((float) $line['line_total_rub'] * 100),
+                        'payment_object' => 'commodity',
+                    ];
+                }
+                $deliveryRub = (int) $quote['delivery_amount'];
+                if ($deliveryRub > 0) {
+                    $receiptItems[] = [
+                        'name' => 'Доставка',
+                        'price_kopecks' => $deliveryRub * 100,
+                        'quantity' => 1,
+                        'amount_kopecks' => $deliveryRub * 100,
+                        'payment_object' => 'service',
+                    ];
+                }
+
                 $providerService = $manager->getProvider($provider);
                 $feBase = FrontendUrl::base();
                 $tokQ = $returnToken !== '' ? '&return_token='.urlencode($returnToken) : '';
@@ -169,6 +192,9 @@ class StorefrontCheckoutController extends Controller
                     'return_token' => $returnToken,
                     'description' => 'Заказ '.$order->number,
                     'line_item_name' => 'Заказ '.$order->number,
+                    'customer_email' => $user->email,
+                    'discount_rub' => $discountRub,
+                    'receipt_items' => $receiptItems,
                     'success_url' => $feBase.'/payment/success?payment_id='.$payment->id.$tokQ,
                     'cancel_url' => $feBase.'/payment/fail?payment_id='.$payment->id.$tokQ,
                 ]);

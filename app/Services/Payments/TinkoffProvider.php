@@ -43,6 +43,11 @@ class TinkoffProvider implements PaymentProviderInterface
             'FailURL' => $urls['fail'],
         ];
 
+        $receipt = $this->buildReceipt($amount, $context);
+        if ($receipt !== null) {
+            $payload['Receipt'] = $receipt;
+        }
+
         $payload['Token'] = $this->generateRequestToken($payload);
 
         // DEMO и prod терминалы ходят на securepay; rest-api-test.tinkoff.ru часто отдаёт 403 с VPS.
@@ -55,6 +60,14 @@ class TinkoffProvider implements PaymentProviderInterface
         $body = $response->json();
         if (! ($body['Success'] ?? false)) {
             $message = $body['Message'] ?? $body['Details'] ?? 'Tinkoff Init failed';
+            Log::warning('Tinkoff Init failed', [
+                'error_code' => $body['ErrorCode'] ?? null,
+                'message' => $message,
+                'details' => $body['Details'] ?? null,
+                'order_id' => $orderId,
+                'amount_kopecks' => $payload['Amount'],
+                'has_receipt' => isset($payload['Receipt']),
+            ]);
             throw new \RuntimeException($message);
         }
 
@@ -191,6 +204,139 @@ class TinkoffProvider implements PaymentProviderInterface
         ksort($tokenData);
 
         return hash('sha256', implode('', $tokenData));
+    }
+
+    /**
+     * Фискальный чек для prod-терминала T‑Bank (обязателен при 54‑ФЗ).
+     *
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>|null
+     */
+    private function buildReceipt(float $amount, array $context): ?array
+    {
+        if (($this->config['send_receipt'] ?? true) === false) {
+            return null;
+        }
+
+        $amountKopecks = (int) round($amount * 100);
+        if ($amountKopecks <= 0) {
+            return null;
+        }
+
+        $tax = (string) ($this->config['receipt_tax'] ?? 'none');
+        if (! in_array($tax, ['none', 'vat0', 'vat10', 'vat20', 'vat110', 'vat120'], true)) {
+            $tax = 'none';
+        }
+
+        $paymentMethod = (string) ($this->config['receipt_payment_method'] ?? 'full_prepayment');
+        $defaultObject = (string) ($this->config['receipt_payment_object'] ?? 'commodity');
+        $taxation = (string) ($this->config['receipt_taxation'] ?? 'usn_income');
+
+        $items = $this->buildReceiptItems($amountKopecks, $context, $tax, $paymentMethod, $defaultObject);
+
+        $receipt = [
+            'Taxation' => $taxation,
+            'Items' => $items,
+        ];
+
+        $email = trim((string) ($context['customer_email'] ?? ''));
+        if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $receipt['Email'] = $email;
+        }
+
+        $phone = trim((string) ($context['customer_phone'] ?? ''));
+        if ($phone !== '') {
+            $receipt['Phone'] = $phone;
+        }
+
+        return $receipt;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @return list<array<string, mixed>>
+     */
+    private function buildReceiptItems(
+        int $amountKopecks,
+        array $context,
+        string $tax,
+        string $paymentMethod,
+        string $defaultObject,
+    ): array {
+        $discountRub = max(0, (int) ($context['discount_rub'] ?? 0));
+        /** @var list<array<string, mixed>> $rawItems */
+        $rawItems = is_array($context['receipt_items'] ?? null) ? $context['receipt_items'] : [];
+
+        if ($rawItems === [] || $discountRub > 0) {
+            return [$this->receiptItem(
+                mb_substr((string) ($context['line_item_name'] ?? $context['description'] ?? 'Оплата заказа'), 0, 128),
+                $amountKopecks,
+                1,
+                $amountKopecks,
+                $tax,
+                $paymentMethod,
+                $defaultObject,
+            )];
+        }
+
+        $items = [];
+        $sum = 0;
+        foreach ($rawItems as $row) {
+            $qty = (float) ($row['quantity'] ?? 1);
+            if ($qty <= 0) {
+                $qty = 1;
+            }
+            $lineKopecks = (int) ($row['amount_kopecks'] ?? 0);
+            if ($lineKopecks <= 0) {
+                continue;
+            }
+            $priceKopecks = (int) ($row['price_kopecks'] ?? (int) round($lineKopecks / $qty));
+            $items[] = $this->receiptItem(
+                mb_substr((string) ($row['name'] ?? 'Товар'), 0, 128),
+                $priceKopecks,
+                $qty,
+                $lineKopecks,
+                $tax,
+                $paymentMethod,
+                (string) ($row['payment_object'] ?? $defaultObject),
+            );
+            $sum += $lineKopecks;
+        }
+
+        if ($items === [] || abs($sum - $amountKopecks) > 1) {
+            return [$this->receiptItem(
+                mb_substr((string) ($context['line_item_name'] ?? $context['description'] ?? 'Оплата заказа'), 0, 128),
+                $amountKopecks,
+                1,
+                $amountKopecks,
+                $tax,
+                $paymentMethod,
+                $defaultObject,
+            )];
+        }
+
+        return $items;
+    }
+
+    /** @return array<string, mixed> */
+    private function receiptItem(
+        string $name,
+        int $priceKopecks,
+        float $quantity,
+        int $amountKopecks,
+        string $tax,
+        string $paymentMethod,
+        string $paymentObject,
+    ): array {
+        return [
+            'Name' => $name,
+            'Price' => $priceKopecks,
+            'Quantity' => $quantity,
+            'Amount' => $amountKopecks,
+            'Tax' => $tax,
+            'PaymentMethod' => $paymentMethod,
+            'PaymentObject' => $paymentObject,
+        ];
     }
 
     private function buildReturnUrls(int $paymentId, string $returnToken = ''): array
