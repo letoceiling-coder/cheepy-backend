@@ -230,34 +230,19 @@ class CrmPaymentProviderController extends Controller
         if (empty($config['terminal_key']) || empty($config['password'])) {
             return ['success' => false, 'message' => 'Terminal Key и Password обязательны'];
         }
-        $base = 'https://securepay.tinkoff.ru';
-        $payload = [
-            'TerminalKey' => $config['terminal_key'],
-            'Amount' => 100,
-            'OrderId' => 'test_' . time(),
-            'Description' => 'Connection test',
-            'Receipt' => [
-                'Taxation' => $config['receipt_taxation'] ?? 'usn_income',
-                'Items' => [[
-                    'Name' => 'Connection test',
-                    'Price' => 100,
-                    'Quantity' => 1,
-                    'Amount' => 100,
-                    'Tax' => $config['receipt_tax'] ?? 'none',
-                    'PaymentMethod' => $config['receipt_payment_method'] ?? 'full_prepayment',
-                    'PaymentObject' => $config['receipt_payment_object'] ?? 'service',
-                ]],
-            ],
-        ];
-        $tokenData = array_merge($payload, ['Password' => $config['password']]);
-        ksort($tokenData);
-        $payload['Token'] = hash('sha256', implode('', $tokenData));
-        $response = PaymentHttp::client(10)->asJson()->post($base . '/v2/Init', $payload);
-        $body = $response->json() ?? [];
-        if ($body['Success'] ?? false) {
+
+        try {
+            $provider = new \App\Services\Payments\TinkoffProvider($config);
+            $provider->createCheckout(null, 1.0, [
+                'payment_id' => (int) time(),
+                'description' => 'Connection test',
+                'line_item_name' => 'Connection test',
+            ]);
+
             return ['success' => true, 'message' => 'Подключение успешно'];
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
         }
-        return ['success' => false, 'message' => $body['Message'] ?? $body['Details'] ?? 'Ошибка Tinkoff API'];
     }
 
     private function testSber(array $config): array
